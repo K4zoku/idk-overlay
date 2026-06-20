@@ -17,18 +17,12 @@
 
 #define _GNU_SOURCE
 
-#include "compositor.h"
-#include "overlay_shader.h"
-#include "idk_ipc.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dlfcn.h>
 #include <errno.h>
-#include <GLES2/gl2.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -37,27 +31,91 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-/* ── Frame header from webview ─────────────────────────────────────── */
+#include "idk_gl_loader.h"   /* GL types + function pointer redirects */
+#include "compositor.h"
+#include "overlay_shader.h"
+#include "idk_ipc.h"
 
+/* ── Frame header from webview ─────────────────────────────────────── */
+/*
+ * Wire format (matches idk_client_t::build_frame_hdr):
+ *   fields[0] = width
+ *   fields[1] = height
+ *   fields[2] = x position (overloaded "stride")
+ *   fields[3] = y position (overloaded "format")
+ *   fields[4] = overlay ID (overloaded "num_planes")
+ *               Special value 0xFFFFFFFF = SHM mode (pixel data, not dmabuf)
+ *   fields[5] = pixel byte size (overloaded "pid") — used by SHM mode
+ *   fields[6] = visibility (overloaded "reserved")
+ *   fields[7] = checksum
+ */
 struct frame_hdr {
     uint32_t width;
     uint32_t height;
-    uint32_t stride;
-    uint32_t format;
-    uint32_t num_planes;
-    uint32_t reserved;
+    uint32_t stride;       /* actually X position */
+    uint32_t format;       /* actually Y position */
+    uint32_t num_planes;   /* actually overlay ID; 0xFFFFFFFF = SHM mode */
+    uint32_t reserved;     /* actually pixel byte size (SHM) */
     uint32_t checksum;
 };
 
-/* ── EGL function pointers ─────────────────────────────────────────── */
+#define IDK_SHM_MAGIC 0xFFFFFFFF   /* num_planes == this → SHM mode */
 
+/* ── EGL types (opaque — we don't need full EGL headers) ────────────────── */
+
+typedef void* EGLDisplay;
+typedef void* EGLSurface;
+typedef void* EGLContext;
+typedef void* EGLImageKHR;
+typedef int32_t EGLint;
+typedef uint32_t EGLenum;
+typedef uint32_t EGLBoolean;
+typedef intptr_t EGLNativeDisplayType;
+
+#define EGL_DEFAULT_DISPLAY ((EGLNativeDisplayType)0)
+#define EGL_NO_DISPLAY      ((EGLDisplay)0)
+#define EGL_NO_CONTEXT      ((EGLContext)0)
+#define EGL_NO_IMAGE_KHR    ((EGLImageKHR)0)
+#define EGL_NONE            0x3038
+#define EGL_WIDTH           0x3057
+#define EGL_HEIGHT          0x3056
+#define EGL_LINUX_DMA_BUF_EXT          0x3270
+#define EGL_DRM_BUFFER_FORMAT_MESA     0x31DD
+#define EGL_DRM_BUFFER_STRIDE_MESA     0x31DE
+
+/* ── EGL function pointers (resolved at runtime via dlsym) ──────────────── */
+
+typedef EGLDisplay (*PFN_eglGetDisplay_fn)(EGLNativeDisplayType);
+typedef EGLint (*PFN_eglGetError_fn)(void);
 typedef EGLImageKHR (*PFN_eglCreateImageKHR_fn)(EGLDisplay dpy, EGLContext ctx,
                                                  EGLenum target,
+                                                 void *buffer,
                                                  const EGLint *attrs);
 typedef EGLBoolean (*PFN_eglDestroyImageKHR_fn)(EGLDisplay dpy, EGLImageKHR image);
 
-static PFN_eglCreateImageKHR_fn fn_eglCreateImageKHR = NULL;
-static PFN_eglDestroyImageKHR_fn fn_eglDestroyImageKHR = NULL;
+static PFN_eglGetDisplay_fn       fn_eglGetDisplay       = NULL;
+static PFN_eglGetError_fn         fn_eglGetError         = NULL;
+static PFN_eglCreateImageKHR_fn   fn_eglCreateImageKHR   = NULL;
+static PFN_eglDestroyImageKHR_fn  fn_eglDestroyImageKHR  = NULL;
+
+/* Resolve EGL function pointers from libEGL.so.1 (RTLD_NOLOAD — reuse
+ * the lib already loaded by the target process). */
+static void resolve_egl_functions(void) {
+    if (fn_eglGetDisplay) return;
+    void *lib = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+    if (!lib) lib = dlopen("libEGL.so.1", RTLD_NOW);
+    if (!lib) lib = dlopen("libEGL.so", RTLD_NOW);
+    if (!lib) {
+        fprintf(stderr, "[idk-comp] dlopen libEGL failed: %s\n", dlerror());
+        return;
+    }
+    fn_eglGetDisplay       = (PFN_eglGetDisplay_fn)     dlsym(lib, "eglGetDisplay");
+    fn_eglGetError         = (PFN_eglGetError_fn)       dlsym(lib, "eglGetError");
+    fn_eglCreateImageKHR   = (PFN_eglCreateImageKHR_fn) dlsym(lib, "eglCreateImageKHR");
+    fn_eglDestroyImageKHR  = (PFN_eglDestroyImageKHR_fn)dlsym(lib, "eglDestroyImageKHR");
+    fprintf(stderr, "[idk-comp] EGL functions: eglGetDisplay=%p eglCreateImageKHR=%p\n",
+            (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
+}
 
 /* ── GL state ──────────────────────────────────────────────────────── */
 
@@ -203,6 +261,50 @@ static int accept_client(void) {
  *
  * Returns 0 if frame rendered, -1 if no frame.
  */
+/*
+ * Convert SHM pixel data to GL texture via glTexImage2D.
+ * Used as fallback when egl_dmabuf_to_texture fails (memfd is not a
+ * real DMA-BUF, or EGL_EXT_image_dma_buf_import not available).
+ *
+ * Pixel format: RGBA8888 (matches Qt's QImage::Format_RGBA8888).
+ */
+static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t size) {
+    if (!idk_fn_glTexImage2D) {
+        fprintf(stderr, "[idk-comp] glTexImage2D not resolved\n");
+        return 0;
+    }
+
+    /* mmap the SHM fd read-only */
+    void *pixels = mmap(NULL, size, PROT_READ, MAP_SHARED, shm_fd, 0);
+    if (pixels == MAP_FAILED) {
+        fprintf(stderr, "[idk-comp] SHM mmap failed: %s\n", strerror(errno));
+        return 0;
+    }
+
+    /* Create GL texture and upload pixels */
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    /* RGBA8888 unpacking — no row padding, 1 byte alignment */
+    if (idk_fn_glPixelStorei) {
+        idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    }
+
+    idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                        (GLsizei)w, (GLsizei)h, 0,
+                        GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    munmap(pixels, size);
+    return tex;
+}
+
 int idk_compositor_render(void) {
     /* Try to accept client connection if none yet */
     accept_client();
@@ -248,12 +350,44 @@ int idk_compositor_render(void) {
 
     memcpy(&hdr, msg_buf, sizeof(hdr));
 
-    /* Upload to GL texture */
-    GLuint tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                       hdr.stride, hdr.format);
-    if (tex == 0) {
-        close(dmabuf_fd);
-        return -1;
+    /* Upload to GL texture.
+     *
+     * Two paths:
+     *   1. SHM mode (num_planes == IDK_SHM_MAGIC): fd is a memfd containing
+     *      raw RGBA8888 pixel data. Use glTexImage2D to upload. 'reserved'
+     *      field holds pixel byte size (w * h * 4).
+     *   2. DMABUF mode (default): fd is a real DMA-BUF. Use
+     *      egl_dmabuf_to_texture via EGL_EXT_image_dma_buf_import.
+     *      If that fails (e.g. fd is actually a memfd), fall back to SHM.
+     */
+    GLuint tex = 0;
+    int is_shm = (hdr.num_planes == IDK_SHM_MAGIC);
+
+    if (is_shm) {
+        /* SHM path: 'reserved' field = pixel byte size */
+        uint32_t pixel_size = hdr.reserved;
+        if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
+        tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height, pixel_size);
+        if (tex == 0) {
+            fprintf(stderr, "[idk-comp] SHM texture upload failed\n");
+            close(dmabuf_fd);
+            return -1;
+        }
+    } else {
+        /* DMABUF path — try EGL import first */
+        tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                     hdr.stride, hdr.format);
+        if (tex == 0) {
+            /* Fallback: maybe this is actually a memfd, not real DMABUF.
+             * Try SHM upload with default pixel size. */
+            uint32_t pixel_size = hdr.width * hdr.height * 4;
+            fprintf(stderr, "[idk-comp] DMABUF import failed, trying SHM fallback\n");
+            tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height, pixel_size);
+            if (tex == 0) {
+                close(dmabuf_fd);
+                return -1;
+            }
+        }
     }
 
     /* Clean up old texture, use new one */
@@ -279,14 +413,20 @@ int idk_compositor_render(void) {
 GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                               uint32_t stride, uint32_t format) {
     if (!fn_eglCreateImageKHR) {
-        fprintf(stderr, "[idk-comp] EGL dma_buf import not available\n");
-        return 0;
+        resolve_egl_functions();
+        if (!fn_eglCreateImageKHR) {
+            fprintf(stderr, "[idk-comp] EGL dma_buf import not available\n");
+            return 0;
+        }
     }
 
     /* Get EGL display */
-    EGLDisplay egl_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (egl_dpy == EGL_NO_DISPLAY) {
-        egl_dpy = eglGetDisplay((EGLNativeDisplayType)0);
+    EGLDisplay egl_dpy = EGL_NO_DISPLAY;
+    if (fn_eglGetDisplay) {
+        egl_dpy = fn_eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (egl_dpy == EGL_NO_DISPLAY) {
+            egl_dpy = fn_eglGetDisplay((EGLNativeDisplayType)0);
+        }
     }
     if (egl_dpy == EGL_NO_DISPLAY) return 0;
 
@@ -310,11 +450,11 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     };
 
     EGLImageKHR img = fn_eglCreateImageKHR(
-        egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, (const EGLint *)attrs);
+        egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
 
     if (img == EGL_NO_IMAGE_KHR) {
         fprintf(stderr, "[idk-comp] eglCreateImageKHR failed: 0x%04X\n",
-                (unsigned int)eglGetError());
+                (unsigned int)(fn_eglGetError ? fn_eglGetError() : 0));
         return 0;
     }
 
@@ -446,9 +586,20 @@ void idk_compositor_shutdown(void) {
  * Initialize GL shaders and VBO. Call from GL context.
  */
 int idk_compositor_init_gl(void) {
-    /* Resolve GL 2.0+ function pointers */
-    void *libgl = dlopen("libGL.so", RTLD_NOW);
+    /* Resolve all GL function pointers via dlsym (no link-time GL dep).
+     * idk_gl_loader_init tries libGL.so.1, libGLESv2.so.2, etc. */
+    if (idk_gl_loader_init() != 0) {
+        fprintf(stderr, "[idk-comp] GL loader init failed — cannot init GL resources\n");
+        return -1;
+    }
+
+    /* glEGLImageTargetTexture2DOES is an EGL extension, not in core GL.
+     * Resolve it separately (it may be in libEGL.so or libGL.so). */
+    void *libgl = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
     if (!libgl) libgl = dlopen("libGL.so.1", RTLD_NOW);
+    if (!libgl) libgl = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_NOLOAD);
+    if (!libgl) libgl = dlopen("libGLESv2.so.2", RTLD_NOW);
+    if (!libgl) libgl = dlopen("libGL.so", RTLD_NOW);
     if (libgl) {
         fn_glEGLImageTargetTexture2DOES =
             (PFN_glEGLImageTargetTexture2DOES_fn)dlsym(libgl, "glEGLImageTargetTexture2DOES");

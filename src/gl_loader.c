@@ -1,0 +1,149 @@
+/*
+ * gl_loader.c — Runtime GL symbol resolution
+ *
+ * Resolves all GL function pointers via dlsym at runtime. No link-time
+ * dependency on libGL / libGLESv2 — we grab whatever the target process
+ * has already loaded (RTLD_NOLOAD).
+ *
+ * The compositor (compositor.c) calls idk_gl_loader_init() once when
+ * it first has a GL context, then uses GL functions normally — the
+ * macros in idk_gl_loader.h redirect calls to the function pointers
+ * resolved here.
+ */
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <dlfcn.h>
+#include "idk_gl_loader.h"
+
+/* ── Global function pointers (default NULL) ────────────────────────────── */
+
+PFN_idk_glGetIntegerv          idk_fn_glGetIntegerv          = NULL;
+PFN_idk_glEnable               idk_fn_glEnable               = NULL;
+PFN_idk_glDisable              idk_fn_glDisable              = NULL;
+PFN_idk_glBlendFunc            idk_fn_glBlendFunc            = NULL;
+PFN_idk_glCreateShader         idk_fn_glCreateShader         = NULL;
+PFN_idk_glShaderSource         idk_fn_glShaderSource         = NULL;
+PFN_idk_glCompileShader        idk_fn_glCompileShader        = NULL;
+PFN_idk_glGetShaderiv          idk_fn_glGetShaderiv          = NULL;
+PFN_idk_glGetShaderInfoLog     idk_fn_glGetShaderInfoLog     = NULL;
+PFN_idk_glDeleteShader         idk_fn_glDeleteShader         = NULL;
+PFN_idk_glCreateProgram        idk_fn_glCreateProgram        = NULL;
+PFN_idk_glAttachShader         idk_fn_glAttachShader         = NULL;
+PFN_idk_glLinkProgram          idk_fn_glLinkProgram          = NULL;
+PFN_idk_glGetProgramiv         idk_fn_glGetProgramiv         = NULL;
+PFN_idk_glGetProgramInfoLog    idk_fn_glGetProgramInfoLog    = NULL;
+PFN_idk_glDeleteProgram        idk_fn_glDeleteProgram        = NULL;
+PFN_idk_glUseProgram           idk_fn_glUseProgram           = NULL;
+PFN_idk_glGenTextures          idk_fn_glGenTextures          = NULL;
+PFN_idk_glBindTexture          idk_fn_glBindTexture          = NULL;
+PFN_idk_glTexParameteri        idk_fn_glTexParameteri        = NULL;
+PFN_idk_glDeleteTextures       idk_fn_glDeleteTextures       = NULL;
+PFN_idk_glGetUniformLocation   idk_fn_glGetUniformLocation   = NULL;
+PFN_idk_glUniform1i            idk_fn_glUniform1i            = NULL;
+PFN_idk_glActiveTexture        idk_fn_glActiveTexture        = NULL;
+PFN_idk_glGenBuffers           idk_fn_glGenBuffers           = NULL;
+PFN_idk_glBindBuffer           idk_fn_glBindBuffer           = NULL;
+PFN_idk_glBufferData           idk_fn_glBufferData           = NULL;
+PFN_idk_glBufferSubData        idk_fn_glBufferSubData        = NULL;
+PFN_idk_glDeleteBuffers        idk_fn_glDeleteBuffers        = NULL;
+PFN_idk_glDrawArrays           idk_fn_glDrawArrays           = NULL;
+PFN_idk_glTexImage2D           idk_fn_glTexImage2D           = NULL;
+PFN_idk_glPixelStorei          idk_fn_glPixelStorei          = NULL;
+
+/* ── Init ──────────────────────────────────────────────────────────────────
+ *
+ * Try in order:
+ *   1. libGL.so.1 (desktop OpenGL, most common)
+ *   2. libGLESv2.so.2 (embedded / Wayland EGL apps)
+ *   3. libGL.so (unversioned fallback)
+ *   4. libGLESv2.so (unversioned fallback)
+ *
+ * RTLD_NOLOAD first — if target already loaded one of these, reuse it.
+ * This is important: the GL context the target created is bound to the
+ * specific libGL.so.1 it loaded. We must use the SAME library.
+ */
+int idk_gl_loader_init(void) {
+    static int tried = 0;
+    static int result = -1;
+    if (tried) return result;
+    tried = 1;
+
+    void *lib = NULL;
+    const char *lib_names[] = {
+        "libGL.so.1",
+        "libGLESv2.so.2",
+        "libGL.so",
+        "libGLESv2.so",
+    };
+
+    for (size_t i = 0; i < sizeof(lib_names)/sizeof(*lib_names); i++) {
+        lib = dlopen(lib_names[i], RTLD_NOW | RTLD_NOLOAD);
+        if (!lib) {
+            lib = dlopen(lib_names[i], RTLD_NOW | RTLD_GLOBAL);
+        }
+        if (lib) {
+            fprintf(stderr, "[idk-gl-loader] Using %s\n", lib_names[i]);
+            break;
+        }
+    }
+    if (!lib) {
+        fprintf(stderr, "[idk-gl-loader] No GL library found\n");
+        return -1;
+    }
+
+    /* Resolve all symbols. Don't bail on first NULL — some functions
+     * may be missing (e.g. GLES2 doesn't have everything desktop GL has).
+     * Caller checks critical ones. */
+    #define RESOLVE(name) \
+        idk_fn_##name = (PFN_idk_##name)dlsym(lib, #name)
+
+    RESOLVE(glGetIntegerv);
+    RESOLVE(glEnable);
+    RESOLVE(glDisable);
+    RESOLVE(glBlendFunc);
+    RESOLVE(glCreateShader);
+    RESOLVE(glShaderSource);
+    RESOLVE(glCompileShader);
+    RESOLVE(glGetShaderiv);
+    RESOLVE(glGetShaderInfoLog);
+    RESOLVE(glDeleteShader);
+    RESOLVE(glCreateProgram);
+    RESOLVE(glAttachShader);
+    RESOLVE(glLinkProgram);
+    RESOLVE(glGetProgramiv);
+    RESOLVE(glGetProgramInfoLog);
+    RESOLVE(glDeleteProgram);
+    RESOLVE(glUseProgram);
+    RESOLVE(glGenTextures);
+    RESOLVE(glBindTexture);
+    RESOLVE(glTexParameteri);
+    RESOLVE(glDeleteTextures);
+    RESOLVE(glGetUniformLocation);
+    RESOLVE(glUniform1i);
+    RESOLVE(glActiveTexture);
+    RESOLVE(glGenBuffers);
+    RESOLVE(glBindBuffer);
+    RESOLVE(glBufferData);
+    RESOLVE(glBufferSubData);
+    RESOLVE(glDeleteBuffers);
+    RESOLVE(glDrawArrays);
+    RESOLVE(glTexImage2D);
+    RESOLVE(glPixelStorei);
+
+    #undef RESOLVE
+
+    /* Sanity check: a few critical ones must be present */
+    if (!idk_fn_glGetIntegerv || !idk_fn_glDrawArrays || !idk_fn_glUseProgram) {
+        fprintf(stderr, "[idk-gl-loader] Critical GL functions missing — "
+                        "glGetIntegerv=%p glDrawArrays=%p glUseProgram=%p\n",
+                (void*)idk_fn_glGetIntegerv,
+                (void*)idk_fn_glDrawArrays,
+                (void*)idk_fn_glUseProgram);
+        return -1;
+    }
+
+    fprintf(stderr, "[idk-gl-loader] GL functions resolved\n");
+    result = 0;
+    return 0;
+}

@@ -21,12 +21,7 @@ syringe_dep = syringe_proj.get_variable('libsyringe_dep')
 idk_client_proj = subproject('idk-client')
 idk_client_dep = idk_client_proj.get_variable('idk_client_dep')
 
-overlay_c_flags = [
-    '-D_GNU_SOURCE',
-    '-Wall',
-    '-Wextra',
-    '-O2',
-]
+overlay_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2', '-Wno-pedantic']
 
 vk_found = cc.has_function('vkCreateInstance', prefix: '#include <vulkan/vulkan.h>')
 if vk_found
@@ -48,7 +43,7 @@ idk_shim_so = library(
     install: true,
 )
 
-# ── libidk-gl.so — GL/EGL hooks + compositor ────────────────────────────
+# ── libidk-gl.so — GL/EGL hooks + compositor (LD_PRELOAD path) ──────────
 # Loaded by libidk-shim.so at runtime. Provides actual GL hooks:
 #   - idk_eglSwapBuffers()   — render overlay after real swap
 #   - idk_eglGetProcAddress() — resolve GL functions + return hooks
@@ -56,33 +51,63 @@ idk_shim_so = library(
 #   - idk_eglGetPlatformDisplay() — wrapper around real eglGetPlatformDisplay
 #   - idk_eglTerminate()      — wrapper around real eglTerminate
 #   - idk_eglDestroyContext() — wrapper around real eglDestroyContext
-idk_gl_so = library(
-    'idk-gl',
-    [
-        'src/idk_gl_hook.c',
-        'src/compositor.c',
-    ],
-    c_args: overlay_c_flags,
-    include_directories: include_directories('include'),
-    link_args: ['-ldl', '-lpthread', '-lEGL', '-lGL'],
-    version: '0.1',
-    install: true,
-)
+#
+# Optional — only built when real EGL + GLES2 dev headers are available
+# (libegl1-mesa-dev + libgles2-mesa-dev). Skip otherwise; the ptrace
+# inject path (libidk-overlay.so + egl_hook.c) doesn't need this.
+egl_dep = dependency('egl', required: false)
+gles2_dep = dependency('glesv2', required: false)
+if egl_dep.found() and gles2_dep.found()
+    idk_gl_so = library(
+        'idk-gl',
+        [
+            'src/idk_gl_hook.c',
+            'src/compositor.c',
+            'src/gl_loader.c',
+        ],
+        c_args: overlay_c_flags,
+        include_directories: include_directories('include'),
+        dependencies: [egl_dep, gles2_dep],
+        link_args: ['-ldl', '-lpthread'],
+        version: '0.1',
+        install: true,
+    )
+else
+    warning(
+        'EGL/GLES2 dev headers not found — libidk-gl.so (LD_PRELOAD path) will not be built. Install libegl1-mesa-dev + libgles2-mesa-dev to enable.',
+    )
+endif
 
-# ── libidk-overlay.so — Vulkan hooks + main init (for Vulkan games) ─────
-# Simplified: no longer includes GL hooks (moved to libidk-gl.so)
-# Used for Vulkan-based games that don't use GL/EGL.
+# ── libidk-overlay.so — Vulkan + EGL hooks + main init ───────────────────
+# Injected into target process via syringe_inject(). Constructor auto-detects
+# which graphics API the target uses (Vulkan via vkQueuePresentKHR hook,
+# EGL via eglSwapBuffers hook using install_addr).
+#
+# EGL path (osu-lazer / Wayland / OpenGL):
+#   egl_hook.c   — hooks eglSwapBuffers via syringe_hook_install_addr
+#   compositor.c — receives DMA-BUF from webview, renders fullscreen quad
+#
+# Vulkan path:
+#   vulkan_hook.c — hooks vkQueuePresentKHR
+#
+# Note: compositor.c uses GL functions but they are resolved at runtime
+# via dlsym (see src/gl_loader.c, include/idk_gl_loader.h). No link-time
+# dependency on libGL/libGLESv2.
+egl_dep2 = dependency('egl', required: false)
 idk_overlay_so = library(
     'idk-overlay',
     [
         'src/overlay.c',
+        'src/egl_hook.c',
+        'src/compositor.c',
+        'src/gl_loader.c',
         'src/vulkan_hook.c',
         'src/ipc.c',
     ],
     c_args: overlay_c_flags,
     include_directories: include_directories('include'),
+    dependencies: [syringe_dep, egl_dep2],
     link_args: ['-ldl', '-lpthread'],
-    dependencies: [syringe_dep],
     version: '0.1',
     install: true,
 )
@@ -131,7 +156,16 @@ idk_client_exe = executable(
 # Qt6 webview client — renders web pages and sends frames to idk-overlay
 # via DMA-BUF (Qt6 RHI) or SHM fallback. Adapted from imgoverlay client.
 if not meson.is_subproject()
-    subproject('idk-client-qt', default_options: ['c_std=gnu11'])
+    qt6_dep = dependency(
+        'qt6',
+        modules: ['Core', 'Gui', 'QuickWidgets', 'WebEngineWidgets', 'Widgets'],
+        required: false,
+    )
+    if qt6_dep.found()
+        subproject('idk-client-qt', default_options: ['c_std=gnu11'])
+    else
+        warning('Qt6 not found — idk-client-qt (webview) will not be built')
+    endif
 endif
 message('\n=== idk-overlay build configuration ===')
 message('  libidk-shim.so:       dlsym interceptor (LD_PRELOAD first)')

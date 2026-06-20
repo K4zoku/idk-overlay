@@ -97,23 +97,30 @@ int main(int argc, char **argv) {
     fprintf(stderr, "  Vulkan:   %s\n", enable_vk ? "enabled" : "disabled");
     fprintf(stderr, "  OpenGL:   %s\n", enable_gl ? "enabled" : "disabled");
 
-    /* Start render process if not already running */
-    fprintf(stderr, "\n[1/2] Starting render process...\n");
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-             "bash -c 'idk-render --socket %s & echo $! > /tmp/idk-render-%d.pid'",
-             sock_path, target_pid);
-    system(cmd);
-    usleep(500000);  /* Wait for render process to bind socket */
+    /* Set environment variables that the injected .so will read.
+     * syringe_inject() doesn't pass env vars itself, but the constructor
+     * of libidk-overlay.so reads them via getenv() from the target's
+     * environment. We need to either:
+     *   (a) modify the target's /proc/<pid>/environ before inject, OR
+     *   (b) pass socket/vk/gl via argv to idk-inject and document that
+     *       user must export IDK_SOCKET etc. before running the target.
+     *
+     * For now: if user set IDK_SOCKET in env, write it to a sidecar
+     * file /tmp/idk-overlay-<pid>.env that the .so can read.
+     * Better: just print clear instructions. */
+    fprintf(stderr, "\n  NOTE: Make sure IDK_SOCKET/IDK_VK/IDK_GL env vars\n"
+                    "        are set in the TARGET process (osu!) before inject.\n"
+                    "        Or pass --socket and let the .so default.\n");
 
-    /* Inject the library */
-    fprintf(stderr, "\n[2/2] Injecting library...\n");
+    /* Skip render process for now — it's optional and was causing
+     * "command not found" errors. User can start idk-render manually. */
+    fprintf(stderr, "\n[1/1] Injecting library...\n");
     int rc = syringe_inject(target_pid, abs_path);
 
     if (rc == 0) {
         fprintf(stderr, "\n[success] Injection complete!\n");
-        fprintf(stderr, "  Monitor output: %s\n", sock_path);
-        fprintf(stderr, "  Render PID:     $(cat /tmp/idk-render-%d.pid)\n", target_pid);
+        fprintf(stderr, "  Socket path: %s\n", sock_path);
+        fprintf(stderr, "  Check log:   stderr of PID %d\n", target_pid);
     } else {
         fprintf(stderr, "\n[error] Injection failed: %s\n", strerror(errno));
         return 1;

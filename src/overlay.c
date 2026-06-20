@@ -30,6 +30,7 @@
 #include "idk_overlay.h"
 #include "idk_ipc.h"
 #include "idk_vulkan.h"
+#include "idk_egl.h"
 
 /* ── Global state ─────────────────────────────────────────────────────── */
 
@@ -85,11 +86,22 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
         idk_vulkan_init(g_ipc_fd >= 0 ? g_ipc_fd : -1, g_socket_path);
     }
 
+    /* Initialize EGL hooks (for OpenGL/Wayland apps like osu-lazer).
+     * Uses syringe_hook_install_addr to bypass GOT — works even when
+     * the target dlopen'd libEGL.so.1 itself (SDL pattern). */
+    if (enable_gl) {
+        fprintf(stderr, "[idk-overlay] Initializing EGL hooks...\n");
+        if (idk_egl_init() != 0) {
+            fprintf(stderr, "[idk-overlay] EGL hook init failed (not an EGL app?)\n");
+        }
+    }
+
     return 0;
 }
 
 void idk_overlay_shutdown(void) {
     if (g_enable_vk) idk_vulkan_shutdown();
+    if (g_enable_gl) idk_egl_shutdown();
 
     if (g_ipc_fd >= 0) {
         close(g_ipc_fd);
