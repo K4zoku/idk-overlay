@@ -2,7 +2,7 @@
 
 **Zero-copy framebuffer capture for overlay rendering via a separate process.**
 
-Injects into a target process via [syringe](https://github.com/.../syringe) (ptrace + GOT patching), captures frames through Vulkan dmabuf (zero-copy) or OpenGL SHM fallback, and sends them to a separate render process over Unix domain socket with `SCM_RIGHTS`.
+Injects into a target process via [syringe](https://github.com/K4zoku/syringe) (ptrace + GOT patching + trampoline), captures frames through Vulkan dmabuf (zero-copy) or OpenGL SHM fallback, and sends them to a separate render process over Unix domain socket with `SCM_RIGHTS`.
 
 ## Architecture
 
