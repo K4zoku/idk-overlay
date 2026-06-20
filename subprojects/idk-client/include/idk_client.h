@@ -1,0 +1,110 @@
+/*
+ * idk_client.h — Client module for sending overlay frames to idk-overlay socket
+ *
+ * Adapted from imgoverlay client protocol. Translates the imgoverlay
+ * message model (create/update/destroy images) into idk-overlay's
+ * wire format (frame header + fd via SCM_RIGHTS).
+ *
+ * Wire format (idk-overlay schema):
+ *   [header: 32 bytes]          [scm_rights: 1 fd]
+ *   +------------------+
+ *   | width    uint32  |   ← overlay width
+ *   | height   uint32  |   ← overlay height
+ *   | stride   uint32  |   ← X position (overloaded for compatibility)
+ *   | format   uint32  |   ← Y position (overloaded for compatibility)
+ *   | num_planes uint32|   ← overlay ID (0 = single/default)
+ *   | pid      uint32  |   ← pixel byte size (w * h * 4)
+ *   | reserved uint32  |   ← visibility flag (1 = visible, 0 = hidden)
+ *   | checksum uint32  |
+ *   +------------------+
+ *
+ * Usage:
+ *   idk_client_init("/tmp/idk-overlay-1234", true);   // connect
+ *   idk_client_send_frame(fd, width, height, x, y, id, visible); // send
+ *   idk_client_shutdown();                             // disconnect
+ */
+#ifndef IDK_CLIENT_H
+#define IDK_CLIENT_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ── Constants ────────────────────────────────────────────────────────── */
+
+#define IDK_CLIENT_MAX_OVERLAYS  16
+#define IDK_CLIENT_FORMAT_ABGR   0x34325258  /* DRM_FORMAT_ABGR8888 */
+#define IDK_CLIENT_PIXEL_SIZE(w, h)  ((w) * (h) * 4)
+
+/* ── Frame info for client ────────────────────────────────────────────── */
+
+/**
+ * Frame metadata for overlay frames sent from a client process.
+ * Maps to idk-overlay's frame header with position info in stride/format.
+ */
+typedef struct idk_client_frame {
+    uint32_t width;       /* Frame width in pixels */
+    uint32_t height;      /* Frame height in pixels */
+    uint32_t x;           /* Overlay X position on screen */
+    uint32_t y;           /* Overlay Y position on screen */
+    uint8_t  id;          /* Overlay ID (1-based, for client bookkeeping) */
+    uint8_t  visible;     /* Visibility flag */
+    uint8_t  nfd;         /* Number of file descriptors to send */
+    uint8_t  _pad;        /* Alignment padding */
+} idk_client_frame_t;
+
+/* ── Client initialization ────────────────────────────────────────────── */
+
+/**
+ * Initialize the client — connect to the idk-overlay server socket.
+ *
+ * @param sockpath   Socket path (e.g., "/tmp/idk-overlay-1234").
+ * @param reuse_fd   If true, reuses an existing fd; if false, creates new.
+ * @return           0 on success, -1 on failure.
+ */
+int idk_client_init(const char *sockpath, int reuse_fd);
+
+/**
+ * Get the connected socket fd. Returns -1 if not connected.
+ */
+int idk_client_get_fd(void);
+
+/**
+ * Shut down the client and close the socket.
+ */
+void idk_client_shutdown(void);
+
+/* ── Sending frames ───────────────────────────────────────────────────── */
+
+/**
+ * Send a frame (pixel data + fd) to the overlay socket.
+ *
+ * @param fd         File descriptor carrying the pixel data (SHM or dmabuf).
+ * @param frame      Frame metadata (position, size, visibility).
+ * @return           0 on success, -1 on failure.
+ */
+int idk_client_send_frame(int fd, const idk_client_frame_t *frame);
+
+/**
+ * Send a raw pixel buffer as a frame (creates SHM internally).
+ */
+int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame);
+
+/**
+ * Send DMA-BUF fds directly (no SHM copy — for GPU-rendered content).
+ * Supports multi-plane DMA-BUF via frame->nfd.
+ *
+ * @param dma_buf_fds  Array of DMA-BUF fds from GPU (Qt RHI, EGL, etc.).
+ * @param frame        Frame metadata (position, size, visibility, nfd, strides, offsets, modifier).
+ * @return             0 on success, -1 on failure.
+ */
+int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *frame);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* IDK_CLIENT_H */
