@@ -98,6 +98,15 @@ typedef void (*PFN_idk_glDeleteBuffers)(GLsizei, const GLuint*);
 typedef void (*PFN_idk_glDrawArrays)(GLenum, GLint, GLsizei);
 typedef void (*PFN_idk_glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const GLvoid*);
 typedef void (*PFN_idk_glPixelStorei)(GLenum, GLint);
+typedef void (*PFN_idk_glEnableVertexAttribArray)(GLuint);
+typedef void (*PFN_idk_glDisableVertexAttribArray)(GLuint);
+typedef void (*PFN_idk_glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const GLvoid*);
+typedef GLint (*PFN_idk_glGetAttribLocation)(GLuint, const GLchar*);
+typedef GLboolean (*PFN_idk_glIsEnabled)(GLenum);
+typedef void (*PFN_idk_glBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
+typedef void (*PFN_idk_glBlendEquationSeparate)(GLenum, GLenum);
+typedef void (*PFN_idk_glScissor)(GLint, GLint, GLsizei, GLsizei);
+typedef void (*PFN_idk_glViewport)(GLint, GLint, GLsizei, GLsizei);
 
 /* ── Global function pointers (resolved by idk_gl_loader_init) ──────────── */
 
@@ -133,6 +142,15 @@ extern PFN_idk_glDeleteBuffers        idk_fn_glDeleteBuffers;
 extern PFN_idk_glDrawArrays           idk_fn_glDrawArrays;
 extern PFN_idk_glTexImage2D           idk_fn_glTexImage2D;
 extern PFN_idk_glPixelStorei          idk_fn_glPixelStorei;
+extern PFN_idk_glEnableVertexAttribArray idk_fn_glEnableVertexAttribArray;
+extern PFN_idk_glDisableVertexAttribArray idk_fn_glDisableVertexAttribArray;
+extern PFN_idk_glVertexAttribPointer  idk_fn_glVertexAttribPointer;
+extern PFN_idk_glGetAttribLocation    idk_fn_glGetAttribLocation;
+extern PFN_idk_glIsEnabled            idk_fn_glIsEnabled;
+extern PFN_idk_glBlendFuncSeparate    idk_fn_glBlendFuncSeparate;
+extern PFN_idk_glBlendEquationSeparate idk_fn_glBlendEquationSeparate;
+extern PFN_idk_glScissor              idk_fn_glScissor;
+extern PFN_idk_glViewport             idk_fn_glViewport;
 
 /* ── Macro redirect: glGetIntegerv → (*idk_fn_glGetIntegerv) ──────────────
  *
@@ -176,14 +194,45 @@ extern PFN_idk_glPixelStorei          idk_fn_glPixelStorei;
 #define glDrawArrays           (*idk_fn_glDrawArrays)
 #define glTexImage2D           (*idk_fn_glTexImage2D)
 #define glPixelStorei          (*idk_fn_glPixelStorei)
+#define glEnableVertexAttribArray  (*idk_fn_glEnableVertexAttribArray)
+#define glDisableVertexAttribArray (*idk_fn_glDisableVertexAttribArray)
+#define glVertexAttribPointer  (*idk_fn_glVertexAttribPointer)
+#define glGetAttribLocation    (*idk_fn_glGetAttribLocation)
+#define glIsEnabled            (*idk_fn_glIsEnabled)
+#define glBlendFuncSeparate    (*idk_fn_glBlendFuncSeparate)
+#define glBlendEquationSeparate (*idk_fn_glBlendEquationSeparate)
+#define glScissor              (*idk_fn_glScissor)
+#define glViewport             (*idk_fn_glViewport)
 
-/* Additional GL enums for SHM texture upload */
+/* Additional GL enums for SHM texture upload + render */
 #define GL_RGBA                0x1908
 #define GL_RGBA8               0x8058
 #define GL_BGRA                0x80E1
 #define GL_UNSIGNED_BYTE       0x1401
 #define GL_UNPACK_ROW_LENGTH   0x0CF2
 #define GL_UNPACK_ALIGNMENT    0x0CF5
+#define GL_CURRENT_PROGRAM     0x8B8D
+#define GL_ARRAY_BUFFER_BINDING 0x8894
+#define GL_TEXTURE_BINDING_2D  0x8069
+#define GL_FLOAT               0x1406
+#define GL_FALSE               0
+#define GL_ACTIVE_TEXTURE      0x84E0
+#define GL_BLEND_SRC_ALPHA     0x80CB
+#define GL_BLEND_DST_ALPHA     0x80CA
+#define GL_DEPTH_TEST          0x0B71
+#define GL_CULL_FACE           0x0B44
+#define GL_VERTEX_ATTRIB_ARRAY_ENABLED 0x8622
+#define GL_TRUE                1
+#define GL_BLEND_EQUATION_RGB  0x8009
+#define GL_BLEND_EQUATION_ALPHA 0x883D
+#define GL_FUNC_ADD            0x8006
+#define GL_SCISSOR_TEST        0x0C11
+#define GL_SCISSOR_BOX         0x0C10
+#define GL_ELEMENT_ARRAY_BUFFER_BINDING 0x8895
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GL_FRAMEBUFFER_SRGB    0x8DB9
+#define GL_STENCIL_TEST         0x0B90
+#define GL_ONE                  1
 
 /* ── Init ─────────────────────────────────────────────────────────────────
  *

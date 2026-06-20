@@ -1,0 +1,212 @@
+#!/bin/sh
+# idk-overlay — wrapper script to launch a game with idk-overlay injected
+#
+# Usage:
+#   idk-overlay <game> [game args...]
+#   idk-overlay osu-lazer
+#   idk-overlay glmark2-egl
+#   idk-overlay --socket /tmp/custom.sock osu-lazer
+#   idk-overlay --no-vk --no-gl osu-lazer   (disable all hooks, just load)
+#
+# Options:
+#   --socket PATH   Unix socket path (default: /tmp/idk-overlay)
+#   --no-vk         Disable Vulkan hooks
+#   --no-gl         Disable OpenGL/EGL hooks
+#   --shim PATH     Path to libidk-shim.so (default: auto-detect)
+#   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
+#   --qt-client     Also start idk-client-qt after launching game
+#   -h, --help      Show this help
+#
+# The script auto-detects the build directory relative to its own location.
+# If installed system-wide, it looks in /usr/lib/ and /usr/local/lib/.
+
+set -e
+
+# ── Defaults ────────────────────────────────────────────────────────────
+SOCKET="/tmp/idk-overlay"
+ENABLE_VK=1
+ENABLE_GL=1
+START_QT=0
+
+# ── Find script directory (resolve symlinks) ────────────────────────────
+SCRIPT="$0"
+while [ -h "$SCRIPT" ]; do
+    DIR=$(dirname "$SCRIPT")
+    SCRIPT=$(readlink "$SCRIPT")
+    case "$SCRIPT" in
+        /*) ;;
+        *)  SCRIPT="$DIR/$SCRIPT" ;;
+    esac
+done
+SCRIPT_DIR=$(dirname "$SCRIPT")
+
+# ── Find library ────────────────────────────────────────────────────────
+find_lib() {
+    name="$1"
+    # Try: 1) build dir relative to script, 2) build dir relative to CWD,
+    #      3) system install paths
+    for dir in \
+        "$SCRIPT_DIR/../build" \
+        "$SCRIPT_DIR/../../build" \
+        "$PWD/build" \
+        "/usr/lib" \
+        "/usr/local/lib" \
+        "/usr/lib/x86_64-linux-gnu"
+    do
+        if [ -f "$dir/$name" ]; then
+            printf '%s' "$dir/$name"
+            return 0
+        fi
+        # Try with version suffix
+        for f in "$dir"/${name}.*; do
+            if [ -f "$f" ]; then
+                printf '%s' "$f"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+SHIM_LIB=$(find_lib "libidk-shim.so" 2>/dev/null || true)
+OVERLAY_LIB=$(find_lib "libidk-overlay.so" 2>/dev/null || true)
+
+# ── Parse args ──────────────────────────────────────────────────────────
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --socket)
+            SOCKET="$2"
+            shift 2
+            ;;
+        --socket=*)
+            SOCKET="${1#--socket=}"
+            shift
+            ;;
+        --no-vk)
+            ENABLE_VK=0
+            shift
+            ;;
+        --no-gl)
+            ENABLE_GL=0
+            shift
+            ;;
+        --shim)
+            SHIM_LIB="$2"
+            shift 2
+            ;;
+        --shim=*)
+            SHIM_LIB="${1#--shim=}"
+            shift
+            ;;
+        --lib)
+            OVERLAY_LIB="$2"
+            shift 2
+            ;;
+        --lib=*)
+            OVERLAY_LIB="${1#--lib=}"
+            shift
+            ;;
+        --qt-client)
+            START_QT=1
+            shift
+            ;;
+        -h|--help)
+            cat <<'HELP'
+idk-overlay — launch a game with overlay injected
+
+Usage: idk-overlay [options] <game> [game args...]
+
+Options:
+  --socket PATH   Unix socket path (default: /tmp/idk-overlay)
+  --no-vk         Disable Vulkan hooks
+  --no-gl         Disable OpenGL/EGL hooks
+  --shim PATH     Path to libidk-shim.so (default: auto-detect)
+  --lib PATH      Path to libidk-overlay.so (default: auto-detect)
+  --qt-client     Also start idk-client-qt after launching game
+  -h, --help      Show this help
+HELP
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "idk-overlay: unknown option: $1" >&2
+            echo "Run 'idk-overlay --help' for usage." >&2
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ $# -eq 0 ]; then
+    echo "idk-overlay: no game specified" >&2
+    echo "Run 'idk-overlay --help' for usage." >&2
+    exit 1
+fi
+
+GAME="$1"
+shift
+
+# ── Verify libraries exist ──────────────────────────────────────────────
+if [ -z "$SHIM_LIB" ] || [ ! -f "$SHIM_LIB" ]; then
+    echo "idk-overlay: libidk-shim.so not found!" >&2
+    echo "  Build first: meson setup build && ninja -C build" >&2
+    echo "  Or specify: --shim /path/to/libidk-shim.so" >&2
+    exit 1
+fi
+
+echo "[idk-overlay] shim:   $SHIM_LIB" >&2
+echo "[idk-overlay] socket: $SOCKET" >&2
+echo "[idk-overlay] vk=$ENABLE_VK gl=$ENABLE_GL" >&2
+echo "[idk-overlay] game:   $GAME $*" >&2
+
+# ── Clean up stale socket ───────────────────────────────────────────────
+rm -f "$SOCKET" 2>/dev/null || true
+
+# ── Start Qt client if requested ────────────────────────────────────────
+QT_CLIENT=""
+if [ $START_QT -eq 1 ]; then
+    for dir in \
+        "$SCRIPT_DIR/../build/subprojects/idk-client-qt" \
+        "$SCRIPT_DIR/../../build/subprojects/idk-client-qt" \
+        "$PWD/build/subprojects/idk-client-qt" \
+        "/usr/bin" \
+        "/usr/local/bin"
+    do
+        if [ -x "$dir/idk-client-qt" ]; then
+            QT_CLIENT="$dir/idk-client-qt"
+            break
+        fi
+    done
+    if [ -z "$QT_CLIENT" ]; then
+        echo "[idk-overlay] WARNING: idk-client-qt not found, skipping" >&2
+    fi
+fi
+
+# ── Launch game with LD_PRELOAD ─────────────────────────────────────────
+# LD_PRELOAD propagates through execve, so it works with AppImage wrappers
+# (dash → AppImage → osu! binary). MangoHud uses the same approach.
+
+export LD_PRELOAD="$SHIM_LIB"
+export IDK_SOCKET="$SOCKET"
+export IDK_VK="$ENABLE_VK"
+export IDK_GL="$ENABLE_GL"
+
+# Start Qt client in background (after short delay for socket to be created)
+if [ -n "$QT_CLIENT" ]; then
+    (
+        sleep 2
+        echo "[idk-overlay] Starting Qt client: $QT_CLIENT" >&2
+        IDK_SOCKET="$SOCKET" "$QT_CLIENT" &
+    ) &
+fi
+
+echo "[idk-overlay] Launching: LD_PRELOAD=$SHIM_LIB IDK_SOCKET=$SOCKET IDK_VK=$ENABLE_VK IDK_GL=$ENABLE_GL $GAME $*" >&2
+echo "" >&2
+
+# Exec the game — LD_PRELOAD + env vars propagate to children
+exec "$GAME" "$@"

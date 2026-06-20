@@ -70,7 +70,8 @@ static void build_frame_hdr(const idk_client_frame_t *frame,
     fields[3] = frame->y;            /* format → Y position */
     fields[4] = (uint32_t)frame->id; /* num_planes → overlay ID */
     fields[5] = frame->width * frame->height * 4; /* pid → pixel byte size */
-    fields[6] = (uint32_t)frame->visible; /* reserved → visibility */
+    fields[6] = (uint32_t)frame->visible          /* reserved → visibility (low byte) */
+              | ((uint32_t)frame->type << 8);     /*            frame type (high byte) */
     /* fields[7] = checksum — set by send_frame */
 }
 

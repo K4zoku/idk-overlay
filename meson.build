@@ -35,7 +35,7 @@ endif
 # function lookups to our hooks. Loaded via LD_PRELOAD before the game.
 idk_shim_so = library(
     'idk-shim',
-    'src/idk_shim.c',
+    ['src/idk_shim.c', 'src/elfhacks.c'],
     c_args: overlay_c_flags,
     include_directories: include_directories('include'),
     link_args: ['-ldl', '-lpthread'],

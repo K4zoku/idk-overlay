@@ -39,6 +39,10 @@ extern "C" {
 #define IDK_CLIENT_FORMAT_ABGR   0x34325258  /* DRM_FORMAT_ABGR8888 */
 #define IDK_CLIENT_PIXEL_SIZE(w, h)  ((w) * (h) * 4)
 
+/* Frame type — determines how compositor imports the fd */
+#define IDK_FRAME_TYPE_DMABUF  0   /* fd is a real DMA-BUF (GPU buffer) */
+#define IDK_FRAME_TYPE_SHM     1   /* fd is a memfd/SHM with raw RGBA8888 pixels */
+
 /* ── Frame info for client ────────────────────────────────────────────── */
 
 /**
@@ -53,7 +57,7 @@ typedef struct idk_client_frame {
     uint8_t  id;          /* Overlay ID (1-based, for client bookkeeping) */
     uint8_t  visible;     /* Visibility flag */
     uint8_t  nfd;         /* Number of file descriptors to send */
-    uint8_t  _pad;        /* Alignment padding */
+    uint8_t  type;        /* Frame type: IDK_FRAME_TYPE_DMABUF or IDK_FRAME_TYPE_SHM */
 } idk_client_frame_t;
 
 /* ── Client initialization ────────────────────────────────────────────── */

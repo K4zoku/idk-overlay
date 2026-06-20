@@ -50,6 +50,15 @@ PFN_idk_glDeleteBuffers        idk_fn_glDeleteBuffers        = NULL;
 PFN_idk_glDrawArrays           idk_fn_glDrawArrays           = NULL;
 PFN_idk_glTexImage2D           idk_fn_glTexImage2D           = NULL;
 PFN_idk_glPixelStorei          idk_fn_glPixelStorei          = NULL;
+PFN_idk_glEnableVertexAttribArray idk_fn_glEnableVertexAttribArray = NULL;
+PFN_idk_glDisableVertexAttribArray idk_fn_glDisableVertexAttribArray = NULL;
+PFN_idk_glVertexAttribPointer  idk_fn_glVertexAttribPointer  = NULL;
+PFN_idk_glGetAttribLocation    idk_fn_glGetAttribLocation    = NULL;
+PFN_idk_glIsEnabled            idk_fn_glIsEnabled            = NULL;
+PFN_idk_glBlendFuncSeparate    idk_fn_glBlendFuncSeparate    = NULL;
+PFN_idk_glBlendEquationSeparate idk_fn_glBlendEquationSeparate = NULL;
+PFN_idk_glScissor              idk_fn_glScissor              = NULL;
+PFN_idk_glViewport             idk_fn_glViewport             = NULL;
 
 /* ── Init ──────────────────────────────────────────────────────────────────
  *
@@ -130,6 +139,15 @@ int idk_gl_loader_init(void) {
     RESOLVE(glDrawArrays);
     RESOLVE(glTexImage2D);
     RESOLVE(glPixelStorei);
+    RESOLVE(glEnableVertexAttribArray);
+    RESOLVE(glDisableVertexAttribArray);
+    RESOLVE(glVertexAttribPointer);
+    RESOLVE(glGetAttribLocation);
+    RESOLVE(glIsEnabled);
+    RESOLVE(glBlendFuncSeparate);
+    RESOLVE(glBlendEquationSeparate);
+    RESOLVE(glScissor);
+    RESOLVE(glViewport);
 
     #undef RESOLVE
 

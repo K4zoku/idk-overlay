@@ -257,7 +257,7 @@ static int send_overlay_frame(overlay_config_t *o) {
         .id       = (uint8_t)o->id,
         .visible  = (uint8_t)o->visible,
         .nfd      = 1,
-        ._pad     = 0,
+        .type     = IDK_FRAME_TYPE_SHM,
     };
 
     int rc = idk_client_send_pixels(pixels, &frame);

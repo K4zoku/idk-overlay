@@ -41,126 +41,9 @@
 #define RTLD_DEFAULT ((void *)0)
 #endif
 
-/* ── ELF symbol resolver (MangoHud-style) ──────────────────────────── */
-/* Parse ELF dynamic section to find real function addresses.
+/* Use MangoHud's elfhacks for proper ELF symbol resolution.
  * This avoids calling intercepted dlsym() during init. */
-
-#include <elf.h>
-
-/* Object handle for ELF parsing */
-typedef struct {
-    const char *name;
-    void *addr;       /* load base / bias */
-    const Elf64_Phdr *phdr;
-    size_t phnum;
-    Elf64_Dyn *dynamic;
-    const char *strtab;
-    Elf64_Sym *symtab;
-    unsigned int *hash;
-    unsigned int *gnu_hash;
-} eh_obj_t;
-
-/* Callback for dl_iterate_phdr — finds matching library */
-static int eh_find_cb(struct dl_phdr_info *info, size_t size, void *arg) {
-    eh_obj_t *target = (eh_obj_t *)arg;
-    (void)size;
-    if (target->name == NULL) {
-        if (strcmp(info->dlpi_name, "") != 0) return 0;
-    } else if (fnmatch(target->name, info->dlpi_name, 0) != 0) {
-        return 0;
-    }
-    target->addr = (void *)info->dlpi_addr;
-    target->phdr = info->dlpi_phdr;
-    target->phnum = info->dlpi_phnum;
-    return 1; /* stop iteration */
-}
-
-/* Find shared object by name using dl_iterate_phdr */
-static int eh_find_obj(eh_obj_t *obj, const char *soname) {
-    obj->phdr = NULL;
-    obj->name = soname;
-
-    dl_iterate_phdr(eh_find_cb, obj);
-
-    if (!obj->phdr) return -1;
-
-    /* Find PT_DYNAMIC segment */
-    for (size_t i = 0; i < obj->phnum; i++) {
-        if (obj->phdr[i].p_type == PT_DYNAMIC) {
-            obj->dynamic = (Elf64_Dyn *)(obj->phdr[i].p_vaddr + (uintptr_t)obj->addr);
-            break;
-        }
-    }
-
-    if (!obj->dynamic) return -1;
-
-    /* Parse .dynamic to find DT_STRTAB, DT_SYMTAB, DT_HASH, DT_GNU_HASH */
-    obj->strtab = NULL;
-    obj->symtab = NULL;
-    obj->hash = NULL;
-    obj->gnu_hash = NULL;
-
-    for (Elf64_Dyn *d = obj->dynamic; d->d_tag != DT_NULL; d++) {
-        uintptr_t base = (uintptr_t)obj->addr;
-        if (d->d_tag == DT_STRTAB) obj->strtab = (const char *)(base + d->d_un.d_ptr);
-        else if (d->d_tag == DT_SYMTAB) obj->symtab = (Elf64_Sym *)(base + d->d_un.d_ptr);
-        else if (d->d_tag == DT_HASH) obj->hash = (unsigned int *)(base + d->d_un.d_ptr);
-        else if (d->d_tag == DT_GNU_HASH) obj->gnu_hash = (unsigned int *)(base + d->d_un.d_ptr);
-    }
-
-    if (!obj->strtab || !obj->symtab) return -1;
-    return 0;
-}
-
-/* Look up symbol by name using ELF hash */
-static int eh_find_sym(eh_obj_t *obj, const char *name, void **to) {
-    if (!obj->symtab || !obj->strtab) return -1;
-
-    /* Try GNU hash first */
-    if (obj->gnu_hash) {
-        unsigned int nbuckets = obj->gnu_hash[0];
-        unsigned int *buckets = &obj->gnu_hash[4];
-        unsigned int *chain = &buckets[nbuckets];
-
-        /* Simple linear search through buckets (simplified GNU hash) */
-        for (unsigned int i = 0; i < nbuckets; i++) {
-            unsigned int bucket = buckets[i];
-            if (bucket == 0) continue;
-
-            unsigned int h = 0;
-            const char *s = name;
-            while (*s) {
-                h = (h << 5) + h + *s++;
-            }
-
-            unsigned int idx = bucket;
-            while (idx < obj->symtab - (Elf64_Sym *)0) {
-                Elf64_Sym *sym = &obj->symtab[idx];
-                if (sym->st_name && strcmp(&obj->strtab[sym->st_name], name) == 0) {
-                    *to = (void *)((uintptr_t)obj->addr + sym->st_value);
-                    return 0;
-                }
-                if (chain[idx] & 1) break; /* end of chain */
-                idx++;
-            }
-        }
-    }
-
-    /* Fallback: linear search through dynsym */
-    for (Elf64_Sym *sym = obj->symtab; sym->st_name; sym++) {
-        const char *sym_name = &obj->strtab[sym->st_name];
-        /* Match ignoring GLIBC version suffix (e.g. "dlsym@@GLIBC_2.34") */
-        const char *ver = strchr(sym_name, '@');
-        size_t len = ver ? (ver - sym_name) : strlen(sym_name);
-        if (strncmp(sym_name, name, len) == 0 && strlen(name) == len &&
-            ELF64_ST_BIND(sym->st_info) != STB_LOCAL) {
-            *to = (void *)((uintptr_t)obj->addr + sym->st_value);
-            return 0;
-        }
-    }
-
-    return -1;
-}
+#include "elfhacks.h"
 
 /* ── Real function pointers (populated by load_real_functions) ──────── */
 static void *(*real_dlsym)(void *, const char *) = NULL;
@@ -171,42 +54,42 @@ static int (*real_dlclose)(void *) = NULL;
 static void load_real_functions(void) {
     static int done = 0;
     if (done) return;
+    done = 1;
 
-    eh_obj_t obj;
-    memset(&obj, 0, sizeof(obj));
-
-    /* Try libraries in order (MangoHud-style) */
+    eh_obj_t lib;
+    int ret;
     const char *libs[] = {
-        "*libc.so*",
+#if defined(__GLIBC__)
         "*libdl.so*",
+#endif
+        "*libc.so*",
+        "*libc.*.so*",
+        "*ld-musl-*.so*",
     };
 
     for (size_t i = 0; i < sizeof(libs) / sizeof(*libs); i++) {
-        int ret = eh_find_obj(&obj, libs[i]);
-        if (ret != 0) continue;
+        ret = eh_find_obj(&lib, libs[i]);
+        if (ret) continue;
 
-        void *dlopen_ptr = NULL, *dlsym_ptr = NULL, *dlerror_ptr = NULL;
-        eh_find_sym(&obj, "dlopen", &dlopen_ptr);
-        eh_find_sym(&obj, "dlsym", &dlsym_ptr);
-        eh_find_sym(&obj, "dlerror", &dlerror_ptr);
+        eh_find_sym(&lib, "dlopen", (void **)&real_dlopen);
+        eh_find_sym(&lib, "dlsym", (void **)&real_dlsym);
+        eh_find_sym(&lib, "dlerror", (void **)&real_dlerror);
+        eh_find_sym(&lib, "dlclose", (void **)&real_dlclose);
+        eh_destroy_obj(&lib);
 
-        if (dlopen_ptr && dlsym_ptr && dlerror_ptr) {
-            real_dlopen = (typeof(real_dlopen))dlopen_ptr;
-            real_dlsym = (typeof(real_dlsym))dlsym_ptr;
-            real_dlerror = (typeof(real_dlerror))dlerror_ptr;
-
-            /* Also find dlclose */
-            eh_find_sym(&obj, "dlclose", (void **)&real_dlclose);
-
-            done = 1;
-            fprintf(stderr, "[idk-shim] Loaded real functions from %s: dlsym=%p dlopen=%p\n",
-                    libs[i], (void *)real_dlsym, (void *)real_dlopen);
-            return;
-        }
+        if (real_dlopen && real_dlsym && real_dlerror)
+            break;
+        real_dlopen = NULL;
+        real_dlsym = NULL;
+        real_dlerror = NULL;
     }
 
-    fprintf(stderr, "[idk-shim] WARNING: Failed to find real dlsym/dlopen\n");
-    done = 1; /* prevent retrying */
+    if (real_dlsym) {
+        fprintf(stderr, "[idk-shim] Real functions loaded: dlsym=%p dlopen=%p\n",
+                (void *)real_dlsym, (void *)real_dlopen);
+    } else {
+        fprintf(stderr, "[idk-shim] WARNING: Failed to find real dlsym\n");
+    }
 }
 
 /* ── State ────────────────────────────────────────────────────────────── */
@@ -453,10 +336,16 @@ void *dlsym(void *handle, const char *name) {
     /* If still not loaded (e.g., recursion during init), return NULL */
     if (!real_dlsym) return NULL;
 
-    /* Intercept known GL/EGL hooks */
-    for (size_t i = 0; i < NUM_HOOKS; i++) {
-        if (strcmp(hooks[i].name, name) == 0) {
-            return hooks[i].ptr;
+    /* Only intercept EGL hooks if GL is enabled */
+    const char *env_gl = getenv("IDK_GL");
+    int gl_enabled = env_gl ? atoi(env_gl) : 1;
+
+    if (gl_enabled) {
+        /* Intercept known GL/EGL hooks */
+        for (size_t i = 0; i < NUM_HOOKS; i++) {
+            if (strcmp(hooks[i].name, name) == 0) {
+                return hooks[i].ptr;
+            }
         }
     }
 

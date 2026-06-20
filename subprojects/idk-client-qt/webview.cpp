@@ -63,7 +63,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
             });
 
             sendCreateImage();
-            m_waitReply = true;
+            m_waitReply = false;  /* ready to send first frame */
             m_buffer = 0;
         });
     } else {
@@ -79,7 +79,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         });
 
         sendCreateImage();
-        m_waitReply = true;
+        m_waitReply = false;  /* ready to send first frame */
         m_buffer = 0;
     }
 
@@ -132,12 +132,34 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
             frame.id      = static_cast<uint8_t>(m_id);
             frame.visible = static_cast<uint8_t>(1);
             frame.nfd     = 1;
+            frame.type    = IDK_FRAME_TYPE_SHM;
+
+            static int s_frame_count = 0;
+            static int s_send_failed = 0;
+
+            /* If send failed before, don't keep trying every frame.
+             * Retry every 60 frames (~1/sec at 60fps). */
+            if (s_send_failed > 0 && --s_send_failed > 0) {
+                m_updateTimer->start();
+                return;
+            }
 
             int rc = idk_client_send_dma_buf(&m_memfd, &frame);
             if (rc < 0) {
-                qWarning() << "[idk-client-qt] Failed to send frame";
+                s_frame_count++;
+                if (s_frame_count <= 3 || s_frame_count % 60 == 0) {
+                    qWarning() << "[idk-client-qt] send frame failed (attempt %d): %s",
+                        s_frame_count, strerror(errno);
+                }
+                s_send_failed = 60;  /* skip next 60 frames */
             } else {
-                m_waitReply = true;
+                if (s_frame_count == 0 || s_frame_count % 60 == 0) {
+                    fprintf(stderr, "[idk-client-qt] frame %d sent OK (%dx%d type=SHM fd=%d)\n",
+                            s_frame_count, frame.width, frame.height, m_memfd);
+                }
+                s_frame_count++;
+                /* Don't set m_waitReply=true — there's no reply mechanism
+                 * from compositor. Just keep sending frames. */
                 emit frameSent();
             }
 

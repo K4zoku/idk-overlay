@@ -39,8 +39,10 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     if (fd < 0) {
         connect(m_socket, &QLocalSocket::stateChanged, this, [this](QLocalSocket::LocalSocketState state) {
             if (state == QLocalSocket::ConnectedState) {
+                fprintf(stderr, "[idk-client-qt] QLocalSocket connected\n");
                 emit socketConnected();
             } else if (state == QLocalSocket::UnconnectedState) {
+                fprintf(stderr, "[idk-client-qt] QLocalSocket disconnected\n");
                 emit socketDisconnected();
                 m_reconnectTimer->start();
             }
@@ -49,13 +51,15 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
         connect(m_socket, &QLocalSocket::readyRead, this, [this]() {
             QByteArray data = m_socket->readAll();
             if (!data.isEmpty()) {
-                // Handle incoming messages from idk-overlay (if needed)
                 Q_UNUSED(data);
             }
         });
 
         connect(m_reconnectTimer, &QTimer::timeout, this, [=]() {
-            m_socket->connectToServer(m_socketPath);
+            /* Only attempt reconnect if not already connected/connecting */
+            if (m_socket->state() == QLocalSocket::UnconnectedState) {
+                m_socket->connectToServer(m_socketPath);
+            }
         });
         m_reconnectTimer->start(1000);
     } else {
@@ -76,7 +80,8 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     layout->addWidget(m_container);
     m_window->setLayout(layout);
 
-    m_window->setAttribute(Qt::WA_DontShowOnScreen, tray);
+    // Default: hidden (offscreen render only). Toggle with tray click.
+    m_window->setAttribute(Qt::WA_DontShowOnScreen, true);
     m_window->show();
 
     // Size and position the window based on the first overlay config
@@ -98,12 +103,22 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     m_tray->setIcon(QIcon::fromTheme("image-x-generic"));
     m_tray->setToolTip("idk-client-qt");
     m_tray->show();
+
+    // Left-click tray: toggle window visibility
+    bool *windowVisible = new bool(false);  // start hidden
     connect(m_tray, &QSystemTrayIcon::activated, this, [=](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::Trigger) {
-            m_window->setAttribute(Qt::WA_DontShowOnScreen, !m_window->testAttribute(Qt::WA_DontShowOnScreen));
+            *windowVisible = !*windowVisible;
+            m_window->setAttribute(Qt::WA_DontShowOnScreen, !*windowVisible);
             m_window->show();
+            if (*windowVisible) {
+                m_window->raise();
+                m_window->activateWindow();
+            }
+            qDebug() << "[idk-client-qt] Window" << (*windowVisible ? "shown" : "hidden");
         }
     });
+
     QMenu *menu = new QMenu();
     menu->addAction("Exit", qApp, &QApplication::quit);
     m_tray->setContextMenu(menu);
