@@ -40,32 +40,46 @@ static int g_enable_vk = 0;
 static int g_enable_gl = 0;
 static int g_initialized = 0;
 
+/* Debug log file — bypass stderr (which AppImage may redirect). */
+static FILE *g_dbg = NULL;
+static void dbg_init(void) {
+    if (g_dbg) return;
+    g_dbg = fopen("/tmp/idk-debug.log", "a");
+    if (g_dbg) {
+        setvbuf(g_dbg, NULL, _IONBF, 0);
+        fprintf(g_dbg, "\n=== idk-overlay debug log (PID %d) ===\n", getpid());
+    }
+}
+#define DBG(fmt, ...) do { \
+    if (g_dbg) fprintf(g_dbg, "[idk-overlay] " fmt "\n", ##__VA_ARGS__); \
+    fprintf(stderr, "[idk-overlay] " fmt "\n", ##__VA_ARGS__); \
+} while(0)
+
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
 int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     /* Guard against double init (e.g., AppImage double mount) */
     if (g_initialized) {
-        fprintf(stderr, "[idk-overlay] Already initialized (duplicate load ignored)\n");
+        DBG("Already initialized (duplicate load ignored)");
         return 0;
     }
     g_initialized = 1;
     g_enable_vk = enable_vk;
     g_enable_gl = enable_gl;
-
     if (socket_path) {
         snprintf(g_socket_path, sizeof(g_socket_path), "%s", socket_path);
     } else {
         snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay");
     }
 
-    fprintf(stderr, "[idk-overlay] PID=%d sock=%s vk=%d gl=%d\n",
+    DBG("PID=%d sock=%s vk=%d gl=%d",
             getpid(), g_socket_path, enable_vk, enable_gl);
 
     /* Connect to idk-render (for framebuffer capture, optional) */
     g_ipc_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_ipc_fd < 0) {
-        fprintf(stderr, "[idk-overlay] IPC socket failed: %s\n", strerror(errno));
+        DBG("IPC socket failed: %s", strerror(errno));
         g_ipc_fd = -1;
     }
 
@@ -73,16 +87,16 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_socket_path);
 
     if (connect(g_ipc_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "[idk-overlay] IPC connect failed: %s (frame capture disabled)\n", strerror(errno));
+        DBG("IPC connect failed: %s (frame capture disabled)", strerror(errno));
         close(g_ipc_fd);
         g_ipc_fd = -1;
     } else {
-        fprintf(stderr, "[idk-overlay] Connected to idk-render for framebuffer capture\n");
+        DBG("Connected to idk-render for framebuffer capture");
     }
 
     /* Initialize Vulkan hooks (try regardless of IPC state) */
     if (enable_vk) {
-        fprintf(stderr, "[idk-overlay] Initializing Vulkan hooks...\n");
+        DBG("Initializing Vulkan hooks...");
         idk_vulkan_init(g_ipc_fd >= 0 ? g_ipc_fd : -1, g_socket_path);
     }
 
@@ -90,9 +104,9 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
      * Uses syringe_hook_install_addr to bypass GOT — works even when
      * the target dlopen'd libEGL.so.1 itself (SDL pattern). */
     if (enable_gl) {
-        fprintf(stderr, "[idk-overlay] Initializing EGL hooks...\n");
+        DBG("Initializing EGL hooks...");
         if (idk_egl_init() != 0) {
-            fprintf(stderr, "[idk-overlay] EGL hook init failed (not an EGL app?)\n");
+            DBG("EGL hook init failed (not an EGL app?)");
         }
     }
 
@@ -128,11 +142,13 @@ void idk_overlay_shutdown(void) {
 
 __attribute__((constructor))
 static void on_load(void) {
+    dbg_init();
+    DBG("Initializing...");
     const char *env_vk = getenv("IDK_VK");
     const char *env_gl = getenv("IDK_GL");
     const char *env_path = getenv("IDK_SOCKET");
     idk_overlay_init(env_path ? env_path : NULL,
-                     env_vk ? atoi(env_vk) : 1,
+                     env_vk ? atoi(env_vk) : 0,
                      env_gl ? atoi(env_gl) : 1);
 }
 

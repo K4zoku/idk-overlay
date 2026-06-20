@@ -45,6 +45,19 @@
 #include "idk_gl_loader.h"   /* GL types + function pointer redirects */
 #include "compositor.h"
 
+/* Debug log file — bypass stderr (which AppImage may redirect). */
+static FILE *g_dbg = NULL;
+static void egl_dbg_init(void) {
+    if (g_dbg) return;
+    g_dbg = fopen("/tmp/idk-debug.log", "a");
+    if (g_dbg) setvbuf(g_dbg, NULL, _IONBF, 0);
+}
+#define EDBG(fmt, ...) do { \
+    egl_dbg_init(); \
+    if (g_dbg) fprintf(g_dbg, "[idk-egl] " fmt "\n", ##__VA_ARGS__); \
+    fprintf(stderr, "[idk-egl] " fmt "\n", ##__VA_ARGS__); \
+} while(0)
+
 /* ── EGL types (opaque — we don't need full EGL headers) ────────────────── */
 
 typedef void* EGLDisplay;
@@ -74,11 +87,11 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
      * The target's GL context is now current — safe to compile shaders
      * and create VBOs. */
     if (!g_gl_resources_ready) {
-        fprintf(stderr, "[idk-egl] First swap — initializing GL resources\n");
+        EDBG("First swap — initializing GL resources");
         if (idk_compositor_init_gl() == 0) {
             g_gl_resources_ready = 1;
         } else {
-            fprintf(stderr, "[idk-egl] GL resources init failed — overlay disabled\n");
+            EDBG("GL resources init failed — overlay disabled");
         }
     }
 
@@ -111,7 +124,7 @@ int idk_egl_init(void) {
     if (g_initialized) return 0;
     g_initialized = 1;
 
-    fprintf(stderr, "[idk-egl] Initializing EGL hook (ptrace inject path)\n");
+    EDBG("Initializing EGL hook (ptrace inject path)");
 
     /* Step 1: Get handle to libEGL.so.1.
      * RTLD_NOLOAD — if SDL already loaded it, reuse the same handle.
@@ -127,26 +140,26 @@ int idk_egl_init(void) {
         }
     }
     if (!egl_handle) {
-        fprintf(stderr, "[idk-egl] dlopen libEGL.so.1 failed: %s\n", dlerror());
+        EDBG("dlopen libEGL.so.1 failed: %s", dlerror());
         return -1;
     }
-    fprintf(stderr, "[idk-egl] libEGL.so.1 handle = %p\n", egl_handle);
+    EDBG("libEGL.so.1 handle = %p", egl_handle);
 
     /* Step 2: Resolve eglSwapBuffers address.
      * dlsym on our handle gives us the REAL function address inside
      * libEGL.so code — this is what we'll patch. */
     void *egl_swap_addr = dlsym(egl_handle, "eglSwapBuffers");
     if (!egl_swap_addr) {
-        fprintf(stderr, "[idk-egl] dlsym eglSwapBuffers failed: %s\n", dlerror());
+        EDBG("dlsym eglSwapBuffers failed: %s", dlerror());
         return -1;
     }
-    fprintf(stderr, "[idk-egl] eglSwapBuffers @ %p\n", egl_swap_addr);
+    EDBG("eglSwapBuffers @ %p", egl_swap_addr);
 
     /* Step 3: Start compositor (Unix socket server for webview frames).
      * Must be done BEFORE installing the hook, so when the first swap
      * fires the compositor is ready to receive frames. */
     if (idk_compositor_init() != 0) {
-        fprintf(stderr, "[idk-egl] Compositor init failed — overlay will not work\n");
+        EDBG("Compositor init failed — overlay will not work");
         /* Continue anyway — hook will still install, just no overlay frames */
     }
 
@@ -167,7 +180,7 @@ int idk_egl_init(void) {
                                        (void*)hook_eglSwapBuffers,
                                        (void**)&orig_eglSwapBuffers);
     if (n <= 0) {
-        fprintf(stderr, "[idk-egl] syringe_hook_install_addr failed\n");
+        EDBG("syringe_hook_install_addr failed");
         return -1;
     }
 
@@ -178,7 +191,7 @@ int idk_egl_init(void) {
 
 void idk_egl_shutdown(void) {
     if (!g_initialized) return;
-    fprintf(stderr, "[idk-egl] Shutting down\n");
+    EDBG("Shutting down");
     syringe_hook_remove("eglSwapBuffers");
     idk_compositor_shutdown();
     g_initialized = 0;
