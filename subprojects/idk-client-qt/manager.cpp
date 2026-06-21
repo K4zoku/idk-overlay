@@ -17,7 +17,6 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     , m_settings(new QSettings(
         confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-client-qt.conf") : confFile,
         QSettings::IniFormat, this))
-    , m_socket(new QLocalSocket(this))
     , m_reconnectTimer(new QTimer(this))
     , m_window(new QWidget())
     , m_tabBar(new QTabBar())
@@ -27,69 +26,91 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
 {
     m_socketPath = resolvePath(m_settings->value("Socket", "/tmp/idk-overlay").toString());
 
-    // Initialize idk_client (reuses existing socket if passed via env)
+    /* ── Connection strategy ───────────────────────────────────────────
+     * OLD design (commit 525c106 and earlier) used TWO sockets to the
+     * compositor: idk_client's internal g_sock_fd (for data) + a
+     * QLocalSocket m_socket (for status). The compositor only accepts
+     * ONE client, so whichever socket connect()'d first got accept()'d.
+     * If QLocalSocket won the race, idk_client's frames went into a
+     * dead queue and the overlay never showed — this was the
+     * "start client first → no overlay" bug.
+     *
+     * NEW design: use idk_client as the SOLE connection. A QTimer polls
+     * idk_client_get_fd() every 1s to detect (dis)connect transitions
+     * and emit socketConnected / socketDisconnected. No QLocalSocket —
+     * no race, no dual-socket confusion. */
     const char *reuse_fd = getenv("IDK_SOCKET_FD");
     int fd = reuse_fd ? atoi(reuse_fd) : -1;
+    m_was_connected = false;
 
-    if (idk_client_init(m_socketPath.toUtf8().data(), fd < 0 ? false : true) < 0) {
-        fprintf(stderr, "[idk-client-qt] Failed to connect to %s\n", m_socketPath.toUtf8().data());
-    }
+    if (fd >= 0) {
+        /* Reusing existing fd — idk_client_init stores it, no connect() */
+        if (idk_client_init(m_socketPath.toUtf8().data(), true) == 0) {
+            m_was_connected = true;
+            emit socketConnected();
+        }
+    } else {
+        /* Try to connect now; if it fails, the reconnect timer will retry.
+         * Uses blocking init with 30 retries (~3s) for the initial attempt —
+         * handles the common case where compositor is already running. */
+        if (idk_client_init(m_socketPath.toUtf8().data(), false) == 0) {
+            m_was_connected = true;
+            fprintf(stderr, "[idk-client-qt] idk_client connected to %s\n",
+                    m_socketPath.toUtf8().data());
+            emit socketConnected();
+        } else {
+            fprintf(stderr, "[idk-client-qt] idk_client connect failed, will retry\n");
+        }
 
-    // Connect signal — if not using reuse_fd, set up QLocalSocket fallback
-    if (fd < 0) {
-        connect(m_socket, &QLocalSocket::stateChanged, this, [this](QLocalSocket::LocalSocketState state) {
-            if (state == QLocalSocket::ConnectedState) {
+        /* Poll idk_client_get_fd() every 1s to detect state transitions. */
+        connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
+            int fd_now = idk_client_get_fd();
+            bool connected_now = (fd_now >= 0);
+
+            if (connected_now && !m_was_connected) {
+                /* Transition: disconnected → connected */
                 m_disconnect_count = 0;
-                fprintf(stderr, "[idk-client-qt] QLocalSocket connected\n");
-                /* Re-initialize idk_client's data socket on (re)connect.
-                 * idk_client has its own separate socket to the compositor;
-                 * if it died (compositor closed, EPIPE on send, etc.) we
-                 * need to re-create it so send_dma_buf works again.
-                 * This syncs the QLocalSocket status connection with
-                 * idk_client's data connection. */
-                if (idk_client_get_fd() < 0) {
-                    if (idk_client_init(m_socketPath.toUtf8().data(), false) < 0) {
-                        fprintf(stderr, "[idk-client-qt] idk_client reconnect failed: %s\n",
-                                strerror(errno));
-                        m_reconnectTimer->start();
-                        return;
-                    }
-                }
+                fprintf(stderr, "[idk-client-qt] idk_client connected (fd=%d)\n", fd_now);
                 emit socketConnected();
-            } else if (state == QLocalSocket::UnconnectedState) {
-                /* Throttle the disconnect log — at 1s reconnect interval,
-                 * this fires every second while the compositor is down.
-                 * Log first 3, then every 30th (~30s). */
+            } else if (!connected_now && m_was_connected) {
+                /* Transition: connected → disconnected.
+                 * idk_client's fd went dead (compositor closed, EPIPE, etc.).
+                 * Try to reconnect; if it fails, the next timer tick retries. */
                 if (++m_disconnect_count <= 3 || m_disconnect_count % 30 == 0) {
-                    fprintf(stderr, "[idk-client-qt] QLocalSocket disconnected (attempt %d)\n",
+                    fprintf(stderr, "[idk-client-qt] idk_client disconnected (attempt %d)\n",
                             m_disconnect_count);
                 }
-                /* Mark idk_client's data socket as dead too — isConnected()
-                 * now returns false so WebView stops trying to send frames
-                 * into a dead socket. Will be re-init'd on next connect. */
-                idk_client_shutdown();
                 emit socketDisconnected();
-                m_reconnectTimer->start();
+                /* Attempt non-blocking reconnect (single attempt, no 3s block) */
+                if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                    m_disconnect_count = 0;
+                    fprintf(stderr, "[idk-client-qt] idk_client reconnected\n");
+                    emit socketConnected();
+                    connected_now = true;
+                }
+            } else if (!connected_now && !m_was_connected) {
+                /* Still never connected — retry with non-blocking init.
+                 * This handles the "client-first, game-after" scenario:
+                 * idk_client's initial 3s blocking connect() in the ctor
+                 * failed (compositor socket didn't exist yet). Without this
+                 * branch, we'd never try again and the overlay would stay
+                 * dark forever. Single-attempt init keeps the event loop
+                 * responsive — timer fires every 1s, so we get ~1s
+                 * detection latency after the compositor comes up. */
+                if (++m_disconnect_count <= 3 || m_disconnect_count % 30 == 0) {
+                    fprintf(stderr, "[idk-client-qt] idk_client still connecting (attempt %d)\n",
+                            m_disconnect_count);
+                }
+                if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                    m_disconnect_count = 0;
+                    fprintf(stderr, "[idk-client-qt] idk_client connected after retry\n");
+                    emit socketConnected();
+                    connected_now = true;
+                }
             }
-        });
-
-        connect(m_socket, &QLocalSocket::readyRead, this, [this]() {
-            QByteArray data = m_socket->readAll();
-            if (!data.isEmpty()) {
-                Q_UNUSED(data);
-            }
-        });
-
-        connect(m_reconnectTimer, &QTimer::timeout, this, [=]() {
-            /* Only attempt reconnect if not already connected/connecting */
-            if (m_socket->state() == QLocalSocket::UnconnectedState) {
-                m_socket->connectToServer(m_socketPath);
-            }
+            m_was_connected = connected_now;
         });
         m_reconnectTimer->start(1000);
-    } else {
-        // Using existing fd, emit connected immediately
-        emit socketConnected();
     }
 
     // Setup UI
@@ -164,19 +185,14 @@ bool Manager::isConnected() const
     return idk_client_get_fd() >= 0;
 }
 
-void Manager::onSocketStateChanged(QLocalSocket::LocalSocketState state)
-{
-    Q_UNUSED(state);
-}
-
 void Manager::onSocketReadyRead()
 {
-    // Handle incoming data
+    // Handle incoming data — currently unused (idk_client handles data)
 }
 
 void Manager::onReconnectTimer()
 {
-    m_socket->connectToServer(m_socketPath);
+    // Timer callback now handled by lambda in constructor
 }
 
 void Manager::initWebViews()

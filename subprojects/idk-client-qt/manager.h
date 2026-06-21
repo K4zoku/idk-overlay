@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QObject>
-#include <QLocalSocket>
 #include <QTimer>
 #include <QSettings>
 #include <QString>
@@ -59,11 +58,6 @@ signals:
 
 private slots:
     /**
-     * Handle socket state changes.
-     */
-    void onSocketStateChanged(QLocalSocket::LocalSocketState state);
-
-    /**
      * Handle incoming data from socket.
      */
     void onSocketReadyRead();
@@ -97,9 +91,9 @@ private:
     // State
     QSettings *m_settings;
     QString m_socketPath;
-    QLocalSocket *m_socket;
     QTimer *m_reconnectTimer;
     int m_disconnect_count = 0;  // throttle disconnect log spam
+    bool m_was_connected = false; // track idk_client fd state transitions
 
     // UI
     QWidget *m_window;

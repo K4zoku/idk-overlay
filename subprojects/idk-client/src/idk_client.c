@@ -115,6 +115,13 @@ static int copy_to_shm(const void *src, size_t size) {
 /* ── Public API ───────────────────────────────────────────────────────── */
 
 int idk_client_init(const char *sockpath, int reuse_fd) {
+    return idk_client_init2(sockpath, reuse_fd, 30);
+}
+
+/* Variant with configurable retry count for the connect() loop.
+ * 0 retries = single attempt (non-blocking — for use in event loops).
+ * 30 retries = ~3s total (legacy behavior, blocks the caller). */
+int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
     if (!sockpath) {
         errno = EINVAL;
         return -1;
@@ -141,9 +148,11 @@ int idk_client_init(const char *sockpath, int reuse_fd) {
 
         /* Retry connect() a few times — server may not be ready yet.
          * This handles the case where client-qt starts before the game
-         * (and before the compositor socket is created). */
+         * (and before the compositor socket is created).
+         * retries=0 → single attempt (non-blocking, for use in event loops).
+         * retries=30 → ~3s total (legacy, blocks the caller). */
         int connect_ret = -1;
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i <= retries; i++) {
             connect_ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
             if (connect_ret == 0) break;
             if (errno != ECONNREFUSED && errno != ENOENT) {
@@ -152,13 +161,17 @@ int idk_client_init(const char *sockpath, int reuse_fd) {
                 close(fd);
                 return -1;
             }
-            usleep(100000); /* 100ms between retries, ~3s total */
+            if (i < retries) usleep(100000); /* 100ms between retries */
         }
 
         if (connect_ret < 0) {
-            fprintf(stderr,
-                    "[idk-client] connect(%s) failed after retries: %s\n",
-                    sockpath, strerror(errno));
+            /* Don't log on ECONNREFUSED/ENOENT when retries=0 — expected
+             * case when called from a timer poll. Caller handles -1. */
+            if (retries > 0 || (errno != ECONNREFUSED && errno != ENOENT)) {
+                fprintf(stderr,
+                        "[idk-client] connect(%s) failed after %d retries: %s\n",
+                        sockpath, retries, strerror(errno));
+            }
             close(fd);
             return -1;
         }

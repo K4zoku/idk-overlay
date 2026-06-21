@@ -68,8 +68,20 @@ typedef struct idk_client_frame {
  * @param sockpath   Socket path (e.g., "/tmp/idk-overlay-1234").
  * @param reuse_fd   If true, reuses an existing fd; if false, creates new.
  * @return           0 on success, -1 on failure.
+ *
+ * Blocks up to ~3s (30 retries × 100ms) waiting for the server to come up.
  */
 int idk_client_init(const char *sockpath, int reuse_fd);
+
+/**
+ * Variant with configurable retry count.
+ *
+ * @param retries    Number of retries after the first attempt.
+ *                   0 = single attempt (non-blocking, for use in event loops).
+ *                   30 = ~3s total (legacy behavior, blocks the caller).
+ * @return           0 on success, -1 on failure.
+ */
+int idk_client_init2(const char *sockpath, int reuse_fd, int retries);
 
 /**
  * Get the connected socket fd. Returns -1 if not connected.

@@ -129,6 +129,18 @@ static GLuint g_tex[2] = {0, 0};
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static bool g_has_frame = false;
 
+/* GL error counter for render_overlay — counts consecutive draw errors.
+ * Reset to 0 on successful frame upload (shm_to_texture / dmabuf path)
+ * so each new texture gets a fresh chance. When it hits 5, the current
+ * texture is marked invalid (g_tex[g_tex_idx]=0, g_has_frame=false) to
+ * stop spam at its source.
+ *
+ * IMPORTANT: must be file-scope (not function-scope static) so it can be
+ * reset from shm_to_texture / dmabuf path. With function-scope only, the
+ * counter never resets on new frame upload → climbs to 39000+ on a
+ * persistently-bad texture, with "if (count == 5)" only firing once. */
+static int g_draw_err_count = 0;
+
 /* Persistent SHM mapping (kept between frames for zero-copy reads) */
 static int    g_shm_fd = -1;
 static void  *g_shm_map = NULL;
@@ -376,6 +388,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     /* Swap: the newly uploaded texture becomes the display texture */
     g_tex_idx = back;
     g_has_frame = true;
+    g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
 
     /* Close the received fd — if it's the same memfd, our persistent
      * mmap keeps it alive. If it's a new one, the mmap above references
@@ -519,6 +532,7 @@ int idk_compositor_render(void) {
         g_tex[back] = tex;
         g_tex_idx = back;
         g_has_frame = true;
+        g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
         close(dmabuf_fd);
     }
     g_frame_w = hdr.width;
@@ -757,34 +771,40 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
     {
         GLenum err = glGetError();
-        /* Persistent counter across frames — used to throttle the error
-         * log and detect a permanently-dead texture. Reset to 0 on any
-         * successful draw so transient errors don't accumulate. */
-        static int s_err_count = 0;
+        /* g_draw_err_count is file-scope — reset to 0 on successful frame
+         * upload (in shm_to_texture / dmabuf path) so each new texture
+         * gets a fresh chance. When it hits 5, the current texture is
+         * marked invalid to stop the spam at its source.
+         *
+         * IMPORTANT: do NOT reset on every successful draw (else-branch).
+         * Resetting per-draw would let a persistently-bad texture survive
+         * past 5 errors just because of one lucky successful frame in
+         * between. Reset only on NEW frame upload — that's the natural
+         * boundary where a texture transition happens. */
         if (err != GL_NO_ERROR) {
-            s_err_count++;
+            g_draw_err_count++;
             /* Throttle: log first 5 (capture onset), then every 300th (~5s
              * at 60fps) so we see persistent issues without flooding. */
-            if (s_err_count <= 5 || s_err_count % 300 == 0) {
+            if (g_draw_err_count <= 5 || g_draw_err_count % 300 == 0) {
                 fprintf(stderr,
                     "[idk-comp] GL error after draw: 0x%x (tex[%d]=%u fb=%dx%d frame=%ux%u, occurrence %d)\n",
                     err, g_tex_idx, g_tex[g_tex_idx], fb_w, fb_h,
-                    g_frame_w, g_frame_h, s_err_count);
+                    g_frame_w, g_frame_h, g_draw_err_count);
             }
             /* If we keep failing on the same texture, it's probably dead —
              * mark it invalid so the g_has_frame guard at function entry
              * skips future draws until a new frame arrives. This stops the
              * spam at its source. */
-            if (s_err_count == 5) {
+            if (g_draw_err_count == 5) {
                 fprintf(stderr,
                     "[idk-comp] tex[%d]=%u failing repeatedly — marking invalid\n",
                     g_tex_idx, g_tex[g_tex_idx]);
                 g_tex[g_tex_idx] = 0;
                 g_has_frame = false;
             }
-        } else {
-            s_err_count = 0;
         }
+        /* No else-branch — g_draw_err_count is reset in shm_to_texture /
+         * dmabuf path when a NEW frame is uploaded, not on every draw. */
     }
     glFinish();
 
