@@ -165,9 +165,6 @@ static void render_overlay(void) {
      * This updates the texture if a new frame arrived. */
     idk_compositor_render();
 
-    /* Only render the overlay quad if we have a texture */
-    if (!idk_compositor_has_overlay()) return;
-
     /* Get surface dimensions via eglQuerySurface (MangoHud approach) */
     int fb_w = 0, fb_h = 0;
     if (fn_eglQuerySurface && g_current_dpy && g_current_surface) {

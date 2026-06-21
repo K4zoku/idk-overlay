@@ -23,6 +23,35 @@ idk_client_dep = idk_client_proj.get_variable('idk_client_dep')
 
 overlay_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2', '-Wno-pedantic']
 
+# ── Shader embedding ─────────────────────────────────────────────────────
+# Generate overlay_shader_embed.h from shaders/*.vert/.frag at build time.
+# The output goes to the build directory; Meson automatically adds it to
+# include paths when listed as a source in a target.
+python3 = find_program('python3', required: false)
+shader_srcs = files(
+    'shaders/overlay_120.vert',
+    'shaders/overlay_120.frag',
+    'shaders/overlay_130.vert',
+    'shaders/overlay_130.frag',
+    'shaders/overlay_300_es.vert',
+    'shaders/overlay_300_es.frag',
+    'shaders/overlay_410.vert',
+    'shaders/overlay_410.frag',
+)
+if python3.found()
+    overlay_shader_embed_h = custom_target('embed-shaders',
+        input: shader_srcs,
+        output: 'overlay_shader_embed.h',
+        command: [python3, meson.current_source_dir() / 'scripts/embed_shaders.py',
+                  '--output', '@OUTPUT@',
+                  '--shader-dir', meson.current_source_dir() / 'shaders'],
+        build_by_default: true,
+    )
+else
+    # Fallback: use the committed copy in the source tree
+    overlay_shader_embed_h = files('src/overlay_shader_embed.h')
+endif
+
 vk_found = cc.has_function('vkCreateInstance', prefix: '#include <vulkan/vulkan.h>')
 if vk_found
     message('  → Vulkan support: enabled')
@@ -64,6 +93,7 @@ if egl_dep.found() and gles2_dep.found()
             'src/idk_gl_hook.c',
             'src/compositor.c',
             'src/gl_loader.c',
+            overlay_shader_embed_h,
         ],
         c_args: overlay_c_flags,
         include_directories: include_directories('include'),
@@ -103,6 +133,7 @@ idk_overlay_so = library(
         'src/gl_loader.c',
         'src/vulkan_hook.c',
         'src/ipc.c',
+        overlay_shader_embed_h,
     ],
     c_args: overlay_c_flags,
     include_directories: include_directories('include'),

@@ -311,3 +311,17 @@ int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *fr
             frame->id, frame->visible, frame->nfd, dma_buf_fds[0]);
     return 0;
 }
+
+int idk_client_wait_ack(void) {
+    if (g_sock_fd < 0) {
+        errno = ENOTCONN;
+        return -1;
+    }
+    char ack = 0;
+    ssize_t n = read(g_sock_fd, &ack, 1);
+    if (n <= 0) {
+        if (n == 0) errno = ECONNRESET;
+        return -1;
+    }
+    return 0;
+}

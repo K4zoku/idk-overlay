@@ -1,7 +1,6 @@
 #include "webview.h"
 #include "manager.h"
 
-#include <QTimer>
 #include <QPaintEvent>
 #include <QVBoxLayout>
 #include <QDialog>
@@ -55,13 +54,6 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
             initMemory();
             focusProxy()->installEventFilter(this);
 
-            m_updateTimer = new QTimer(this);
-            m_updateTimer->setSingleShot(true);
-            m_updateTimer->setInterval(200);
-            connect(m_updateTimer, &QTimer::timeout, this, [this]() {
-                focusProxy()->update();
-            });
-
             sendCreateImage();
             m_waitReply = false;  /* ready to send first frame */
             m_buffer = 0;
@@ -70,13 +62,6 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         // Already connected, initialize immediately
         initMemory();
         focusProxy()->installEventFilter(this);
-
-        m_updateTimer = new QTimer(this);
-        m_updateTimer->setSingleShot(true);
-        m_updateTimer->setInterval(200);
-        connect(m_updateTimer, &QTimer::timeout, this, [this]() {
-            focusProxy()->update();
-        });
 
         sendCreateImage();
         m_waitReply = false;  /* ready to send first frame */
@@ -107,64 +92,62 @@ WebView::~WebView()
 bool WebView::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == focusProxy() && event->type() == QEvent::Paint) {
-        QTimer::singleShot(0, this, [=]() {
-            if (m_waitReply || !m_manager->isConnected()) {
-                m_updateTimer->start();
-                return;
+        if (m_waitReply || !m_manager->isConnected())
+            return QWebEngineView::eventFilter(obj, event);
+
+        // Double-buffer: render to current buffer, then swap
+        uint8_t buffer = m_buffer;
+        m_buffer = (m_buffer + 1) % 2;
+        uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_conf.width(), m_conf.height()) * buffer);
+        QImage img(memory, m_conf.width(), m_conf.height(), QImage::Format_RGBA8888);
+        img.fill(Qt::transparent);
+        render(&img);
+
+        // Send frame to idk-overlay
+        idk_client_frame_t frame;
+        memset(&frame, 0, sizeof(frame));
+        frame.width   = static_cast<uint32_t>(m_conf.width());
+        frame.height  = static_cast<uint32_t>(m_conf.height());
+        frame.x       = static_cast<uint32_t>(m_conf.x());
+        frame.y       = static_cast<uint32_t>(m_conf.y());
+        frame.id      = buffer;  // tell compositor which double-buffer half has fresh data
+        frame.visible = static_cast<uint8_t>(1);
+        frame.nfd     = 1;
+        frame.type    = IDK_FRAME_TYPE_SHM;
+
+        static int s_frame_count = 0;
+        static int s_send_failed = 0;
+
+        /* If send failed before, don't keep trying every frame.
+         * Retry every 60 frames (~1/sec at 60fps). */
+        if (s_send_failed > 0 && --s_send_failed > 0)
+            return QWebEngineView::eventFilter(obj, event);
+
+        int rc = idk_client_send_dma_buf(&m_memfd, &frame);
+        if (rc < 0) {
+            s_frame_count++;
+            if (s_frame_count <= 3 || s_frame_count % 60 == 0) {
+                qWarning() << "[idk-client-qt] send frame failed (attempt %d): %s",
+                    s_frame_count, strerror(errno);
             }
-            m_updateTimer->stop();
-
-            // Double-buffer: swap buffer and render to new one
-            uint8_t buffer = m_buffer;
-            m_buffer = (m_buffer + 1) % 2;
-            uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_conf.width(), m_conf.height()) * buffer);
-            QImage img(memory, m_conf.width(), m_conf.height(), QImage::Format_RGBA8888);
-            img.fill(Qt::transparent);
-            render(&img);
-
-            // Send frame to idk-overlay
-            idk_client_frame_t frame;
-            memset(&frame, 0, sizeof(frame));
-            frame.width   = static_cast<uint32_t>(m_conf.width());
-            frame.height  = static_cast<uint32_t>(m_conf.height());
-            frame.x       = static_cast<uint32_t>(m_conf.x());
-            frame.y       = static_cast<uint32_t>(m_conf.y());
-            frame.id      = static_cast<uint8_t>(m_id);
-            frame.visible = static_cast<uint8_t>(1);
-            frame.nfd     = 1;
-            frame.type    = IDK_FRAME_TYPE_SHM;
-
-            static int s_frame_count = 0;
-            static int s_send_failed = 0;
-
-            /* If send failed before, don't keep trying every frame.
-             * Retry every 60 frames (~1/sec at 60fps). */
-            if (s_send_failed > 0 && --s_send_failed > 0) {
-                m_updateTimer->start();
-                return;
+            s_send_failed = 60;  /* skip next 60 frames */
+        } else {
+            if (s_frame_count == 0 || s_frame_count % 60 == 0) {
+                fprintf(stderr, "[idk-client-qt] frame %d sent OK (%dx%d type=SHM fd=%d)\n",
+                        s_frame_count, frame.width, frame.height, m_memfd);
             }
+            s_frame_count++;
+            emit frameSent();
+        }
 
-            int rc = idk_client_send_dma_buf(&m_memfd, &frame);
-            if (rc < 0) {
-                s_frame_count++;
-                if (s_frame_count <= 3 || s_frame_count % 60 == 0) {
-                    qWarning() << "[idk-client-qt] send frame failed (attempt %d): %s",
-                        s_frame_count, strerror(errno);
-                }
-                s_send_failed = 60;  /* skip next 60 frames */
-            } else {
-                if (s_frame_count == 0 || s_frame_count % 60 == 0) {
-                    fprintf(stderr, "[idk-client-qt] frame %d sent OK (%dx%d type=SHM fd=%d)\n",
-                            s_frame_count, frame.width, frame.height, m_memfd);
-                }
-                s_frame_count++;
-                /* Don't set m_waitReply=true — there's no reply mechanism
-                 * from compositor. Just keep sending frames. */
-                emit frameSent();
-            }
+        /* Wait for compositor ACK — syncs webview to game swap rate.
+         * This prevents SHM buffer races and flickering. */
+        idk_client_wait_ack();
 
-            m_updateTimer->start();
-        });
+        /* Request next frame */
+        focusProxy()->update();
+
+        return true;
     }
     return QWebEngineView::eventFilter(obj, event);
 }

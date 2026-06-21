@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QWebEngineView>
-#include <QTimer>
 
 #include "groupconfig.h"
 #include "manager.h"
@@ -71,7 +70,6 @@ private:
     void *m_memory = nullptr;
     uint8_t m_buffer = 0;               // Double-buffer index
     bool m_waitReply = false;
-    QTimer *m_updateTimer = nullptr;
 
     // DMA-BUF state (Qt6 RHI)
     bool m_useDmaBuf = true;

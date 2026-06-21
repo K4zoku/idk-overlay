@@ -49,16 +49,34 @@ PFN_idk_glBufferSubData        idk_fn_glBufferSubData        = NULL;
 PFN_idk_glDeleteBuffers        idk_fn_glDeleteBuffers        = NULL;
 PFN_idk_glDrawArrays           idk_fn_glDrawArrays           = NULL;
 PFN_idk_glTexImage2D           idk_fn_glTexImage2D           = NULL;
+PFN_idk_glTexSubImage2D        idk_fn_glTexSubImage2D        = NULL;
 PFN_idk_glPixelStorei          idk_fn_glPixelStorei          = NULL;
 PFN_idk_glEnableVertexAttribArray idk_fn_glEnableVertexAttribArray = NULL;
 PFN_idk_glDisableVertexAttribArray idk_fn_glDisableVertexAttribArray = NULL;
 PFN_idk_glVertexAttribPointer  idk_fn_glVertexAttribPointer  = NULL;
 PFN_idk_glGetAttribLocation    idk_fn_glGetAttribLocation    = NULL;
 PFN_idk_glIsEnabled            idk_fn_glIsEnabled            = NULL;
+PFN_idk_glIsTexture            idk_fn_glIsTexture            = NULL;
+PFN_idk_glGetError            idk_fn_glGetError            = NULL;
+PFN_idk_glFinish               idk_fn_glFinish               = NULL;
+PFN_idk_glClear                idk_fn_glClear                = NULL;
+PFN_idk_glClearColor           idk_fn_glClearColor           = NULL;
+PFN_idk_glDrawBuffer           idk_fn_glDrawBuffer           = NULL;
 PFN_idk_glBlendFuncSeparate    idk_fn_glBlendFuncSeparate    = NULL;
+PFN_idk_glBlendEquation        idk_fn_glBlendEquation        = NULL;
 PFN_idk_glBlendEquationSeparate idk_fn_glBlendEquationSeparate = NULL;
 PFN_idk_glScissor              idk_fn_glScissor              = NULL;
 PFN_idk_glViewport             idk_fn_glViewport             = NULL;
+PFN_idk_glGetString            idk_fn_glGetString            = NULL;
+PFN_idk_glDepthMask            idk_fn_glDepthMask            = NULL;
+PFN_idk_glColorMask            idk_fn_glColorMask            = NULL;
+PFN_idk_glGetVertexAttribiv    idk_fn_glGetVertexAttribiv    = NULL;
+PFN_idk_glGenVertexArrays      idk_fn_glGenVertexArrays      = NULL;
+PFN_idk_glBindVertexArray      idk_fn_glBindVertexArray      = NULL;
+PFN_idk_glDeleteVertexArrays   idk_fn_glDeleteVertexArrays   = NULL;
+PFN_idk_glBindSampler          idk_fn_glBindSampler          = NULL;
+PFN_idk_glPolygonMode          idk_fn_glPolygonMode          = NULL;
+PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer      = NULL;
 
 /* ── Init ──────────────────────────────────────────────────────────────────
  *
@@ -138,16 +156,34 @@ int idk_gl_loader_init(void) {
     RESOLVE(glDeleteBuffers);
     RESOLVE(glDrawArrays);
     RESOLVE(glTexImage2D);
+    RESOLVE(glTexSubImage2D);
     RESOLVE(glPixelStorei);
     RESOLVE(glEnableVertexAttribArray);
     RESOLVE(glDisableVertexAttribArray);
     RESOLVE(glVertexAttribPointer);
     RESOLVE(glGetAttribLocation);
     RESOLVE(glIsEnabled);
+    RESOLVE(glIsTexture);
+    RESOLVE(glGetError);
+    RESOLVE(glFinish);
+    RESOLVE(glClear);
+    RESOLVE(glClearColor);
+    RESOLVE(glDrawBuffer);
     RESOLVE(glBlendFuncSeparate);
+    RESOLVE(glBlendEquation);
     RESOLVE(glBlendEquationSeparate);
     RESOLVE(glScissor);
     RESOLVE(glViewport);
+    RESOLVE(glGetString);
+    RESOLVE(glDepthMask);
+    RESOLVE(glColorMask);
+    RESOLVE(glGetVertexAttribiv);
+    RESOLVE(glGenVertexArrays);
+    RESOLVE(glBindVertexArray);
+    RESOLVE(glDeleteVertexArrays);
+    RESOLVE(glBindSampler);
+    RESOLVE(glPolygonMode);
+    RESOLVE(glBindFramebuffer);
 
     #undef RESOLVE
 

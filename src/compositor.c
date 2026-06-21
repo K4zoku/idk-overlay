@@ -33,7 +33,7 @@
 
 #include "idk_gl_loader.h"   /* GL types + function pointer redirects */
 #include "compositor.h"
-#include "overlay_shader.h"
+#include "overlay_shader_embed.h"
 #include "idk_ipc.h"
 
 /* ── Frame header from webview ─────────────────────────────────────── */
@@ -122,11 +122,21 @@ static void resolve_egl_functions(void) {
 /* ── GL state ──────────────────────────────────────────────────────── */
 
 static GLuint g_program = 0;
-static GLuint g_vbo = 0;
 
-/* Overlay texture — only one slot, newest frame */
-static GLuint g_tex = 0;
+
+/* Double-buffered overlay textures — upload to back while drawing from front */
+static GLuint g_tex[2] = {0, 0};
+static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static bool g_has_frame = false;
+
+/* Persistent SHM mapping (kept between frames for zero-copy reads) */
+static int    g_shm_fd = -1;
+static void  *g_shm_map = NULL;
+static size_t g_shm_map_size = 0;
+
+/* GL version detection (MangoHud-style) */
+static bool g_is_gles = false;
+static int g_gl_version = 0;  /* major*100 + minor*10, e.g. 330 for GL 3.3 */
 
 /* DMABUF fd — kept open until next frame replaces it */
 static int g_dmabuf_fd = -1;
@@ -264,47 +274,90 @@ static int accept_client(void) {
  * Returns 0 if frame rendered, -1 if no frame.
  */
 /*
- * Convert SHM pixel data to GL texture via glTexImage2D.
- * Used as fallback when egl_dmabuf_to_texture fails (memfd is not a
- * real DMA-BUF, or EGL_EXT_image_dma_buf_import not available).
+ * Convert SHM pixel data to GL texture via glTex(Sub)Image2D.
+ * Uses a persistent mmap and persistent GL texture — does not
+ * delete/recreate per frame (avoids flickering from double-buffer
+ * offset mismatch).
  *
  * Pixel format: RGBA8888 (matches Qt's QImage::Format_RGBA8888).
+ * buffer_idx: which half of the double-buffered SHM has fresh data.
  */
-static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t size) {
+static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
+                              uint32_t pixel_size, uint32_t buffer_idx) {
     if (!idk_fn_glTexImage2D) {
         fprintf(stderr, "[idk-comp] glTexImage2D not resolved\n");
         return 0;
     }
 
-    /* mmap the SHM fd read-only */
-    void *pixels = mmap(NULL, size, PROT_READ, MAP_SHARED, shm_fd, 0);
-    if (pixels == MAP_FAILED) {
-        fprintf(stderr, "[idk-comp] SHM mmap failed: %s\n", strerror(errno));
+    /* Check if this is a new memfd (via inode comparison) */
+    struct stat st;
+    if (fstat(shm_fd, &st) < 0) {
+        fprintf(stderr, "[idk-comp] SHM fstat failed: %s\n", strerror(errno));
         return 0;
     }
+    static ino_t s_shm_ino = 0;
+    static dev_t s_shm_dev = 0;
 
-    /* Create GL texture and upload pixels */
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
+    if (st.st_ino != s_shm_ino || st.st_dev != s_shm_dev) {
+        /* New memfd — remap */
+        if (g_shm_map) {
+            munmap(g_shm_map, g_shm_map_size);
+            g_shm_map = NULL;
+        }
+        off_t total = lseek(shm_fd, 0, SEEK_END);
+        if (total <= 0) total = (off_t)pixel_size;
 
-    /* RGBA8888 unpacking — no row padding, 1 byte alignment */
-    if (idk_fn_glPixelStorei) {
-        idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        g_shm_map_size = (size_t)total;
+        g_shm_map = mmap(NULL, g_shm_map_size, PROT_READ, MAP_SHARED, shm_fd, 0);
+        if (g_shm_map == MAP_FAILED) {
+            fprintf(stderr, "[idk-comp] SHM mmap failed: %s\n", strerror(errno));
+            g_shm_map = NULL;
+            return 0;
+        }
+        s_shm_ino = st.st_ino;
+        s_shm_dev = st.st_dev;
+        if (g_shm_fd >= 0) close(g_shm_fd);
+        g_shm_fd = shm_fd;  /* keep open so mmap stays alive */
     }
 
-    idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-                        (GLsizei)w, (GLsizei)h, 0,
-                        GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    /* Compute buffer offset within the double-buffered memfd */
+    uint32_t buf_size = pixel_size;
+    uint8_t *buf = (uint8_t*)g_shm_map + (buffer_idx * buf_size);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    /* Upload to the BACK texture (the one NOT currently displayed),
+     * so the FRONT texture remains valid for concurrent drawing. */
+    int back = 1 - g_tex_idx;
+    if (g_tex[back] == 0) {
+        glGenTextures(1, &g_tex[back]);
+        glBindTexture(GL_TEXTURE_2D, g_tex[back]);
+        if (idk_fn_glPixelStorei) {
+            idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        }
+        idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                            (GLsizei)w, (GLsizei)h, 0,
+                            GL_RGBA, GL_UNSIGNED_BYTE, buf);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, g_tex[back]);
+        idk_fn_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                               (GLsizei)w, (GLsizei)h,
+                               GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    munmap(pixels, size);
-    return tex;
+    /* Swap: the newly uploaded texture becomes the display texture */
+    g_tex_idx = back;
+    g_has_frame = true;
+
+    /* Close the received fd — if it's the same memfd, our persistent
+     * mmap keeps it alive. If it's a new one, the mmap above references
+     * it. Either way, the fd we received is safe to close. */
+    close(shm_fd);
+
+    return g_tex[g_tex_idx];
 }
 
 int idk_compositor_render(void) {
@@ -388,13 +441,14 @@ int idk_compositor_render(void) {
     uint8_t frame_type = (hdr.vis_type >> 8) & 0xFF;
 
     if (frame_type == IDK_FRAME_TYPE_SHM) {
-        /* SHM path: 'reserved' field = pixel byte size */
+        /* SHM path: 'reserved' field = pixel byte size per buffer */
         uint32_t pixel_size = hdr.reserved;
         if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
-        tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height, pixel_size);
+        /* hdr.num_planes encodes the double-buffer index from the Qt client */
+        tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                             pixel_size, hdr.num_planes);
         if (tex == 0) {
             fprintf(stderr, "[idk-comp] SHM texture upload failed\n");
-            close(dmabuf_fd);
             return -1;
         }
     } else {
@@ -406,25 +460,38 @@ int idk_compositor_render(void) {
              * Try SHM upload with default pixel size. */
             uint32_t pixel_size = hdr.width * hdr.height * 4;
             fprintf(stderr, "[idk-comp] DMABUF import failed, trying SHM fallback\n");
-            tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height, pixel_size);
+            tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                 pixel_size, hdr.num_planes);
             if (tex == 0) {
-                close(dmabuf_fd);
                 return -1;
             }
         }
     }
 
-    /* Clean up old texture, use new one */
-    if (g_has_frame) {
-        glDeleteTextures(1, &g_tex);
+    /* For DMABUF path, double-buffer: replace back texture then swap. */
+    if (frame_type != IDK_FRAME_TYPE_SHM) {
+        int back = 1 - g_tex_idx;
+        if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
+        g_tex[back] = tex;
+        g_tex_idx = back;
+        g_has_frame = true;
+        close(dmabuf_fd);
     }
-    g_tex = tex;
-    g_has_frame = true;
     g_frame_w = hdr.width;
     g_frame_h = hdr.height;
 
-    fprintf(stderr, "[idk-comp] texture uploaded: tex=%u %ux%u pixel_size=%u\n",
-            tex, hdr.width, hdr.height, hdr.reserved);
+    fprintf(stderr, "[idk-comp] texture uploaded: tex[%d]=%u %ux%u pixel_size=%u\n",
+            g_tex_idx, g_tex[g_tex_idx], hdr.width, hdr.height, hdr.reserved);
+
+    /* Send ACK to client — flow control: client waits for this before
+     * rendering/sending the next frame. This syncs webview frame rate
+     * to the game's swap rate, preventing SHM buffer races. */
+    {
+        char ack = 0;
+        if (write(g_client_fd, &ack, 1) < 0) {
+            fprintf(stderr, "[idk-comp] ACK write failed: %s\n", strerror(errno));
+        }
+    }
 
     /* Close the dmabuf fd — GL texture keeps a reference */
     close(dmabuf_fd);
@@ -515,10 +582,10 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
  * vertex attribute setup (no VAO, manual glEnableVertexAttribArray).
  */
 void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
-    if (!g_has_frame || g_program == 0) return;
+    if (g_program == 0) return;
 
-    /* Get framebuffer dimensions */
-    GLint fb_w, fb_h;
+    /* Use framebuffer dimensions for viewport */
+    GLint fb_w = (GLint)w, fb_h = (GLint)h;
     {
         GLint vp[4];
         glGetIntegerv(GL_VIEWPORT, vp);
@@ -527,24 +594,36 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     }
     if (fb_w <= 0 || fb_h <= 0) return;
 
-    /* Calculate NDC coordinates (from -1 to 1) */
-    float ndc_x = 2.0f * ((float)x / (float)fb_w) - 1.0f;
-    float ndc_y = 1.0f - 2.0f * ((float)y / (float)fb_h);
-    float ndc_w = 2.0f * ((float)w / (float)fb_w);
-    float ndc_h = 2.0f * ((float)h / (float)fb_h);
-
     static int s_render_debug = 0;
-    if (s_render_debug++ % 120 == 0) {
-        fprintf(stderr, "[idk-comp] render_overlay: fb=%dx%d ndc=(%.1f,%.1f,%.1f,%.1f) tex=%u prog=%u\n",
-                fb_w, fb_h, ndc_x, ndc_y, ndc_w, ndc_h, g_tex, g_program);
+    int dbg = s_render_debug++;
+    if (dbg < 5 || dbg % 120 == 0) {
+        fprintf(stderr, "[idk-comp] render_overlay: fb=%dx%d prog=%u\n",
+                fb_w, fb_h, g_program);
     }
 
-    /* ── Save ALL GL state (adapted from imgoverlay/imgui_impl_opengl3) ── */
+    /* ── Save GL state (MangoHud-style) ── */
     GLenum last_active_texture; glGetIntegerv(GL_ACTIVE_TEXTURE, (GLint*)&last_active_texture);
+    glActiveTexture(GL_TEXTURE0);
     GLint last_program; glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
     GLint last_texture; glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
+
+    GLint last_sampler = 0;
+    if (!g_is_gles && g_gl_version >= 330)
+        glGetIntegerv(GL_SAMPLER_BINDING, &last_sampler);
+
     GLint last_array_buffer; glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
-    GLint last_element_array_buffer; glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &last_element_array_buffer);
+    GLint last_element_array_buffer = 0;
+    if (g_gl_version >= 300)
+        glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &last_element_array_buffer);
+
+    GLint last_vertex_array_object = 0;
+    if (g_gl_version >= 300)
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &last_vertex_array_object);
+
+    GLint last_polygon_mode[2] = {GL_FILL, GL_FILL};
+    if (!g_is_gles && g_gl_version >= 200)
+        glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
+
     GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
     GLint last_scissor_box[4]; glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
     GLenum last_blend_src_rgb; glGetIntegerv(GL_BLEND_SRC_RGB, (GLint*)&last_blend_src_rgb);
@@ -558,68 +637,104 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
     GLboolean last_enable_stencil_test = glIsEnabled(GL_STENCIL_TEST);
     GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean last_enable_srgb = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+    GLboolean last_srgb_enabled = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+    GLboolean last_enable_primitive_restart = (!g_is_gles && g_gl_version >= 310) ? glIsEnabled(GL_PRIMITIVE_RESTART) : GL_FALSE;
 
-    /* Save vertex attrib array state for attribs 0-7 (MangoHud saves all) */
-    GLint last_vaa[8];
-    for (int i = 0; i < 8; i++) {
-        glGetIntegerv(GL_VERTEX_ATTRIB_ARRAY_ENABLED + i, &last_vaa[i]);
+    GLint last_fbo = -1;
+    if (g_gl_version >= 300)
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
+
+    GLint last_draw_buffer = GL_BACK;
+    glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
+    {
+        static int dbg = 0;
+        if (dbg++ < 3)
+            fprintf(stderr, "[idk-comp] draw_buffer=0x%x\n", last_draw_buffer);
     }
 
-    /* ── Setup our render state (MangoHud-style) ── */
+    /* Clear any stale GL errors before our draw */
+    while (glGetError() != GL_NO_ERROR) {}
+
+    /* ── Setup render state (MangoHud-style) ── */
     glEnable(GL_BLEND);
-    glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
-    /* MangoHud uses GL_ONE for alpha src — preserves alpha channel,
-     * prevents overlay from making game transparent on Wayland */
+    glBlendEquation(GL_FUNC_ADD);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_STENCIL_TEST);
-    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, fb_w, fb_h);
+    /* Bind to default framebuffer (FBO 0) to ensure overlay renders to back buffer */
+    if (g_gl_version >= 300)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_FRAMEBUFFER_SRGB);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-    /* Do NOT call glViewport — use the game's viewport.
-     * We calculated NDC coords based on the game's viewport, so
-     * changing it would break the overlay position. */
+    if (!g_is_gles) {
+        if (g_gl_version >= 200) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        if (g_gl_version >= 310) glDisable(GL_PRIMITIVE_RESTART);
+    }
+
+    /* Set viewport to full framebuffer (MangoHud overrides viewport) */
+    glViewport(0, 0, fb_w, fb_h);
+    /* Ensure shader output goes to back buffer */
+    glDrawBuffer(GL_BACK);
+
+    /* Create temporary VAO (MangoHud creates one per frame if GL >= 3.0) */
+    GLuint vertex_array_object = 0;
+    if (g_gl_version >= 300)
+        glGenVertexArrays(1, &vertex_array_object);
+    if (vertex_array_object)
+        glBindVertexArray(vertex_array_object);
+
+    /* Debug: track which buffer we're using */
+    static int s_frame_counter = 0;
+    s_frame_counter++;
+    if (s_frame_counter % 60 == 0) {
+        fprintf(stderr, "[idk-comp] render: tex[%d]=%u has_frame=%d fb=%dx%d\n",
+                g_tex_idx, g_tex[g_tex_idx], g_has_frame, fb_w, fb_h);
+    }
 
     glUseProgram(g_program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_tex);
     glUniform1i(glGetUniformLocation(g_program, "u_texture"), 0);
-
-    /* Vertex data: position (2 floats) + texCoord (2 floats) per vertex */
-    float verts[] = {
-        ndc_x,           ndc_y,           0.0f, 1.0f,
-        ndc_x + ndc_w,   ndc_y,           1.0f, 1.0f,
-        ndc_x + ndc_w,   ndc_y + ndc_h,   1.0f, 0.0f,
-        ndc_x,           ndc_y,           0.0f, 1.0f,
-        ndc_x + ndc_w,   ndc_y + ndc_h,   1.0f, 0.0f,
-        ndc_x,           ndc_y + ndc_h,   0.0f, 0.0f,
-    };
-
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
-
-    GLint pos_loc = glGetAttribLocation(g_program, "a_position");
-    GLint uv_loc  = glGetAttribLocation(g_program, "a_texCoord");
-    if (pos_loc >= 0) {
-        glEnableVertexAttribArray(pos_loc);
-        glVertexAttribPointer(pos_loc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    }
-    if (uv_loc >= 0) {
-        glEnableVertexAttribArray(uv_loc);
-        glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_tex[g_tex_idx]);
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    {
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            fprintf(stderr, "[idk-comp] GL error after draw: 0x%x\n", err);
+        }
+    }
+    glFinish();
 
-    /* ── Restore ALL GL state (MangoHud-style) ── */
-    if (pos_loc >= 0) glDisableVertexAttribArray(pos_loc);
-    if (uv_loc >= 0) glDisableVertexAttribArray(uv_loc);
-    for (int i = 0; i < 8; i++) {
-        if (last_vaa[i]) glEnableVertexAttribArray(i);
+    /* Check if display texture is valid */
+    GLuint cur = g_tex[g_tex_idx];
+    if (cur > 0 && !glIsTexture(cur)) {
+        fprintf(stderr, "[idk-comp] WARNING: tex[%d] (%u) is not a valid texture!\n", g_tex_idx, cur);
+        g_tex[g_tex_idx] = 0;
+        g_has_frame = false;
     }
 
+    /* ── Restore GL state (MangoHud-style) ── */
+    if (vertex_array_object)
+        glDeleteVertexArrays(1, &vertex_array_object);
+
+    glUseProgram(last_program);
+    glBindTexture(GL_TEXTURE_2D, last_texture);
+
+    if (!g_is_gles && g_gl_version >= 330)
+        glBindSampler(0, (GLuint)last_sampler);
+
+    glActiveTexture(last_active_texture);
+
+    if (g_gl_version >= 300)
+        glBindVertexArray((GLuint)last_vertex_array_object);
+
+    glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
+    if (g_gl_version >= 300 && last_element_array_buffer >= 0)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)last_element_array_buffer);
     glBlendEquationSeparate(last_blend_equation_rgb, last_blend_equation_alpha);
     glBlendFuncSeparate(last_blend_src_rgb, last_blend_dst_rgb, last_blend_src_alpha, last_blend_dst_alpha);
     if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
@@ -627,15 +742,17 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     if (last_enable_stencil_test) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
     if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-    if (last_enable_srgb) glEnable(GL_FRAMEBUFFER_SRGB); else glDisable(GL_FRAMEBUFFER_SRGB);
+    if (!g_is_gles && g_gl_version >= 310) { if (last_enable_primitive_restart) glEnable(GL_PRIMITIVE_RESTART); }
+    if (!g_is_gles && g_gl_version >= 200)
+        glPolygonMode(GL_FRONT_AND_BACK, (GLenum)last_polygon_mode[0]);
 
-    /* Don't restore viewport — we never changed it */
+    glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
+    glScissor(last_scissor_box[0], last_scissor_box[1], (GLsizei)last_scissor_box[2], (GLsizei)last_scissor_box[3]);
 
-    glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);
-    glBindTexture(GL_TEXTURE_2D, last_texture);
-    glActiveTexture(last_active_texture);
-    glUseProgram(last_program);
+    if (last_srgb_enabled) glEnable(GL_FRAMEBUFFER_SRGB);
+    glDrawBuffer((GLenum)last_draw_buffer);
+    if (last_fbo >= 0)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)last_fbo);
 }
 
 int idk_compositor_has_overlay(void) {
@@ -656,6 +773,15 @@ int idk_compositor_set_overlay(int dmabuf_fd, uint32_t w, uint32_t h,
 }
 
 void idk_compositor_shutdown(void) {
+    if (g_shm_map) {
+        munmap(g_shm_map, g_shm_map_size);
+        g_shm_map = NULL;
+    }
+    if (g_shm_fd >= 0) {
+        close(g_shm_fd);
+        g_shm_fd = -1;
+    }
+
     if (g_dmabuf_fd >= 0) {
         close(g_dmabuf_fd);
         g_dmabuf_fd = -1;
@@ -674,8 +800,9 @@ void idk_compositor_shutdown(void) {
     /* Remove socket file */
     unlink(g_sock_path);
 
-    if (g_tex) glDeleteTextures(1, &g_tex);
-    if (g_vbo) glDeleteBuffers(1, &g_vbo);
+    for (int i = 0; i < 2; i++) {
+        if (g_tex[i]) glDeleteTextures(1, &g_tex[i]);
+    }
     if (g_program) glDeleteProgram(g_program);
 
     g_has_frame = false;
@@ -709,9 +836,100 @@ int idk_compositor_init_gl(void) {
                 (void *)fn_glEGLImageTargetTexture2DOES);
     }
 
+    /* ── Detect GL version (MangoHud GetOpenGLVersion) ───────────────── */
+    {
+        const char *version = (const char *)glGetString(GL_VERSION);
+        if (version) {
+            const char *es_prefixes[] = {
+                "OpenGL ES-CM ",
+                "OpenGL ES-CL ",
+                "OpenGL ES ",
+                NULL
+            };
+            g_is_gles = false;
+            for (int i = 0; es_prefixes[i]; i++) {
+                size_t plen = strlen(es_prefixes[i]);
+                if (strncmp(version, es_prefixes[i], plen) == 0) {
+                    version += plen;
+                    g_is_gles = true;
+                    break;
+                }
+            }
+            int major = 0, minor = 0;
+            sscanf(version, "%d.%d", &major, &minor);
+            g_gl_version = major * 100 + minor * 10;
+            if (g_is_gles && g_gl_version < 300)
+                g_gl_version = 200;
+            fprintf(stderr, "[idk-comp] GL version: %d.%d %s (g_gl_version=%d)\n",
+                    major, minor, g_is_gles ? "ES" : "", g_gl_version);
+        }
+    }
+
+    /* ── Select shader based on GLSL version (MangoHud-style) ────────── */
+    int glsl_version = 120;
+    if (!g_is_gles) {
+        glsl_version = 120;
+        if (g_gl_version >= 410)
+            glsl_version = 410;
+        else if (g_gl_version >= 320)
+            glsl_version = 150;
+        else if (g_gl_version >= 300)
+            glsl_version = 130;
+    } else {
+        if (g_gl_version >= 300)
+            glsl_version = 300;
+        else
+            glsl_version = 100;
+    }
+
+    const char *ver_str = NULL;
+    const char *vs_body = NULL;
+    const char *fs_body = NULL;
+
+    if (glsl_version <= 120) {
+        ver_str = g_is_gles ? "#version 100\n" : "#version 120\n";
+        vs_body = overlay_vertex_120;
+        fs_body = overlay_fragment_120;
+    } else if (glsl_version == 300) {
+        ver_str = "#version 300 es\n";
+        vs_body = overlay_vertex_300_es;
+        fs_body = overlay_fragment_300_es;
+    } else if (glsl_version >= 410) {
+        ver_str = "#version 410 core\n";
+        vs_body = overlay_vertex_410;
+        fs_body = overlay_fragment_410;
+    } else {
+        /* 130-409: use 130-style shaders */
+        if (glsl_version >= 330)
+            ver_str = "#version 330 core\n";
+        else if (glsl_version >= 150)
+            ver_str = "#version 150\n";
+        else
+            ver_str = "#version 130\n";
+        vs_body = overlay_vertex_130;
+        fs_body = overlay_fragment_130;
+    }
+
+    GLint vs_len = (GLint)(strlen(ver_str) + strlen(vs_body));
+    GLint fs_len = (GLint)(strlen(ver_str) + strlen(fs_body));
+
+    /* Build vertex shader source: version + body */
+    char *vs_full = malloc((size_t)vs_len + 1);
+    if (!vs_full) { fprintf(stderr, "[idk-comp] vs_full malloc failed\n"); return -1; }
+    strcpy(vs_full, ver_str);
+    strcat(vs_full, vs_body);
+
+    /* Build fragment shader source: version + body */
+    char *fs_full = malloc((size_t)fs_len + 1);
+    if (!fs_full) { free(vs_full); fprintf(stderr, "[idk-comp] fs_full malloc failed\n"); return -1; }
+    strcpy(fs_full, ver_str);
+    strcat(fs_full, fs_body);
+
+    fprintf(stderr, "[idk-comp] Using GLSL %s shader variant\n", ver_str);
+
     /* Compile vertex shader */
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    const char *vs_src = overlay_vertex_shader;
+    const char *vs_src = vs_full;
     glShaderSource(vs, 1, &vs_src, NULL);
     glCompileShader(vs);
 
@@ -722,24 +940,37 @@ int idk_compositor_init_gl(void) {
         glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &ok);
         if (ok > 0) {
             glGetShaderInfoLog(vs, 512, NULL, log);
-            fprintf(stderr, "[idk-comp] VS log: %s\n", log);
+            fprintf(stderr, "[idk-comp] VS log:\n%s\n", log);
         }
         glDeleteShader(vs);
+        free(vs_full);
+        free(fs_full);
         return -1;
     }
 
     /* Compile fragment shader */
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-    const char *fs_src = overlay_fragment_shader;
+    const char *fs_src = fs_full;
     glShaderSource(fs, 1, &fs_src, NULL);
     glCompileShader(fs);
 
     glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
     if (!ok) {
-        glDeleteShader(fs);
+        GLchar log[512];
+        glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &ok);
+        if (ok > 0) {
+            glGetShaderInfoLog(fs, 512, NULL, log);
+            fprintf(stderr, "[idk-comp] FS log:\n%s\n", log);
+        }
         glDeleteShader(vs);
+        glDeleteShader(fs);
+        free(vs_full);
+        free(fs_full);
         return -1;
     }
+
+    free(vs_full);
+    free(fs_full);
 
     /* Link program */
     g_program = glCreateProgram();
@@ -765,13 +996,7 @@ int idk_compositor_init_gl(void) {
     glDeleteShader(vs);
     glDeleteShader(fs);
 
-    /* Create VBO for fullscreen quad (initially empty, updated each frame) */
-    glGenBuffers(1, &g_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    glBufferData(GL_ARRAY_BUFFER, 24 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    fprintf(stderr, "[idk-comp] GL compositor ready (program=%u, vbo=%u)\n",
-            g_program, g_vbo);
+    fprintf(stderr, "[idk-comp] GL compositor ready (program=%u)\n",
+            g_program);
     return 0;
 }

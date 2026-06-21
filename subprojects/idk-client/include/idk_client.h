@@ -98,6 +98,14 @@ int idk_client_send_frame(int fd, const idk_client_frame_t *frame);
 int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame);
 
 /**
+ * Wait for compositor ACK after sending a frame.
+ * Blocks until the compositor has finished processing the frame,
+ * providing flow control that syncs client frame rate to game swap rate.
+ * Returns 0 on ACK received, -1 on error.
+ */
+int idk_client_wait_ack(void);
+
+/**
  * Send DMA-BUF fds directly (no SHM copy — for GPU-rendered content).
  * Supports multi-plane DMA-BUF via frame->nfd.
  *
