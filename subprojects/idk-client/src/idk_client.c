@@ -233,7 +233,18 @@ int idk_client_send_frame(int data_fd, const idk_client_frame_t *frame) {
 
     ssize_t n = sendmsg(g_sock_fd, &msgh, 0);
     if (n < 0) {
-        fprintf(stderr, "[idk-client] sendmsg failed: %s\n", strerror(errno));
+        /* If the peer closed the socket (EPIPE / ECONNRESET), shut down
+         * our side immediately so idk_client_get_fd() returns -1. This
+         * lets the Manager's QTimer detect the disconnection and reconnect.
+         * Without this, sendmsg keeps failing every frame with EPIPE,
+         * spamming the log — "Broken pipe" × hundreds of times per second. */
+        if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
+            fprintf(stderr, "[idk-client] sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
+                    errno, strerror(errno));
+            idk_client_shutdown();
+        } else {
+            fprintf(stderr, "[idk-client] sendmsg failed: %s\n", strerror(errno));
+        }
         return -1;
     }
 
@@ -314,7 +325,14 @@ int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *fr
 
     ssize_t n = sendmsg(g_sock_fd, &msgh, 0);
     if (n < 0) {
-        fprintf(stderr, "[idk-client] sendmsg failed: %s\n", strerror(errno));
+        /* Same EPIPE handling as idk_client_send_frame — see comment there. */
+        if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
+            fprintf(stderr, "[idk-client] sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
+                    errno, strerror(errno));
+            idk_client_shutdown();
+        } else {
+            fprintf(stderr, "[idk-client] sendmsg failed: %s\n", strerror(errno));
+        }
         return -1;
     }
 

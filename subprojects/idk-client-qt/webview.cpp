@@ -57,6 +57,9 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
              * of the socket fd), so only init once. */
             if (m_memory) {
                 fprintf(stderr, "[idk-client-qt] Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
+                /* Even on reconnect, kick a paint — compositor may have
+                 * dropped our last frame and we want to refresh ASAP. */
+                if (auto *fp = focusProxy()) fp->update();
                 return;
             }
             initMemory();
@@ -65,6 +68,11 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
             sendCreateImage();
             m_waitReply = false;  /* ready to send first frame */
             m_buffer = 0;
+            /* Force-schedule a paint — without this, the first frame send
+             * is delayed ~3s waiting for Qt/WebEngine to naturally schedule
+             * one. update() posts a paint event through the event loop,
+             * which fires our eventFilter → sends first frame immediately. */
+            if (auto *fp = focusProxy()) fp->update();
         });
     } else {
         // Already connected, initialize immediately
@@ -74,12 +82,19 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         sendCreateImage();
         m_waitReply = false;  /* ready to send first frame */
         m_buffer = 0;
+        /* Kick first paint — see comment in the socketConnected branch. */
+        if (auto *fp = focusProxy()) fp->update();
     }
 
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
         if (!ok || m_conf.url().isEmpty()) {
             return;
         }
+        /* Page finished loading — force a repaint so we send a frame with
+         * actual page content, not the blank/loading state. Without this,
+         * the first frame after connect might be transparent (img.fill
+         * was called before render() produced real content). */
+        if (auto *fp = focusProxy()) fp->update();
         // TODO: Inject script if needed
         // page()->runJavaScript(QStringLiteral("(function(){%1}());").arg(m_conf.injectScript()));
     });

@@ -75,35 +75,45 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
             } else if (!connected_now && m_was_connected) {
                 /* Transition: connected → disconnected.
                  * idk_client's fd went dead (compositor closed, EPIPE, etc.).
-                 * Try to reconnect; if it fails, the next timer tick retries. */
-                if (++m_disconnect_count <= 3 || m_disconnect_count % 30 == 0) {
-                    fprintf(stderr, "[idk-client-qt] idk_client disconnected (attempt %d)\n",
-                            m_disconnect_count);
-                }
+                 * Try to reconnect; if it fails, the next timer tick retries.
+                 * Log only ONCE per disconnect (not every retry) — the
+                 * "still connecting" branch below handles subsequent retries. */
+                fprintf(stderr, "[idk-client-qt] idk_client disconnected — attempting reconnect\n");
                 emit socketDisconnected();
                 /* Attempt non-blocking reconnect (single attempt, no 3s block) */
                 if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
-                    m_disconnect_count = 0;
                     fprintf(stderr, "[idk-client-qt] idk_client reconnected\n");
                     emit socketConnected();
                     connected_now = true;
+                    m_disconnect_count = 0;
+                } else {
+                    /* Start counting retries for the "still connecting" branch */
+                    m_disconnect_count = 1;
                 }
             } else if (!connected_now && !m_was_connected) {
                 /* Still never connected — retry with non-blocking init.
-                 * This handles the "client-first, game-after" scenario:
-                 * idk_client's initial 3s blocking connect() in the ctor
-                 * failed (compositor socket didn't exist yet). Without this
-                 * branch, we'd never try again and the overlay would stay
-                 * dark forever. Single-attempt init keeps the event loop
-                 * responsive — timer fires every 1s, so we get ~1s
-                 * detection latency after the compositor comes up. */
-                if (++m_disconnect_count <= 3 || m_disconnect_count % 30 == 0) {
-                    fprintf(stderr, "[idk-client-qt] idk_client still connecting (attempt %d)\n",
+                 * This handles the "client-first, game-after" scenario.
+                 * LOG SPARSELY: only at attempts 1, 5, 30, then every 60
+                 * (~1min). At 1s timer interval this means:
+                 *   attempt 1 (1s)  — first retry
+                 *   attempt 5 (5s)  — "still trying"
+                 *   attempt 30 (30s) — "still trying"
+                 *   attempt 60, 120, ... (1min, 2min) — heartbeat
+                 * Silent in between — no log spam while waiting for the
+                 * compositor to come up. */
+                m_disconnect_count++;
+                bool should_log = (m_disconnect_count == 1 ||
+                                   m_disconnect_count == 5 ||
+                                   m_disconnect_count == 30 ||
+                                   (m_disconnect_count > 30 && m_disconnect_count % 60 == 0));
+                if (should_log) {
+                    fprintf(stderr, "[idk-client-qt] idk_client waiting for compositor (attempt %d)\n",
                             m_disconnect_count);
                 }
                 if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                    fprintf(stderr, "[idk-client-qt] idk_client connected after %d attempts\n",
+                            m_disconnect_count);
                     m_disconnect_count = 0;
-                    fprintf(stderr, "[idk-client-qt] idk_client connected after retry\n");
                     emit socketConnected();
                     connected_now = true;
                 }

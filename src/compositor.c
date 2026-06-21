@@ -723,37 +723,58 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     /* Clear any stale GL errors before our draw */
     while (glGetError() != GL_NO_ERROR) {}
 
-    /* ── Setup render state (MangoHud-style) ── */
-    glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
+    /* ── Setup render state (MangoHud-style) ──
+     * Each call is followed by an error check ON THE FIRST FAILED DRAW
+     * (g_draw_err_count == 1) so we can identify exactly which GL call
+     * sets the error that post-draw glGetError picks up. After the first
+     * diagnosis, the checks are skipped (g_draw_err_count > 1) to avoid
+     * per-frame overhead. */
+    #define GLCHECK(label) do { \
+        if (g_draw_err_count == 1) { \
+            GLenum _e = glGetError(); \
+            if (_e != GL_NO_ERROR) \
+                fprintf(stderr, "[idk-comp] GL setup error @ %s: 0x%x\n", label, _e); \
+        } \
+    } while(0)
+
+    glEnable(GL_BLEND);                GLCHECK("glEnable(GL_BLEND)");
+    glBlendEquation(GL_FUNC_ADD);      GLCHECK("glBlendEquation");
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_STENCIL_TEST);
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(0, 0, fb_w, fb_h);
+                                       GLCHECK("glBlendFuncSeparate");
+    glDisable(GL_CULL_FACE);           GLCHECK("glDisable(GL_CULL_FACE)");
+    glDisable(GL_DEPTH_TEST);          GLCHECK("glDisable(GL_DEPTH_TEST)");
+    glDisable(GL_STENCIL_TEST);        GLCHECK("glDisable(GL_STENCIL_TEST)");
+    glEnable(GL_SCISSOR_TEST);         GLCHECK("glEnable(GL_SCISSOR_TEST)");
+    glScissor(0, 0, fb_w, fb_h);       GLCHECK("glScissor");
     /* Bind to default framebuffer (FBO 0) to ensure overlay renders to back buffer */
-    if (g_gl_version >= 300)
+    if (g_gl_version >= 300) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glDisable(GL_FRAMEBUFFER_SRGB);
+                                       GLCHECK("glBindFramebuffer");
+    }
+    glDisable(GL_FRAMEBUFFER_SRGB);    GLCHECK("glDisable(GL_FRAMEBUFFER_SRGB)");
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                                       GLCHECK("glColorMask");
 
     if (!g_is_gles) {
-        if (g_gl_version >= 200) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        if (g_gl_version >= 310) glDisable(GL_PRIMITIVE_RESTART);
+        if (g_gl_version >= 200) { glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                       GLCHECK("glPolygonMode"); }
+        if (g_gl_version >= 310) { glDisable(GL_PRIMITIVE_RESTART);
+                                       GLCHECK("glDisable(GL_PRIMITIVE_RESTART)"); }
     }
 
     /* Set viewport to full framebuffer (MangoHud overrides viewport) */
-    glViewport(0, 0, fb_w, fb_h);
+    glViewport(0, 0, fb_w, fb_h);      GLCHECK("glViewport");
     /* Ensure shader output goes to back buffer */
-    glDrawBuffer(GL_BACK);
+    glDrawBuffer(GL_BACK);             GLCHECK("glDrawBuffer");
 
     /* Create temporary VAO (MangoHud creates one per frame if GL >= 3.0) */
     GLuint vertex_array_object = 0;
     if (g_gl_version >= 300)
         glGenVertexArrays(1, &vertex_array_object);
-    if (vertex_array_object)
+    if (vertex_array_object) {
         glBindVertexArray(vertex_array_object);
+                                       GLCHECK("glBindVertexArray");
+    }
 
     /* Debug: track which buffer we're using */
     static int s_frame_counter = 0;
@@ -763,10 +784,28 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                 g_tex_idx, g_tex[g_tex_idx], g_has_frame, fb_w, fb_h);
     }
 
-    glUseProgram(g_program);
-    glUniform1i(glGetUniformLocation(g_program, "u_texture"), 0);
-    glActiveTexture(GL_TEXTURE0);
+    /* On first failure, log texture validity + program status — these are
+     * the most common 0x501 sources when no setup call above errors. */
+    if (g_draw_err_count == 1) {
+        GLuint cur_tex = g_tex[g_tex_idx];
+        GLboolean tex_valid = cur_tex ? glIsTexture(cur_tex) : GL_FALSE;
+        GLint prog_link = 0;
+        glGetProgramiv(g_program, GL_LINK_STATUS, &prog_link);
+        fprintf(stderr,
+            "[idk-comp] pre-draw diag: tex[%d]=%u valid=%d prog=%u link=%d "
+            "frame=%ux%u fb=%dx%d\n",
+            g_tex_idx, cur_tex, (int)tex_valid, g_program, (int)prog_link,
+            g_frame_w, g_frame_h, fb_w, fb_h);
+    }
+
+    glUseProgram(g_program);           GLCHECK("glUseProgram");
+    GLint loc = glGetUniformLocation(g_program, "u_texture");
+                                       GLCHECK("glGetUniformLocation");
+    glUniform1i(loc, 0);               GLCHECK("glUniform1i");
+    glActiveTexture(GL_TEXTURE0);      GLCHECK("glActiveTexture");
     glBindTexture(GL_TEXTURE_2D, g_tex[g_tex_idx]);
+                                       GLCHECK("glBindTexture");
+    #undef GLCHECK
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
     {
@@ -792,13 +831,17 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                     g_frame_w, g_frame_h, g_draw_err_count);
             }
             /* If we keep failing on the same texture, it's probably dead —
-             * mark it invalid so the g_has_frame guard at function entry
-             * skips future draws until a new frame arrives. This stops the
-             * spam at its source. */
+             * mark it invalid AND delete it so the GL driver reclaims the
+             * memory/ID. Without glDeleteTextures, the texture leaks: each
+             * new frame creates a new texture (IDs climb 32, 33, 34, ...),
+             * and at high FPS (glmark2-egl runs ~1800 FPS) this burns
+             * through texture IDs fast and may exhaust driver resources. */
             if (g_draw_err_count == 5) {
+                GLuint dead = g_tex[g_tex_idx];
                 fprintf(stderr,
-                    "[idk-comp] tex[%d]=%u failing repeatedly — marking invalid\n",
-                    g_tex_idx, g_tex[g_tex_idx]);
+                    "[idk-comp] tex[%d]=%u failing repeatedly — deleting + marking invalid\n",
+                    g_tex_idx, dead);
+                if (dead > 0) glDeleteTextures(1, &dead);
                 g_tex[g_tex_idx] = 0;
                 g_has_frame = false;
             }
