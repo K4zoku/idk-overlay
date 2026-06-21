@@ -99,6 +99,7 @@ private:
     QString m_socketPath;
     QLocalSocket *m_socket;
     QTimer *m_reconnectTimer;
+    int m_disconnect_count = 0;  // throttle disconnect log spam
 
     // UI
     QWidget *m_window;

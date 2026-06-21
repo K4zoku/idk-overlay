@@ -51,6 +51,14 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
     if (!m_manager->isConnected()) {
         // Wait for socket connection before sending
         connect(m_manager, &Manager::socketConnected, this, [this]() {
+            /* Guard against double-init on reconnect — initMemory() creates
+             * a new memfd each time, and the old one would leak. The memfd
+             * and mmap persist across socket reconnects (they're independent
+             * of the socket fd), so only init once. */
+            if (m_memory) {
+                fprintf(stderr, "[idk-client-qt] Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
+                return;
+            }
             initMemory();
             focusProxy()->installEventFilter(this);
 

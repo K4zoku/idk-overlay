@@ -39,10 +39,35 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     if (fd < 0) {
         connect(m_socket, &QLocalSocket::stateChanged, this, [this](QLocalSocket::LocalSocketState state) {
             if (state == QLocalSocket::ConnectedState) {
+                m_disconnect_count = 0;
                 fprintf(stderr, "[idk-client-qt] QLocalSocket connected\n");
+                /* Re-initialize idk_client's data socket on (re)connect.
+                 * idk_client has its own separate socket to the compositor;
+                 * if it died (compositor closed, EPIPE on send, etc.) we
+                 * need to re-create it so send_dma_buf works again.
+                 * This syncs the QLocalSocket status connection with
+                 * idk_client's data connection. */
+                if (idk_client_get_fd() < 0) {
+                    if (idk_client_init(m_socketPath.toUtf8().data(), false) < 0) {
+                        fprintf(stderr, "[idk-client-qt] idk_client reconnect failed: %s\n",
+                                strerror(errno));
+                        m_reconnectTimer->start();
+                        return;
+                    }
+                }
                 emit socketConnected();
             } else if (state == QLocalSocket::UnconnectedState) {
-                fprintf(stderr, "[idk-client-qt] QLocalSocket disconnected\n");
+                /* Throttle the disconnect log — at 1s reconnect interval,
+                 * this fires every second while the compositor is down.
+                 * Log first 3, then every 30th (~30s). */
+                if (++m_disconnect_count <= 3 || m_disconnect_count % 30 == 0) {
+                    fprintf(stderr, "[idk-client-qt] QLocalSocket disconnected (attempt %d)\n",
+                            m_disconnect_count);
+                }
+                /* Mark idk_client's data socket as dead too — isConnected()
+                 * now returns false so WebView stops trying to send frames
+                 * into a dead socket. Will be re-init'd on next connect. */
+                idk_client_shutdown();
                 emit socketDisconnected();
                 m_reconnectTimer->start();
             }

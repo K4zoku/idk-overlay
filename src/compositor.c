@@ -289,6 +289,31 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         return 0;
     }
 
+    /* ── Validate dimensions BEFORE glTexImage2D / glTexSubImage2D ─────
+     * Both calls with width=0 or height=0 return GL_INVALID_VALUE (0x501).
+     * Likely root cause of the flaky "GL error after draw: 0x501" — on the
+     * first eglSwapBuffers, eglQuerySurface may return 0×0 before the
+     * surface is fully realized, and the client may send a frame with the
+     * same 0×0 dimensions before ACK flow control kicks in. Also catches
+     * pixel_size < w*h*4 (SHM buffer smaller than expected RGBA payload),
+     * which would make glTexSubImage2D read past the mmap region.
+     */
+    if (w == 0 || h == 0) {
+        fprintf(stderr,
+            "[idk-comp] shm_to_texture: rejecting zero-dim frame w=%u h=%u\n",
+            w, h);
+        return 0;
+    }
+    uint32_t expected = w * h * 4;  /* RGBA8888 = 4 bytes/pixel */
+    if (pixel_size < expected) {
+        fprintf(stderr,
+            "[idk-comp] shm_to_texture: size mismatch w=%u h=%u pixel_size=%u expected=%u\n",
+            w, h, pixel_size, expected);
+        return 0;
+    }
+    /* pixel_size > expected is OK — driver reads expected bytes, extra is
+     * padding (e.g. row alignment). Only pixel_size < expected is rejected. */
+
     /* Check if this is a new memfd (via inode comparison) */
     struct stat st;
     if (fstat(shm_fd, &st) < 0) {
@@ -405,6 +430,25 @@ int idk_compositor_render(void) {
             n, sizeof(struct frame_hdr));
     if (n < (ssize_t)sizeof(struct frame_hdr)) {
         fprintf(stderr, "[idk-comp] recvmsg too short — skipping\n");
+
+        /* recvmsg() returning exactly 0 means the client closed the socket
+         * (clean EOF). POLLIN keeps firing on a closed socket forever, so
+         * without handling this we end up in an infinite poll→recv(0)→
+         * skip→draw(stale texture)→0x501 loop. Close and reset so
+         * accept_client() can pick up a new connection. */
+        if (n == 0) {
+            fprintf(stderr,
+                "[idk-comp] client disconnected (fd=%d), resetting\n",
+                g_client_fd);
+            close(g_client_fd);
+            g_client_fd = -1;
+            /* Keep g_has_frame and g_tex[g_tex_idx] — the last good frame
+             * can still be drawn until a new client connects. Reset only
+             * if you want a clean slate; leaving it lets the overlay
+             * persist across reconnects. */
+        }
+        /* n < 0 with errno=EAGAIN/EWOULDBLOCK is normal — no frame yet.
+         * n > 0 but < header size is a malformed/partial frame — skip. */
         return -1;
     }
 
@@ -584,6 +628,16 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     if (g_program == 0) return;
 
+    /* ── Don't draw if we have no valid frame ──────────────────────────
+     * Without this guard, when no client has sent a frame yet (or the
+     * last frame was rejected by shm_to_texture's validation), we'd
+     * call glBindTexture(0) + glDrawArrays → GL_INVALID_OPERATION or
+     * GL_INVALID_VALUE every frame → 0x501 spam in the log.
+     * The original code only checked g_program, not g_has_frame. */
+    if (!g_has_frame || g_tex[g_tex_idx] == 0) {
+        return;
+    }
+
     /* Use framebuffer dimensions for viewport */
     GLint fb_w = (GLint)w, fb_h = (GLint)h;
     {
@@ -703,8 +757,33 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
     {
         GLenum err = glGetError();
+        /* Persistent counter across frames — used to throttle the error
+         * log and detect a permanently-dead texture. Reset to 0 on any
+         * successful draw so transient errors don't accumulate. */
+        static int s_err_count = 0;
         if (err != GL_NO_ERROR) {
-            fprintf(stderr, "[idk-comp] GL error after draw: 0x%x\n", err);
+            s_err_count++;
+            /* Throttle: log first 5 (capture onset), then every 300th (~5s
+             * at 60fps) so we see persistent issues without flooding. */
+            if (s_err_count <= 5 || s_err_count % 300 == 0) {
+                fprintf(stderr,
+                    "[idk-comp] GL error after draw: 0x%x (tex[%d]=%u fb=%dx%d frame=%ux%u, occurrence %d)\n",
+                    err, g_tex_idx, g_tex[g_tex_idx], fb_w, fb_h,
+                    g_frame_w, g_frame_h, s_err_count);
+            }
+            /* If we keep failing on the same texture, it's probably dead —
+             * mark it invalid so the g_has_frame guard at function entry
+             * skips future draws until a new frame arrives. This stops the
+             * spam at its source. */
+            if (s_err_count == 5) {
+                fprintf(stderr,
+                    "[idk-comp] tex[%d]=%u failing repeatedly — marking invalid\n",
+                    g_tex_idx, g_tex[g_tex_idx]);
+                g_tex[g_tex_idx] = 0;
+                g_has_frame = false;
+            }
+        } else {
+            s_err_count = 0;
         }
     }
     glFinish();
