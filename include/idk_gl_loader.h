@@ -128,6 +128,7 @@ typedef void (*PFN_idk_glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, 
 typedef GLint (*PFN_idk_glGetAttribLocation)(GLuint, const GLchar*);
 typedef GLboolean (*PFN_idk_glIsEnabled)(GLenum);
 typedef GLboolean (*PFN_idk_glIsTexture)(GLuint);
+typedef GLboolean (*PFN_idk_glIsProgram)(GLuint);
 typedef GLenum (*PFN_idk_glGetError)(void);
 typedef void (*PFN_idk_glFinish)(void);
 typedef void (*PFN_idk_glClear)(GLbitfield);
@@ -190,6 +191,7 @@ extern PFN_idk_glVertexAttribPointer  idk_fn_glVertexAttribPointer;
 extern PFN_idk_glGetAttribLocation    idk_fn_glGetAttribLocation;
 extern PFN_idk_glIsEnabled            idk_fn_glIsEnabled;
 extern PFN_idk_glIsTexture            idk_fn_glIsTexture;
+extern PFN_idk_glIsProgram            idk_fn_glIsProgram;
 extern PFN_idk_glGetError            idk_fn_glGetError;
 extern PFN_idk_glFinish             idk_fn_glFinish;
 extern PFN_idk_glClear              idk_fn_glClear;
@@ -260,6 +262,7 @@ extern PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer;
 #define glGetAttribLocation    (*idk_fn_glGetAttribLocation)
 #define glIsEnabled            (*idk_fn_glIsEnabled)
 #define glIsTexture            (*idk_fn_glIsTexture)
+#define glIsProgram            (*idk_fn_glIsProgram)
 #define glGetError             (*idk_fn_glGetError)
 #define glFinish               (*idk_fn_glFinish)
 #define glClear                (*idk_fn_glClear)

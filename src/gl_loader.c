@@ -57,6 +57,7 @@ PFN_idk_glVertexAttribPointer  idk_fn_glVertexAttribPointer  = NULL;
 PFN_idk_glGetAttribLocation    idk_fn_glGetAttribLocation    = NULL;
 PFN_idk_glIsEnabled            idk_fn_glIsEnabled            = NULL;
 PFN_idk_glIsTexture            idk_fn_glIsTexture            = NULL;
+PFN_idk_glIsProgram            idk_fn_glIsProgram            = NULL;
 PFN_idk_glGetError            idk_fn_glGetError            = NULL;
 PFN_idk_glFinish               idk_fn_glFinish               = NULL;
 PFN_idk_glClear                idk_fn_glClear                = NULL;
@@ -164,6 +165,7 @@ int idk_gl_loader_init(void) {
     RESOLVE(glGetAttribLocation);
     RESOLVE(glIsEnabled);
     RESOLVE(glIsTexture);
+    RESOLVE(glIsProgram);
     RESOLVE(glGetError);
     RESOLVE(glFinish);
     RESOLVE(glClear);

@@ -642,6 +642,46 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     if (g_program == 0) return;
 
+    /* ── Validate our program is still linked ──────────────────────────
+     * The GL driver REUSES program object IDs after glDeleteProgram. If
+     * the host app (e.g. glmark2) calls glDeleteProgram on its own program
+     * and then creates a new one, the driver may hand back the same ID we
+     * stored in g_program. Now g_program points to the host's program
+     * (which may not be linked, or has different shaders) — calling
+     * glUseProgram on it sets GL_INVALID_VALUE (0x501).
+     *
+     * Detect this by checking GL_LINK_STATUS each frame. If our program
+     * got clobbered (link status = 0 or glIsProgram returns false),
+     * re-init the shader. This is cheap (one glGetProgramiv + one
+     * glIsProgram per frame) and prevents the 0x501 spam at its source.
+     *
+     * Observed in inject.log:
+     *   "pre-draw diag: tex[1]=1 valid=1 prog=6 link=0 frame=1920x1080"
+     *   "GL setup error @ glUseProgram: 0x501"
+     * → prog=6 exists (glIsProgram would return true) but link=0 means
+     *   it's either our program that got somehow unlinked, or another
+     *   program with the same ID that never linked. Re-init fixes both. */
+    if (g_program != 0) {
+        GLboolean is_prog = glIsProgram(g_program);
+        GLint link_status = 0;
+        if (is_prog) glGetProgramiv(g_program, GL_LINK_STATUS, &link_status);
+        if (!is_prog || !link_status) {
+            static int s_reinit_count = 0;
+            s_reinit_count++;
+            fprintf(stderr,
+                "[idk-comp] program %u invalidated (is_prog=%d link=%d) — re-initializing shaders (attempt %d)\n",
+                g_program, (int)is_prog, (int)link_status, s_reinit_count);
+            /* Clear g_program so init creates a fresh one.
+             * Don't call glDeleteProgram — the ID may belong to the host. */
+            g_program = 0;
+            if (idk_compositor_init_gl() != 0) {
+                fprintf(stderr, "[idk-comp] shader re-init failed — skipping frame\n");
+                return;
+            }
+            fprintf(stderr, "[idk-comp] shader re-init OK, new g_program=%u\n", g_program);
+        }
+    }
+
     /* ── Don't draw if we have no valid frame ──────────────────────────
      * Without this guard, when no client has sent a frame yet (or the
      * last frame was rejected by shm_to_texture's validation), we'd
