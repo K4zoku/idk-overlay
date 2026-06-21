@@ -46,6 +46,7 @@
 #include <sys/stat.h>
 
 #include "idk_client.h"
+#include "idk_log.h"
 
 /* ── Config ───────────────────────────────────────────────────────────── */
 
@@ -79,7 +80,7 @@ static void trim(char *s) {
 static int parse_config_file(const char *path, config_t *cfg) {
     FILE *f = fopen(path, "r");
     if (!f) {
-        fprintf(stderr, "[idk-client] Cannot open config: %s\n", path);
+        IDK_ERR("client", "Cannot open config: %s\n", path);
         return -1;
     }
 
@@ -112,7 +113,7 @@ static int parse_config_file(const char *path, config_t *cfg) {
                 if (strncmp(group, "Overlay_", 8) == 0) {
                     int id = atoi(group + 8);
                     if (id < 1 || id > 16) {
-                        fprintf(stderr, "[idk-client] Invalid overlay ID: %d\n", id);
+                        IDK_ERR("client", "Invalid overlay ID: %d\n", id);
                         fclose(f);
                         return -1;
                     }
@@ -161,7 +162,7 @@ static int parse_config_file(const char *path, config_t *cfg) {
 static void *read_file_to_buffer(const char *path, size_t *out_size) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        fprintf(stderr, "[idk-client] Cannot open %s: %s\n", path, strerror(errno));
+        IDK_ERR("client", "Cannot open %s: %s\n", path, strerror(errno));
         return NULL;
     }
 
@@ -181,7 +182,7 @@ static void *read_file_to_buffer(const char *path, size_t *out_size) {
     ssize_t n = read(fd, buf, (size_t)st.st_size);
     close(fd);
     if ((size_t)n != (size_t)st.st_size) {
-        fprintf(stderr, "[idk-client] Read %zd/%zu bytes\n", n, (size_t)st.st_size);
+        IDK_ERR("client", "Read %zd/%zu bytes\n", n, (size_t)st.st_size);
         free(buf);
         return NULL;
     }
@@ -217,7 +218,7 @@ static void *read_stdin_to_buffer(size_t *out_size) {
 
 static int send_overlay_frame(overlay_config_t *o) {
     if (o->width == 0 || o->height == 0) {
-        fprintf(stderr, "[idk-client] Overlay %u: width/height not set\n", o->id);
+        IDK_ERR("client", "Overlay %u: width/height not set\n", o->id);
         return -1;
     }
 
@@ -228,23 +229,23 @@ static int send_overlay_frame(overlay_config_t *o) {
         /* Read from stdin */
         pixels = read_stdin_to_buffer(&size);
         if (!pixels) {
-            fprintf(stderr, "[idk-client] Failed to read from stdin\n");
+            IDK_ERR("client", "Failed to read from stdin\n");
             return -1;
         }
-        fprintf(stderr, "[idk-client] Read %zu bytes from stdin\n", size);
+        IDK_LOG("client", "Read %zu bytes from stdin\n", size);
     } else {
         pixels = read_file_to_buffer(o->source, &size);
         if (!pixels) {
-            fprintf(stderr, "[idk-client] Cannot read %s\n", o->source);
+            IDK_ERR("client", "Cannot read %s\n", o->source);
             return -1;
         }
-        fprintf(stderr, "[idk-client] Read %zu bytes from %s\n", size, o->source);
+        IDK_LOG("client", "Read %zu bytes from %s\n", size, o->source);
     }
 
     /* Validate size matches expected */
     size_t expected = (size_t)o->width * (size_t)o->height * 4;
     if (size < expected) {
-        fprintf(stderr, "[idk-client] File size %zu < expected %zu (%dx%d*4)\n",
+        IDK_ERR("client", "File size %zu < expected %zu (%dx%d*4)\n",
                 size, expected, o->width, o->height);
     }
 
@@ -364,7 +365,7 @@ int main(int argc, char **argv) {
     /* Mode 1: Config file */
     if (config_path) {
         if (parse_config_file(config_path, &cfg) < 0) {
-            fprintf(stderr, "[idk-client] Failed to parse config: %s\n", config_path);
+            IDK_ERR("client", "Failed to parse config: %s\n", config_path);
             return 1;
         }
         sockpath = cfg.socket;
@@ -373,7 +374,7 @@ int main(int argc, char **argv) {
     else if (single_overlay) {
         if (!sockpath) sockpath = "/tmp/idk-overlay";
         if (!frame_file) {
-            fprintf(stderr, "[idk-client] No frame file specified\n");
+            IDK_ERR("client", "No frame file specified\n");
             usage(argv[0]);
             return 1;
         }
@@ -395,12 +396,12 @@ int main(int argc, char **argv) {
 
     /* Connect to socket */
     if (idk_client_init(cfg.socket, 0) < 0) {
-        fprintf(stderr, "[idk-client] Failed to connect to %s\n", cfg.socket);
+        IDK_ERR("client", "Failed to connect to %s\n", cfg.socket);
         return 1;
     }
 
-    fprintf(stderr,
-            "[idk-client] Sending %d overlay(s) to %s\n",
+    IDK_LOG("client",
+            "Sending %d overlay(s) to %s\n",
             cfg.num_overlays, cfg.socket);
 
     /* Send frames (loop or single) */
@@ -410,14 +411,14 @@ int main(int argc, char **argv) {
 
         if (overlay->loop_fps > 0) {
             int interval_ms = 1000 / overlay->loop_fps;
-            fprintf(stderr,
-                    "[idk-client] Overlay %u: looping at %d FPS (%dms interval)\n",
+            IDK_LOG("client",
+                    "Overlay %u: looping at %d FPS (%dms interval)\n",
                     overlay->id, overlay->loop_fps, interval_ms);
 
             while (1) {
                 rc = send_overlay_frame(overlay);
                 if (rc < 0) {
-                    fprintf(stderr, "[idk-client] Send failed\n");
+                    IDK_ERR("client", "Send failed\n");
                     break;
                 }
                 usleep(interval_ms * 1000);
@@ -425,7 +426,7 @@ int main(int argc, char **argv) {
         } else {
             rc = send_overlay_frame(overlay);
             if (rc < 0) {
-                fprintf(stderr, "[idk-client] Send failed\n");
+                IDK_ERR("client", "Send failed\n");
                 idk_client_shutdown();
                 return 1;
             }
@@ -433,6 +434,6 @@ int main(int argc, char **argv) {
     }
 
     idk_client_shutdown();
-    fprintf(stderr, "[idk-client] Done.\n");
+    IDK_LOG("client", "Done.\n");
     return 0;
 }

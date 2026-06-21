@@ -162,6 +162,7 @@ idk_inject_exe = executable(
     'idk-inject',
     'src/inject.c',
     c_args: overlay_c_flags,
+    include_directories: include_directories('include'),
     link_args: ['-ldl', '-lpthread'],
     dependencies: [syringe_dep],
     install: true,

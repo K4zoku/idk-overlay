@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <dlfcn.h>
 #include "idk_gl_loader.h"
+#include "idk_log.h"
 
 /* ── Global function pointers (default NULL) ────────────────────────────── */
 
@@ -111,12 +112,12 @@ int idk_gl_loader_init(void) {
             lib = dlopen(lib_names[i], RTLD_NOW | RTLD_GLOBAL);
         }
         if (lib) {
-            fprintf(stderr, "[idk-gl-loader] Using %s\n", lib_names[i]);
+            IDK_LOG("gl-loader", "Using %s\n", lib_names[i]);
             break;
         }
     }
     if (!lib) {
-        fprintf(stderr, "[idk-gl-loader] No GL library found\n");
+        IDK_ERR("gl-loader", "No GL library found\n");
         return -1;
     }
 
@@ -191,7 +192,7 @@ int idk_gl_loader_init(void) {
 
     /* Sanity check: a few critical ones must be present */
     if (!idk_fn_glGetIntegerv || !idk_fn_glDrawArrays || !idk_fn_glUseProgram) {
-        fprintf(stderr, "[idk-gl-loader] Critical GL functions missing — "
+        IDK_ERR("gl-loader", "Critical GL functions missing — "
                         "glGetIntegerv=%p glDrawArrays=%p glUseProgram=%p\n",
                 (void*)idk_fn_glGetIntegerv,
                 (void*)idk_fn_glDrawArrays,
@@ -199,7 +200,7 @@ int idk_gl_loader_init(void) {
         return -1;
     }
 
-    fprintf(stderr, "[idk-gl-loader] GL functions resolved\n");
+    IDK_LOG("gl-loader", "GL functions resolved\n");
     result = 0;
     return 0;
 }

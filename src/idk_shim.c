@@ -44,6 +44,7 @@
 /* Use MangoHud's elfhacks for proper ELF symbol resolution.
  * This avoids calling intercepted dlsym() during init. */
 #include "elfhacks.h"
+#include "idk_log.h"
 
 /* ── Real function pointers (populated by load_real_functions) ──────── */
 static void *(*real_dlsym)(void *, const char *) = NULL;
@@ -85,10 +86,10 @@ static void load_real_functions(void) {
     }
 
     if (real_dlsym) {
-        fprintf(stderr, "[idk-shim] Real functions loaded: dlsym=%p dlopen=%p\n",
+        IDK_LOG("shim", "Real functions loaded: dlsym=%p dlopen=%p\n",
                 (void *)real_dlsym, (void *)real_dlopen);
     } else {
-        fprintf(stderr, "[idk-shim] WARNING: Failed to find real dlsym\n");
+        IDK_ERR("shim", "WARNING: Failed to find real dlsym\n");
     }
 }
 
@@ -125,7 +126,7 @@ static bool load_gl_hook(void) {
     Dl_info info;
     memset(&info, 0, sizeof(info));
     if (!dladdr((void *)load_gl_hook, &info) || !info.dli_fname) {
-        fprintf(stderr, "[idk-shim] dladdr failed\n");
+        IDK_ERR("shim", "dladdr failed\n");
         return false;
     }
 
@@ -149,11 +150,11 @@ static bool load_gl_hook(void) {
         snprintf(lib_path, sizeof(lib_path), "%s", env_lib);
     }
 
-    fprintf(stderr, "[idk-shim] Loading GL hook: %s\n", lib_path);
+    IDK_LOG("shim", "Loading GL hook: %s\n", lib_path);
 
     g_gl_handle = real_dlopen(lib_path, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
     if (!g_gl_handle) {
-        fprintf(stderr, "[idk-shim] Failed to load libidk-gl.so: %s\n",
+        IDK_ERR("shim", "Failed to load libidk-gl.so: %s\n",
                 real_dlerror ? real_dlerror() : "unknown error");
         return false;
     }
@@ -169,7 +170,7 @@ static bool load_gl_hook(void) {
     }
 
     g_loaded = true;
-    fprintf(stderr, "[idk-shim] GL hooks loaded (eglSwapBuffers=%p)\n", (void *)fn_eglSwapBuffers);
+    IDK_LOG("shim", "GL hooks loaded (eglSwapBuffers=%p)\n", (void *)fn_eglSwapBuffers);
     return true;
 }
 

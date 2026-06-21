@@ -27,6 +27,7 @@
 #include <fcntl.h>
 
 #include "idk_client.h"
+#include "idk_log.h"
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
              * and mmap persist across socket reconnects (they're independent
              * of the socket fd), so only init once. */
             if (m_memory) {
-                fprintf(stderr, "[idk-client-qt] Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
+                IDK_LOG("client-qt", "Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
                 /* On reconnect after a long disconnect, the Qt WebEngine
                  * render process may have been suspended/idle. Just calling
                  * update() queues a paint event, but the render process
@@ -172,7 +173,7 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
             s_send_failed = 60;  /* skip next 60 frames */
         } else {
             if (s_frame_count == 0 || s_frame_count % 60 == 0) {
-                fprintf(stderr, "[idk-client-qt] frame %d sent OK (%dx%d type=SHM fd=%d)\n",
+                IDK_LOG("client-qt", "frame %d sent OK (%dx%d type=SHM fd=%d)\n",
                         s_frame_count, frame.width, frame.height, m_memfd);
             }
             s_frame_count++;
@@ -267,7 +268,7 @@ void WebView::sendCreateImage()
     // Send "create" message to tell overlay that we're ready
     // This is a no-op for now — the overlay will receive frames via DMA-BUF
     // but we need the proper wire protocol adaptation
-    fprintf(stderr, "[idk-client-qt] Overlay %u ready: %dx%d@(%d,%d)\n",
+    IDK_LOG("client-qt", "Overlay %u ready: %dx%d@(%d,%d)\n",
             m_id, m_conf.width(), m_conf.height(), m_conf.x(), m_conf.y());
 }
 

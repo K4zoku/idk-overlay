@@ -35,6 +35,7 @@
 #include "compositor.h"
 #include "overlay_shader_embed.h"
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 /* ── Frame header from webview ─────────────────────────────────────── */
 /*
@@ -108,14 +109,14 @@ static void resolve_egl_functions(void) {
     if (!lib) lib = dlopen("libEGL.so.1", RTLD_NOW);
     if (!lib) lib = dlopen("libEGL.so", RTLD_NOW);
     if (!lib) {
-        fprintf(stderr, "[idk-comp] dlopen libEGL failed: %s\n", dlerror());
+        IDK_ERR("comp", "dlopen libEGL failed: %s\n", dlerror());
         return;
     }
     fn_eglGetDisplay       = (PFN_eglGetDisplay_fn)     dlsym(lib, "eglGetDisplay");
     fn_eglGetError         = (PFN_eglGetError_fn)       dlsym(lib, "eglGetError");
     fn_eglCreateImageKHR   = (PFN_eglCreateImageKHR_fn) dlsym(lib, "eglCreateImageKHR");
     fn_eglDestroyImageKHR  = (PFN_eglDestroyImageKHR_fn)dlsym(lib, "eglDestroyImageKHR");
-    fprintf(stderr, "[idk-comp] EGL functions: eglGetDisplay=%p eglCreateImageKHR=%p\n",
+    IDK_LOG("comp", "EGL functions: eglGetDisplay=%p eglCreateImageKHR=%p\n",
             (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
 }
 
@@ -194,7 +195,7 @@ int idk_compositor_init(void) {
             struct sockaddr_un addr = { .sun_family = AF_UNIX };
             snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_sock_path);
             if (connect(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                fprintf(stderr, "[idk-comp] Another instance is alive — compositor disabled\n");
+                IDK_ERR("comp", "Another instance is alive — compositor disabled\n");
                 close(test_fd);
                 return -1;
             }
@@ -207,7 +208,7 @@ int idk_compositor_init(void) {
 
     g_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_listen_fd < 0) {
-        fprintf(stderr, "[idk-comp] socket() failed: %s\n", strerror(errno));
+        IDK_ERR("comp", "socket() failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -229,12 +230,12 @@ int idk_compositor_init(void) {
         if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno == EADDRINUSE) {
                 /* Another instance owns this socket — compositor disabled */
-                fprintf(stderr, "[idk-comp] Another instance owns the socket, compositor disabled\n");
+                IDK_ERR("comp", "Another instance owns the socket, compositor disabled\n");
                 close(g_listen_fd);
                 g_listen_fd = -1;
                 return -1;
             }
-            fprintf(stderr, "[idk-comp] bind() failed: %s\n", strerror(errno));
+            IDK_ERR("comp", "bind() failed: %s\n", strerror(errno));
             close(g_listen_fd);
             g_listen_fd = -1;
             return -1;
@@ -242,7 +243,7 @@ int idk_compositor_init(void) {
     }
 
     if (listen(g_listen_fd, 4) < 0) {
-        fprintf(stderr, "[idk-comp] listen() failed: %s\n", strerror(errno));
+        IDK_ERR("comp", "listen() failed: %s\n", strerror(errno));
         close(g_listen_fd);
         g_listen_fd = -1;
         return -1;
@@ -251,7 +252,7 @@ int idk_compositor_init(void) {
     /* Accept first client (non-blocking — return -1 if none yet) */
     g_client_fd = accept(g_listen_fd, NULL, NULL);
     if (g_client_fd < 0) {
-        fprintf(stderr, "[idk-comp] No client yet (fd=-1, will retry next frame, err=%s)\n",
+        IDK_LOG("comp", "No client yet (fd=-1, will retry next frame, err=%s)\n",
                 strerror(errno));
         g_client_fd = -1;
     }
@@ -259,7 +260,7 @@ int idk_compositor_init(void) {
     /* Init GL resources (will be used in GL context thread) */
     g_has_frame = false;
 
-    fprintf(stderr, "[idk-comp] Listening on %s, waiting for webview client...\n", g_sock_path);
+    IDK_LOG("comp", "Listening on %s, waiting for webview client...\n", g_sock_path);
     return 0;
 }
 
@@ -275,7 +276,7 @@ static int accept_client(void) {
     socklen_t addrlen = sizeof(addr);
     int client = accept(g_listen_fd, (struct sockaddr *)&addr, &addrlen);
     if (client >= 0) {
-        fprintf(stderr, "[idk-comp] Client connected (fd=%d)\n", client);
+        IDK_LOG("comp", "Client connected (fd=%d)\n", client);
         g_client_fd = client;
     }
     return 0;
@@ -299,7 +300,7 @@ static int accept_client(void) {
 static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
                               uint32_t pixel_size, uint32_t buffer_idx) {
     if (!idk_fn_glTexImage2D) {
-        fprintf(stderr, "[idk-comp] glTexImage2D not resolved\n");
+        IDK_ERR("comp", "glTexImage2D not resolved\n");
         return 0;
     }
 
@@ -331,7 +332,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     /* Check if this is a new memfd (via inode comparison) */
     struct stat st;
     if (fstat(shm_fd, &st) < 0) {
-        fprintf(stderr, "[idk-comp] SHM fstat failed: %s\n", strerror(errno));
+        IDK_ERR("comp", "SHM fstat failed: %s\n", strerror(errno));
         return 0;
     }
     static ino_t s_shm_ino = 0;
@@ -349,7 +350,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         g_shm_map_size = (size_t)total;
         g_shm_map = mmap(NULL, g_shm_map_size, PROT_READ, MAP_SHARED, shm_fd, 0);
         if (g_shm_map == MAP_FAILED) {
-            fprintf(stderr, "[idk-comp] SHM mmap failed: %s\n", strerror(errno));
+            IDK_ERR("comp", "SHM mmap failed: %s\n", strerror(errno));
             g_shm_map = NULL;
             return 0;
         }
@@ -431,17 +432,17 @@ int idk_compositor_render(void) {
         static int poll_skip_count = 0;
         if (++poll_skip_count >= 60) {
             poll_skip_count = 0;
-            fprintf(stderr, "[idk-comp] poll: no data (fd=%d, ret=%d)\n",
+            IDK_LOG("comp", "poll: no data (fd=%d, ret=%d)\n",
                     g_client_fd, poll_ret);
         }
         return -1; /* no frame ready */
     }
     if (!(pfd.revents & POLLIN)) {
-        fprintf(stderr, "[idk-comp] poll revents=0x%x (no POLLIN)\n", pfd.revents);
+        IDK_LOG("comp", "poll revents=0x%x (no POLLIN)\n", pfd.revents);
         return -1;
     }
 
-    fprintf(stderr, "[idk-comp] poll OK — data available\n");
+    IDK_LOG("comp", "poll OK — data available\n");
 
     /* Receive frame header + fd */
     char ctrl_buf[CMSG_SPACE(sizeof(int))];
@@ -455,10 +456,10 @@ int idk_compositor_render(void) {
     };
 
     ssize_t n = recvmsg(g_client_fd, &msgh, MSG_DONTWAIT);
-    fprintf(stderr, "[idk-comp] recvmsg returned %zd (need %zu)\n",
+    IDK_LOG("comp", "recvmsg returned %zd (need %zu)\n",
             n, sizeof(struct frame_hdr));
     if (n < (ssize_t)sizeof(struct frame_hdr)) {
-        fprintf(stderr, "[idk-comp] recvmsg too short — skipping\n");
+        IDK_ERR("comp", "recvmsg too short — skipping\n");
 
         /* recvmsg() returning exactly 0 means the client closed the socket
          * (clean EOF). POLLIN keeps firing on a closed socket forever, so
@@ -492,13 +493,13 @@ int idk_compositor_render(void) {
     }
 
     if (dmabuf_fd < 0) {
-        fprintf(stderr, "[idk-comp] no fd in SCM_RIGHTS\n");
+        IDK_ERR("comp", "no fd in SCM_RIGHTS\n");
         return -1;
     }
 
     memcpy(&hdr, msg_buf, sizeof(hdr));
 
-    fprintf(stderr, "[idk-comp] frame: %ux%u type=%u fd=%d\n",
+    IDK_LOG("comp", "frame: %ux%u type=%u fd=%d\n",
             hdr.width, hdr.height, (hdr.vis_type >> 8) & 0xFF, dmabuf_fd);
 
     /* Upload to GL texture.
@@ -521,7 +522,7 @@ int idk_compositor_render(void) {
         tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
                              pixel_size, hdr.num_planes);
         if (tex == 0) {
-            fprintf(stderr, "[idk-comp] SHM texture upload failed\n");
+            IDK_ERR("comp", "SHM texture upload failed\n");
             return -1;
         }
     } else {
@@ -532,7 +533,7 @@ int idk_compositor_render(void) {
             /* Fallback: maybe this is actually a memfd, not real DMABUF.
              * Try SHM upload with default pixel size. */
             uint32_t pixel_size = hdr.width * hdr.height * 4;
-            fprintf(stderr, "[idk-comp] DMABUF import failed, trying SHM fallback\n");
+            IDK_LOG("comp", "DMABUF import failed, trying SHM fallback\n");
             tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                  pixel_size, hdr.num_planes);
             if (tex == 0) {
@@ -554,7 +555,7 @@ int idk_compositor_render(void) {
     g_frame_w = hdr.width;
     g_frame_h = hdr.height;
 
-    fprintf(stderr, "[idk-comp] texture uploaded: tex[%d]=%u %ux%u pixel_size=%u\n",
+    IDK_LOG("comp", "texture uploaded: tex[%d]=%u %ux%u pixel_size=%u\n",
             g_tex_idx, g_tex[g_tex_idx], hdr.width, hdr.height, hdr.reserved);
 
     /* Send ACK to client — flow control: client waits for this before
@@ -563,7 +564,7 @@ int idk_compositor_render(void) {
     {
         char ack = 0;
         if (write(g_client_fd, &ack, 1) < 0) {
-            fprintf(stderr, "[idk-comp] ACK write failed: %s\n", strerror(errno));
+            IDK_ERR("comp", "ACK write failed: %s\n", strerror(errno));
         }
     }
 
@@ -583,7 +584,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     if (!fn_eglCreateImageKHR) {
         resolve_egl_functions();
         if (!fn_eglCreateImageKHR) {
-            fprintf(stderr, "[idk-comp] EGL dma_buf import not available\n");
+            IDK_ERR("comp", "EGL dma_buf import not available\n");
             return 0;
         }
     }
@@ -621,7 +622,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
 
     if (img == EGL_NO_IMAGE_KHR) {
-        fprintf(stderr, "[idk-comp] eglCreateImageKHR failed: 0x%04X\n",
+        IDK_ERR("comp", "eglCreateImageKHR failed: 0x%04X\n",
                 (unsigned int)(fn_eglGetError ? fn_eglGetError() : 0));
         return 0;
     }
@@ -643,7 +644,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     /* Destroy EGL image — GL texture keeps reference */
     fn_eglDestroyImageKHR(egl_dpy, img);
 
-    fprintf(stderr, "[idk-comp] Uploaded overlay %dx%d as GL tex %u\n",
+    IDK_LOG("comp", "Uploaded overlay %dx%d as GL tex %u\n",
             w, h, tex);
     return tex;
 }
@@ -691,10 +692,10 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
              * Don't call glDeleteProgram — the ID may belong to the host. */
             g_program = 0;
             if (idk_compositor_init_gl() != 0) {
-                fprintf(stderr, "[idk-comp] shader re-init failed — skipping frame\n");
+                IDK_ERR("comp", "shader re-init failed — skipping frame\n");
                 return;
             }
-            fprintf(stderr, "[idk-comp] shader re-init OK, new g_program=%u\n", g_program);
+            IDK_LOG("comp", "shader re-init OK, new g_program=%u\n", g_program);
         }
     }
 
@@ -721,7 +722,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     static int s_render_debug = 0;
     int dbg = s_render_debug++;
     if (dbg < 5 || dbg % 120 == 0) {
-        fprintf(stderr, "[idk-comp] render_overlay: fb=%dx%d prog=%u\n",
+        IDK_LOG("comp", "render_overlay: fb=%dx%d prog=%u\n",
                 fb_w, fb_h, g_program);
     }
 
@@ -779,7 +780,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     {
         static int dbg = 0;
         if (dbg++ < 3)
-            fprintf(stderr, "[idk-comp] draw_buffer=0x%x\n", last_draw_buffer);
+            IDK_LOG("comp", "draw_buffer=0x%x\n", last_draw_buffer);
     }
 
     /* Clear any stale GL errors before our draw */
@@ -795,7 +796,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         if (g_draw_err_count == 1) { \
             GLenum _e = glGetError(); \
             if (_e != GL_NO_ERROR) \
-                fprintf(stderr, "[idk-comp] GL setup error @ %s: 0x%x\n", label, _e); \
+                IDK_ERR("comp", "GL setup error @ %s: 0x%x\n", label, _e); \
         } \
     } while(0)
 
@@ -842,7 +843,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     static int s_frame_counter = 0;
     s_frame_counter++;
     if (s_frame_counter % 60 == 0) {
-        fprintf(stderr, "[idk-comp] render: tex[%d]=%u has_frame=%d fb=%dx%d\n",
+        IDK_LOG("comp", "render: tex[%d]=%u has_frame=%d fb=%dx%d\n",
                 g_tex_idx, g_tex[g_tex_idx], g_has_frame, fb_w, fb_h);
     }
 
@@ -916,7 +917,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     /* Check if display texture is valid */
     GLuint cur = g_tex[g_tex_idx];
     if (cur > 0 && !glIsTexture(cur)) {
-        fprintf(stderr, "[idk-comp] WARNING: tex[%d] (%u) is not a valid texture!\n", g_tex_idx, cur);
+        IDK_ERR("comp", "WARNING: tex[%d] (%u) is not a valid texture!\n", g_tex_idx, cur);
         g_tex[g_tex_idx] = 0;
         g_has_frame = false;
     }
@@ -1014,7 +1015,7 @@ void idk_compositor_shutdown(void) {
     if (g_program) glDeleteProgram(g_program);
 
     g_has_frame = false;
-    fprintf(stderr, "[idk-comp] Shut down\n");
+    IDK_LOG("comp", "Shut down\n");
 }
 
 /* ── GL resource initialization ────────────────────────────────────── */
@@ -1026,7 +1027,7 @@ int idk_compositor_init_gl(void) {
     /* Resolve all GL function pointers via dlsym (no link-time GL dep).
      * idk_gl_loader_init tries libGL.so.1, libGLESv2.so.2, etc. */
     if (idk_gl_loader_init() != 0) {
-        fprintf(stderr, "[idk-comp] GL loader init failed — cannot init GL resources\n");
+        IDK_ERR("comp", "GL loader init failed — cannot init GL resources\n");
         return -1;
     }
 
@@ -1040,7 +1041,7 @@ int idk_compositor_init_gl(void) {
     if (libgl) {
         fn_glEGLImageTargetTexture2DOES =
             (PFN_glEGLImageTargetTexture2DOES_fn)dlsym(libgl, "glEGLImageTargetTexture2DOES");
-        fprintf(stderr, "[idk-comp] glEGLImageTargetTexture2DOES = %p\n",
+        IDK_LOG("comp", "glEGLImageTargetTexture2DOES = %p\n",
                 (void *)fn_glEGLImageTargetTexture2DOES);
     }
 
@@ -1068,7 +1069,7 @@ int idk_compositor_init_gl(void) {
             g_gl_version = major * 100 + minor * 10;
             if (g_is_gles && g_gl_version < 300)
                 g_gl_version = 200;
-            fprintf(stderr, "[idk-comp] GL version: %d.%d %s (g_gl_version=%d)\n",
+            IDK_LOG("comp", "GL version: %d.%d %s (g_gl_version=%d)\n",
                     major, minor, g_is_gles ? "ES" : "", g_gl_version);
         }
     }
@@ -1123,17 +1124,17 @@ int idk_compositor_init_gl(void) {
 
     /* Build vertex shader source: version + body */
     char *vs_full = malloc((size_t)vs_len + 1);
-    if (!vs_full) { fprintf(stderr, "[idk-comp] vs_full malloc failed\n"); return -1; }
+    if (!vs_full) { IDK_ERR("comp", "vs_full malloc failed\n"); return -1; }
     strcpy(vs_full, ver_str);
     strcat(vs_full, vs_body);
 
     /* Build fragment shader source: version + body */
     char *fs_full = malloc((size_t)fs_len + 1);
-    if (!fs_full) { free(vs_full); fprintf(stderr, "[idk-comp] fs_full malloc failed\n"); return -1; }
+    if (!fs_full) { free(vs_full); IDK_ERR("comp", "fs_full malloc failed\n"); return -1; }
     strcpy(fs_full, ver_str);
     strcat(fs_full, fs_body);
 
-    fprintf(stderr, "[idk-comp] Using GLSL %s shader variant\n", ver_str);
+    IDK_LOG("comp", "Using GLSL %s shader variant\n", ver_str);
 
     /* Compile vertex shader */
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
@@ -1148,7 +1149,7 @@ int idk_compositor_init_gl(void) {
         glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &ok);
         if (ok > 0) {
             glGetShaderInfoLog(vs, 512, NULL, log);
-            fprintf(stderr, "[idk-comp] VS log:\n%s\n", log);
+            IDK_ERR("comp", "VS log:\n%s\n", log);
         }
         glDeleteShader(vs);
         free(vs_full);
@@ -1168,7 +1169,7 @@ int idk_compositor_init_gl(void) {
         glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &ok);
         if (ok > 0) {
             glGetShaderInfoLog(fs, 512, NULL, log);
-            fprintf(stderr, "[idk-comp] FS log:\n%s\n", log);
+            IDK_ERR("comp", "FS log:\n%s\n", log);
         }
         glDeleteShader(vs);
         glDeleteShader(fs);
@@ -1192,7 +1193,7 @@ int idk_compositor_init_gl(void) {
         glGetProgramiv(g_program, GL_INFO_LOG_LENGTH, &ok);
         if (ok > 0) {
             glGetProgramInfoLog(g_program, 512, NULL, log);
-            fprintf(stderr, "[idk-comp] Link log: %s\n", log);
+            IDK_ERR("comp", "Link log: %s\n", log);
         }
         glDeleteProgram(g_program);
         g_program = 0;
@@ -1204,7 +1205,7 @@ int idk_compositor_init_gl(void) {
     glDeleteShader(vs);
     glDeleteShader(fs);
 
-    fprintf(stderr, "[idk-comp] GL compositor ready (program=%u)\n",
+    IDK_LOG("comp", "GL compositor ready (program=%u)\n",
             g_program);
     return 0;
 }

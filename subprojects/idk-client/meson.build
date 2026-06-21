@@ -14,18 +14,21 @@ client_c_flags = [
     '-O2',
 ]
 
+# Include the parent project's include/ directory so we can use idk_log.h
+idk_overlay_include = include_directories('../../include')
+
 idk_client_lib = shared_library(
     'idk-client',
     'src/idk_client.c',
     c_args: client_c_flags,
-    include_directories: include_directories('include'),
+    include_directories: [include_directories('include'), idk_overlay_include],
     link_args: ['-ldl', '-lpthread'],
     version: '0.1',
     install: true,
 )
 
 idk_client_dep = declare_dependency(
-    include_directories: include_directories('include'),
+    include_directories: [include_directories('include'), idk_overlay_include],
     link_with: idk_client_lib,
 )
 

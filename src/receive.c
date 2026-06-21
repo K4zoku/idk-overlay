@@ -24,6 +24,7 @@
 #include <poll.h>
 
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 /* ── Frame header ─────────────────────────────────────────────────────── */
 
@@ -81,7 +82,7 @@ int receive_frame(int sock_fd, struct frame_hdr *hdr, int *out_fd) {
     ssize_t n = recvmsg(sock_fd, &msgh, 0);
     if (n <= 0) {
         if (n == 0) return -1; /* peer closed */
-        fprintf(stderr, "[idk-receive] recvmsg failed: %s\n", strerror(errno));
+        IDK_ERR("render", "recvmsg failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -95,7 +96,7 @@ int receive_frame(int sock_fd, struct frame_hdr *hdr, int *out_fd) {
     }
 
     if (*out_fd < 0) {
-        fprintf(stderr, "[idk-receive] No fd received\n");
+        IDK_ERR("render", "No fd received\n");
         return -1;
     }
 

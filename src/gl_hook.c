@@ -32,6 +32,7 @@
 #include "idk_gl.h"
 #include "idk_ipc.h"
 #include "compositor.h"
+#include "idk_log.h"
 
 /* ── GL function pointer types ─────────────────────────────────────── */
 
@@ -75,20 +76,20 @@ static int read_pixels_to_shm(uint32_t width, uint32_t height) {
 
     int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
     if (shm_fd < 0) {
-        fprintf(stderr, "[idk-gl] shm_open failed: %s\n", strerror(errno));
+        IDK_ERR("gl", "shm_open failed: %s\n", strerror(errno));
         return -1;
     }
 
     size_t buf_size = width * height * 4;
     if (ftruncate(shm_fd, buf_size) < 0) {
-        fprintf(stderr, "[idk-gl] ftruncate failed: %s\n", strerror(errno));
+        IDK_ERR("gl", "ftruncate failed: %s\n", strerror(errno));
         close(shm_fd);
         return -1;
     }
 
     uint8_t *pixel_buf = malloc(buf_size);
     if (!pixel_buf) {
-        fprintf(stderr, "[idk-gl] malloc failed\n");
+        IDK_ERR("gl", "malloc failed\n");
         close(shm_fd);
         return -1;
     }
@@ -96,13 +97,13 @@ static int read_pixels_to_shm(uint32_t width, uint32_t height) {
     uint8_t *gl_buf = malloc(buf_size);
     if (!gl_buf) {
         free(pixel_buf);
-        fprintf(stderr, "[idk-gl] malloc (gl_buf) failed\n");
+        IDK_ERR("gl", "malloc (gl_buf) failed\n");
         close(shm_fd);
         return -1;
     }
 
     if (!fn_glReadPixels) {
-        fprintf(stderr, "[idk-gl] glReadPixels not available\n");
+        IDK_ERR("gl", "glReadPixels not available\n");
         free(gl_buf);
         free(pixel_buf);
         close(shm_fd);
@@ -125,7 +126,7 @@ static int read_pixels_to_shm(uint32_t width, uint32_t height) {
 
     void *shm_map = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (shm_map == MAP_FAILED) {
-        fprintf(stderr, "[idk-gl] mmap SHM failed: %s\n", strerror(errno));
+        IDK_ERR("gl", "mmap SHM failed: %s\n", strerror(errno));
         free(gl_buf);
         free(pixel_buf);
         close(shm_fd);
@@ -279,9 +280,9 @@ int idk_gl_init(int ipc_fd, const char *shm_base) {
     /* Start listening for webview clients (for overlay frames) */
     int comp_ret = idk_compositor_init();
     if (comp_ret == 0) {
-        fprintf(stderr, "[idk-gl] Compositor listening for overlay frames\n");
+        IDK_LOG("gl", "Compositor listening for overlay frames\n");
     } else {
-        fprintf(stderr, "[idk-gl] WARNING: Could not start compositor (overlay disabled)\n");
+        IDK_ERR("gl", "WARNING: Could not start compositor (overlay disabled)\n");
     }
 
     /* Hook GLX */
@@ -305,7 +306,7 @@ int idk_gl_init(int ipc_fd, const char *shm_base) {
                               (void **)&orig_SDL_GL_SwapWindow);
     }
 
-    fprintf(stderr, "[idk-gl] GL hooks installed (glReadPixels=%p, glGetIntegerv=%p)\n",
+    IDK_LOG("gl", "GL hooks installed (glReadPixels=%p, glGetIntegerv=%p)\n",
             (void *)fn_glReadPixels, (void *)fn_glGetIntegerv);
     return 0;
 }

@@ -11,6 +11,7 @@
 #include <QDebug>
 
 #include "idk_client.h"
+#include "idk_log.h"
 
 Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     : QObject(parent)
@@ -55,11 +56,11 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
          * handles the common case where compositor is already running. */
         if (idk_client_init(m_socketPath.toUtf8().data(), false) == 0) {
             m_was_connected = true;
-            fprintf(stderr, "[idk-client-qt] idk_client connected to %s\n",
+            IDK_LOG("client-qt", "idk_client connected to %s\n",
                     m_socketPath.toUtf8().data());
             emit socketConnected();
         } else {
-            fprintf(stderr, "[idk-client-qt] idk_client connect failed, will retry\n");
+            IDK_LOG("client-qt", "idk_client connect failed, will retry\n");
         }
 
         /* Poll idk_client_get_fd() every 1s to detect state transitions. */
@@ -70,7 +71,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
             if (connected_now && !m_was_connected) {
                 /* Transition: disconnected → connected */
                 m_disconnect_count = 0;
-                fprintf(stderr, "[idk-client-qt] idk_client connected (fd=%d)\n", fd_now);
+                IDK_LOG("client-qt", "idk_client connected (fd=%d)\n", fd_now);
                 emit socketConnected();
             } else if (!connected_now && m_was_connected) {
                 /* Transition: connected → disconnected.
@@ -78,11 +79,11 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                  * Try to reconnect; if it fails, the next timer tick retries.
                  * Log only ONCE per disconnect (not every retry) — the
                  * "still connecting" branch below handles subsequent retries. */
-                fprintf(stderr, "[idk-client-qt] idk_client disconnected — attempting reconnect\n");
+                IDK_LOG("client-qt", "idk_client disconnected — attempting reconnect\n");
                 emit socketDisconnected();
                 /* Attempt non-blocking reconnect (single attempt, no 3s block) */
                 if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
-                    fprintf(stderr, "[idk-client-qt] idk_client reconnected\n");
+                    IDK_LOG("client-qt", "idk_client reconnected\n");
                     emit socketConnected();
                     connected_now = true;
                     m_disconnect_count = 0;
@@ -107,11 +108,11 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                                    m_disconnect_count == 30 ||
                                    (m_disconnect_count > 30 && m_disconnect_count % 60 == 0));
                 if (should_log) {
-                    fprintf(stderr, "[idk-client-qt] idk_client waiting for compositor (attempt %d)\n",
+                    IDK_LOG("client-qt", "idk_client waiting for compositor (attempt %d)\n",
                             m_disconnect_count);
                 }
                 if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
-                    fprintf(stderr, "[idk-client-qt] idk_client connected after %d attempts\n",
+                    IDK_LOG("client-qt", "idk_client connected after %d attempts\n",
                             m_disconnect_count);
                     m_disconnect_count = 0;
                     emit socketConnected();

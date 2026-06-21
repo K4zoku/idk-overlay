@@ -20,6 +20,7 @@
 #include <errno.h>
 
 #include "syringe.h"
+#include "idk_log.h"
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -47,7 +48,7 @@ int main(int argc, char **argv) {
 
     pid_t target_pid = (pid_t)atoi(argv[1]);
     if (target_pid <= 0) {
-        fprintf(stderr, "Error: invalid PID\n");
+        IDK_ERR("inject", "Error: invalid PID\n");
         return 1;
     }
 
@@ -80,7 +81,7 @@ int main(int argc, char **argv) {
     /* Resolve to absolute path */
     char abs_path[4096];
     if (realpath(lib_path, abs_path) == NULL) {
-        fprintf(stderr, "Error: cannot resolve library path: %s (%s)\n", lib_path, strerror(errno));
+        IDK_ERR("inject", "Error: cannot resolve library path: %s (%s)\n", lib_path, strerror(errno));
         return 1;
     }
 
@@ -91,11 +92,11 @@ int main(int argc, char **argv) {
         sock_path = default_sock;
     }
 
-    fprintf(stderr, "idk-inject: targeting PID %d\n", target_pid);
-    fprintf(stderr, "  library:  %s\n", abs_path);
-    fprintf(stderr, "  socket:   %s\n", sock_path);
-    fprintf(stderr, "  Vulkan:   %s\n", enable_vk ? "enabled" : "disabled");
-    fprintf(stderr, "  OpenGL:   %s\n", enable_gl ? "enabled" : "disabled");
+    IDK_LOG("inject", "idk-inject: targeting PID %d\n", target_pid);
+    IDK_LOG("inject", "  library:  %s\n", abs_path);
+    IDK_LOG("inject", "  socket:   %s\n", sock_path);
+    IDK_LOG("inject", "  Vulkan:   %s\n", enable_vk ? "enabled" : "disabled");
+    IDK_LOG("inject", "  OpenGL:   %s\n", enable_gl ? "enabled" : "disabled");
 
     /* Set environment variables that the injected .so will read.
      * syringe_inject() doesn't pass env vars itself, but the constructor
@@ -108,21 +109,21 @@ int main(int argc, char **argv) {
      * For now: if user set IDK_SOCKET in env, write it to a sidecar
      * file /tmp/idk-overlay-<pid>.env that the .so can read.
      * Better: just print clear instructions. */
-    fprintf(stderr, "\n  NOTE: Make sure IDK_SOCKET/IDK_VK/IDK_GL env vars\n"
+    IDK_LOG("inject", "\n  NOTE: Make sure IDK_SOCKET/IDK_VK/IDK_GL env vars\n"
                     "        are set in the TARGET process (osu!) before inject.\n"
                     "        Or pass --socket and let the .so default.\n");
 
     /* Skip render process for now — it's optional and was causing
      * "command not found" errors. User can start idk-render manually. */
-    fprintf(stderr, "\n[1/1] Injecting library...\n");
+    IDK_LOG("inject", "\n[1/1] Injecting library...\n");
     int rc = syringe_inject(target_pid, abs_path);
 
     if (rc == 0) {
-        fprintf(stderr, "\n[success] Injection complete!\n");
-        fprintf(stderr, "  Socket path: %s\n", sock_path);
-        fprintf(stderr, "  Check log:   stderr of PID %d\n", target_pid);
+        IDK_LOG("inject", "\n[success] Injection complete!\n");
+        IDK_LOG("inject", "  Socket path: %s\n", sock_path);
+        IDK_LOG("inject", "  Check log:   stderr of PID %d\n", target_pid);
     } else {
-        fprintf(stderr, "\n[error] Injection failed: %s\n", strerror(errno));
+        IDK_ERR("inject", "\n[error] Injection failed: %s\n", strerror(errno));
         return 1;
     }
 

@@ -22,6 +22,7 @@
 #include "hook/syringe_hook.h"
 #include "idk_vulkan.h"
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 /* ── Vulkan types (opaque — we don't need full headers) ────────────────── */
 
@@ -73,7 +74,7 @@ static void *resolve_vk_proc(const char *name) {
         handle = dlopen("libvulkan.so.1.3.290", RTLD_NOW | RTLD_GLOBAL);
     }
     if (!handle) {
-        fprintf(stderr, "[idk-vk] dlopen libvulkan failed: %s\n", dlerror());
+        IDK_ERR("vk", "dlopen libvulkan failed: %s\n", dlerror());
         return NULL;
     }
 
@@ -140,7 +141,7 @@ static VkResult hook_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
              * metadata (width, height, VkImage array), then lookup the image
              * by swapchain handle and image index here.
              */
-            fprintf(stderr, "[idk-vk] QueuePresentKHR swapchain[%u] (stub)\n", i);
+            IDK_LOG("vk", "QueuePresentKHR swapchain[%u] (stub)\n", i);
             /*
             VkSwapchainKHR sc = pPresentInfo->pSwapchains[i];
             uint32_t img_idx = pPresentInfo->pImageIndices[i];
@@ -183,11 +184,11 @@ int idk_vulkan_init(int ipc_fd, const char *socket_path) {
     /* Try to resolve and hook vkQueuePresentKHR */
     void *sym = resolve_vk_proc("vkQueuePresentKHR");
     if (!sym) {
-        fprintf(stderr, "[idk-vk] vkQueuePresentKHR not found — Vulkan hook skipped\n");
+        IDK_ERR("vk", "vkQueuePresentKHR not found — Vulkan hook skipped\n");
         return -1;
     }
 
-    fprintf(stderr, "[idk-vk] vkQueuePresentKHR resolved at %p\n", sym);
+    IDK_LOG("vk", "vkQueuePresentKHR resolved at %p\n", sym);
 
     int n = syringe_hook_install("vkQueuePresentKHR", (void *)hook_QueuePresentKHR,
                                   &orig_QueuePresentKHR_store);
@@ -195,26 +196,26 @@ int idk_vulkan_init(int ipc_fd, const char *socket_path) {
     if (n > 0) {
         /* GOT slots patched + trampoline installed */
         orig_QueuePresentKHR = (PFN_vkQueuePresentKHR)orig_QueuePresentKHR_store;
-        fprintf(stderr, "[idk-vk] Hook installed (%d GOT patches, trampoline)\n", n);
+        IDK_LOG("vk", "Hook installed (%d GOT patches, trampoline)\n", n);
     } else {
         /* No GOT entries and dlsym failed. Install trampoline directly
          * at the dlopen-resolved address. This handles Vulkan symbols
          * not in RTLD_DEFAULT global scope. */
-        fprintf(stderr, "[idk-vk] syringe_hook_install failed — building direct trampoline at %p\n", sym);
-        fprintf(stderr, "[idk-vk] About to mmap...\n");
+        IDK_LOG("vk", "syringe_hook_install failed — building direct trampoline at %p\n", sym);
+        IDK_LOG("vk", "About to mmap...\n");
         void *trampoline = mmap(NULL, 64, PROT_READ|PROT_WRITE|PROT_EXEC,
                                 MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-        fprintf(stderr, "[idk-vk] mmap returned %p\n", trampoline);
+        IDK_LOG("vk", "mmap returned %p\n", trampoline);
         if (trampoline == MAP_FAILED) {
-            fprintf(stderr, "[idk-vk] mmap trampoline failed\n");
+            IDK_ERR("vk", "mmap trampoline failed\n");
             orig_QueuePresentKHR = (PFN_vkQueuePresentKHR)sym;
         } else {
-            fprintf(stderr, "[idk-vk] mmap OK, building jump...\n");
+            IDK_LOG("vk", "mmap OK, building jump...\n");
             /* Build: jmp *hook (FF 25 00 00 00 00 + absolute addr) */
             uint8_t *jmp = (uint8_t*)trampoline;
             jmp[0] = 0xFF; jmp[1] = 0x25; jmp[2] = jmp[3] = jmp[4] = jmp[5] = 0;
             memcpy(jmp + 6, &hook_QueuePresentKHR, 8);
-            fprintf(stderr, "[idk-vk] jump built OK\n");
+            IDK_LOG("vk", "jump built OK\n");
 
             /* Build reverse jump: jmp <original+14> */
             uint8_t *ret = (uint8_t*)trampoline + 14;
@@ -226,14 +227,14 @@ int idk_vulkan_init(int ipc_fd, const char *socket_path) {
             /* Save stolen bytes using /proc/self/mem (safe for non-readable pages) */
             uint8_t stolen[14];
             if (syringe_hook_mem_read(stolen, sym, 14) != 0) {
-                fprintf(stderr, "[idk-vk] Could not read stolen bytes via /proc/self/mem\n");
+                IDK_ERR("vk", "Could not read stolen bytes via /proc/self/mem\n");
                 munmap(trampoline, 64);
                 orig_QueuePresentKHR = (PFN_vkQueuePresentKHR)sym;
                 return 0; /* bail — can't steal prologue */
             }
 
             /* Write reverse jump at original (need to patch read-only code) */
-            fprintf(stderr, "[idk-vk] Calling syringe_hook_safe_write...\n");
+            IDK_LOG("vk", "Calling syringe_hook_safe_write...\n");
             if (syringe_hook_safe_write(sym, rev_jmp, 14) == 0) {
                 __builtin___clear_cache((char*)sym, (char*)sym + 14);
                 orig_QueuePresentKHR = (PFN_vkQueuePresentKHR)trampoline;
@@ -241,10 +242,10 @@ int idk_vulkan_init(int ipc_fd, const char *socket_path) {
                 if (orig_QueuePresentKHR_store) {
                     memcpy(orig_QueuePresentKHR_store, stolen, 14);
                 }
-                fprintf(stderr, "[idk-vk] Direct trampoline installed @ %p → %p\n",
+                IDK_LOG("vk", "Direct trampoline installed @ %p → %p\n",
                         sym, trampoline);
             } else {
-                fprintf(stderr, "[idk-vk] safe_write failed — hook NOT installed\n");
+                IDK_ERR("vk", "safe_write failed — hook NOT installed\n");
                 munmap(trampoline, 64);
                 orig_QueuePresentKHR = (PFN_vkQueuePresentKHR)sym;
             }

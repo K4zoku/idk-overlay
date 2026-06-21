@@ -35,6 +35,7 @@
 #include <poll.h>
 
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 /* ── Overlay management ──────────────────────────────────────────────── */
 
@@ -69,7 +70,7 @@ static void signal_handler(int sig) {
 static int create_server_socket(const char *sockpath) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
-        fprintf(stderr, "[idk-render] socket() failed: %s\n", strerror(errno));
+        IDK_ERR("render", "socket() failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -78,25 +79,25 @@ static int create_server_socket(const char *sockpath) {
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     size_t len = strlen(sockpath);
     if (len >= sizeof(addr.sun_path)) {
-        fprintf(stderr, "[idk-render] socket path too long\n");
+        IDK_ERR("render", "socket path too long\n");
         close(fd);
         return -1;
     }
     memcpy(addr.sun_path, sockpath, len + 1);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "[idk-render] bind() failed: %s\n", strerror(errno));
+        IDK_ERR("render", "bind() failed: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
 
     if (listen(fd, 16) < 0) {
-        fprintf(stderr, "[idk-render] listen() failed: %s\n", strerror(errno));
+        IDK_ERR("render", "listen() failed: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
 
-    fprintf(stderr, "[idk-render] Listening on %s\n", sockpath);
+    IDK_LOG("render", "Listening on %s\n", sockpath);
     return fd;
 }
 
@@ -113,7 +114,7 @@ static int find_or_create_overlay(uint8_t id) {
     }
     /* Create new overlay slot */
     if (g_num_overlays >= RENDER_MAX_OVERLAYS) {
-        fprintf(stderr, "[idk-render] Max overlays (%d) reached\n", RENDER_MAX_OVERLAYS);
+        IDK_ERR("render", "Max overlays (%d) reached\n", RENDER_MAX_OVERLAYS);
         return -1;
     }
     int idx = g_num_overlays++;
@@ -160,14 +161,14 @@ static void update_overlay(render_overlay_t *ov, const void *info, size_t info_l
         ov->pixels = mmap(NULL, ov->pixel_size, PROT_READ, MAP_SHARED, fd, 0);
         if (ov->pixels == MAP_FAILED) {
             ov->pixels = NULL;
-            fprintf(stderr, "[idk-render] mmap overlay %u failed: %s\n",
+            IDK_ERR("render", "mmap overlay %u failed: %s\n",
                     ov->id, strerror(errno));
             return;
         }
     }
 
-    fprintf(stderr,
-            "[idk-render] Overlay %u: %dx%d@(%u,%u) vis=%d src=%s\n",
+    IDK_LOG("render",
+            "Overlay %u: %dx%d@(%u,%u) vis=%d src=%s\n",
             ov->id, ov->width, ov->height, ov->x, ov->y,
             ov->visible, ov->source ? "client" : "injected");
 }
@@ -200,14 +201,14 @@ static void process_frame(const void *info, size_t info_len, int fd) {
         update_overlay(&g_overlays[idx], info, info_len, fd);
     } else {
         /* Full-screen frame from injected library */
-        fprintf(stderr,
-                "[idk-render] Frame #%d: %dx%d stride=%d fmt=0x%08X pid=%d fd=%d\n",
+        IDK_LOG("render",
+                "Frame #%d: %dx%d stride=%d fmt=0x%08X pid=%d fd=%d\n",
                 g_frame_count, hdr->width, hdr->height, hdr->stride,
                 hdr->format, hdr->pid, fd);
 
         /* Validate format */
         if (hdr->format != 0x34325258) {
-            fprintf(stderr, "[idk-render] Unknown format 0x%08X, skipping\n",
+            IDK_ERR("render", "Unknown format 0x%08X, skipping\n",
                     hdr->format);
             close(fd);
             return;
@@ -217,13 +218,13 @@ static void process_frame(const void *info, size_t info_len, int fd) {
         size_t pixel_size = (size_t)hdr->width * (size_t)hdr->height * 4;
         uint8_t *pixels = mmap(NULL, pixel_size, PROT_READ, MAP_SHARED, fd, 0);
         if (pixels == MAP_FAILED) {
-            fprintf(stderr, "[idk-render] mmap SHM failed: %s\n", strerror(errno));
+            IDK_ERR("render", "mmap SHM failed: %s\n", strerror(errno));
             close(fd);
             return;
         }
 
-        fprintf(stderr,
-                "[idk-render] SHM frame loaded: %u bytes at %p (ABGR8888)\n",
+        IDK_LOG("render",
+                "SHM frame loaded: %u bytes at %p (ABGR8888)\n",
                 (unsigned)pixel_size, (void *)pixels);
 
         munmap(pixels, pixel_size);
@@ -262,7 +263,7 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    fprintf(stderr, "[idk-render] Starting (sock=%s max=%d)\n", g_sockpath, g_max_frames);
+    IDK_LOG("render", "Starting (sock=%s max=%d)\n", g_sockpath, g_max_frames);
 
     int server_fd = create_server_socket(g_sockpath);
     if (server_fd < 0) {
@@ -284,7 +285,7 @@ int main(int argc, char **argv) {
             int new_fd = accept_client(server_fd);
             if (new_fd >= 0) {
                 client_fd = new_fd;
-                fprintf(stderr, "[idk-render] Client connected\n");
+                IDK_LOG("render", "Client connected\n");
             }
             continue;
         }
@@ -296,7 +297,7 @@ int main(int argc, char **argv) {
 
         if (rc < 0) {
             /* Client disconnected or timeout */
-            fprintf(stderr, "[idk-render] Client disconnected\n");
+            IDK_LOG("render", "Client disconnected\n");
             close(client_fd);
             client_fd = -1;
             continue;
@@ -309,6 +310,6 @@ int main(int argc, char **argv) {
     close(server_fd);
     unlink(g_sockpath);
 
-    fprintf(stderr, "[idk-render] Shutdown. Total frames: %d\n", g_frame_count);
+    IDK_LOG("render", "Shutdown. Total frames: %d\n", g_frame_count);
     return 0;
 }

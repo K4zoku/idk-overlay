@@ -44,6 +44,7 @@
 #include "idk_egl.h"
 #include "idk_gl_loader.h"   /* GL types + function pointer redirects */
 #include "compositor.h"
+#include "idk_log.h"
 
 /* Debug log file — bypass stderr (which AppImage may redirect). */
 static FILE *g_dbg = NULL;
@@ -55,7 +56,7 @@ static void egl_dbg_init(void) {
 #define EDBG(fmt, ...) do { \
     egl_dbg_init(); \
     if (g_dbg) fprintf(g_dbg, "[idk-egl] " fmt "\n", ##__VA_ARGS__); \
-    fprintf(stderr, "[idk-egl] " fmt "\n", ##__VA_ARGS__); \
+    IDK_LOG("egl", fmt "\n", ##__VA_ARGS__); \
 } while(0)
 
 /* ── EGL types (opaque — we don't need full EGL headers) ────────────────── */
@@ -184,7 +185,7 @@ int idk_egl_init(void) {
         return -1;
     }
 
-    fprintf(stderr, "[idk-egl] Hook installed — orig_eglSwapBuffers = %p\n",
+    IDK_LOG("egl", "Hook installed — orig_eglSwapBuffers = %p\n",
             (void*)orig_eglSwapBuffers);
     return 0;
 }

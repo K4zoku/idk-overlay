@@ -12,6 +12,7 @@
 #include <poll.h>
 
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 typedef struct idk_frame_hdr {
     uint32_t width;
@@ -95,7 +96,7 @@ int idk_ipc_send_frame(int socket_fd, const void *info, size_t info_len,
 
     ssize_t n = sendmsg(socket_fd, &msgh, 0);
     if (n < 0) {
-        fprintf(stderr, "[idk] sendmsg failed: %s\n", strerror(errno));
+        IDK_ERR("ipc", "sendmsg failed: %s\n", strerror(errno));
         return -1;
     }
     return 0;

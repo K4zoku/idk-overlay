@@ -31,6 +31,7 @@
 #include "idk_ipc.h"
 #include "idk_vulkan.h"
 #include "idk_egl.h"
+#include "idk_log.h"
 
 /* ── Global state ─────────────────────────────────────────────────────── */
 
@@ -52,7 +53,7 @@ static void dbg_init(void) {
 }
 #define DBG(fmt, ...) do { \
     if (g_dbg) fprintf(g_dbg, "[idk-overlay] " fmt "\n", ##__VA_ARGS__); \
-    fprintf(stderr, "[idk-overlay] " fmt "\n", ##__VA_ARGS__); \
+    IDK_LOG("overlay", fmt "\n", ##__VA_ARGS__); \
 } while(0)
 
 

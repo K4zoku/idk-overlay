@@ -31,6 +31,7 @@
 #include "idk_gl_loader.h"   /* GL types + function pointer redirects */
 #include "compositor.h"
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 /* ── Forward declarations ────────────────────────────────────────────── */
 
@@ -110,7 +111,7 @@ static void load_real_functions(void) {
     real_eglDestroyContext = (typeof(real_eglDestroyContext))resolve_egl_function("eglDestroyContext");
     fn_eglQuerySurface = (PFN_eglQuerySurface)resolve_egl_function("eglQuerySurface");
 
-    fprintf(stderr, "[idk-gl] Real EGL functions loaded\n");
+    IDK_LOG("gl", "Real EGL functions loaded\n");
 }
 
 /* ── Overlay initialization ──────────────────────────────────────────── */
@@ -130,15 +131,15 @@ static void init_compositor(void) {
     g_enable_gl = env_gl ? atoi(env_gl) : 1;
 
     if (!g_enable_gl) {
-        fprintf(stderr, "[idk-gl] GL disabled (IDK_GL=0)\n");
+        IDK_LOG("gl", "GL disabled (IDK_GL=0)\n");
         g_gl_initialized = true;
         return;
     }
 
     if (!g_compositor_inited) {
-        fprintf(stderr, "[idk-gl] Initializing compositor\n");
+        IDK_LOG("gl", "Initializing compositor\n");
         if (idk_compositor_init() < 0) {
-            fprintf(stderr, "[idk-gl] Compositor init failed\n");
+            IDK_ERR("gl", "Compositor init failed\n");
             return;
         }
         g_compositor_inited = 1;
@@ -185,7 +186,7 @@ static void render_overlay(void) {
     if (fb_w > 0 && fb_h > 0) {
         static int s_vp_debug = 0;
         if (s_vp_debug++ % 120 == 0) {
-            fprintf(stderr, "[idk-gl] render_overlay: fb=%dx%d has_overlay=%d\n",
+            IDK_LOG("gl", "render_overlay: fb=%dx%d has_overlay=%d\n",
                     fb_w, fb_h, idk_compositor_has_overlay());
         }
         idk_compositor_render_overlay(0, 0, fb_w, fb_h);
@@ -246,7 +247,7 @@ unsigned int idk_eglSwapBuffers(void *dpy, void *surface) {
     if (!g_gl_resources_ready) {
         if (idk_compositor_init_gl() == 0) {
             g_gl_resources_ready = 1;
-            fprintf(stderr, "[idk-gl] GL resources ready\n");
+            IDK_LOG("gl", "GL resources ready\n");
         }
     }
 
@@ -351,10 +352,10 @@ unsigned int idk_eglDestroyContext(void *dpy, void *ctx) {
 
 __attribute__((constructor))
 static void gl_hook_init(void) {
-    fprintf(stderr, "[idk-gl] Library loaded (constructor)\n");
+    IDK_LOG("gl", "Library loaded (constructor)\n");
 }
 
 __attribute__((destructor))
 static void gl_hook_shutdown(void) {
-    fprintf(stderr, "[idk-gl] Library unloaded (destructor)\n");
+    IDK_LOG("gl", "Library unloaded (destructor)\n");
 }

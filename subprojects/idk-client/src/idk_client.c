@@ -32,6 +32,7 @@
 
 #include "idk_client.h"
 #include "idk_ipc.h"
+#include "idk_log.h"
 
 /* ── Internal state ───────────────────────────────────────────────────── */
 
@@ -87,12 +88,12 @@ static int copy_to_shm(const void *src, size_t size) {
 
     int fd = shm_open(shm_name, O_RDWR | O_CREAT, 0666);
     if (fd < 0) {
-        fprintf(stderr, "[idk-client] shm_open failed: %s\n", strerror(errno));
+        IDK_ERR("client", "shm_open failed: %s\n", strerror(errno));
         return -1;
     }
 
     if (ftruncate(fd, size) < 0) {
-        fprintf(stderr, "[idk-client] ftruncate failed: %s\n", strerror(errno));
+        IDK_ERR("client", "ftruncate failed: %s\n", strerror(errno));
         close(fd);
         shm_unlink(shm_name);
         return -1;
@@ -100,7 +101,7 @@ static int copy_to_shm(const void *src, size_t size) {
 
     void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (map == MAP_FAILED) {
-        fprintf(stderr, "[idk-client] mmap failed: %s\n", strerror(errno));
+        IDK_ERR("client", "mmap failed: %s\n", strerror(errno));
         close(fd);
         shm_unlink(shm_name);
         return -1;
@@ -139,7 +140,7 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
     if (!reuse_fd) {
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) {
-            fprintf(stderr, "[idk-client] socket() failed: %s\n", strerror(errno));
+            IDK_ERR("client", "socket() failed: %s\n", strerror(errno));
             return -1;
         }
 
@@ -156,7 +157,7 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
             connect_ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
             if (connect_ret == 0) break;
             if (errno != ECONNREFUSED && errno != ENOENT) {
-                fprintf(stderr, "[idk-client] connect(%s) failed: %s\n",
+                IDK_ERR("client", "connect(%s) failed: %s\n",
                         sockpath, strerror(errno));
                 close(fd);
                 return -1;
@@ -168,8 +169,8 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
             /* Don't log on ECONNREFUSED/ENOENT when retries=0 — expected
              * case when called from a timer poll. Caller handles -1. */
             if (retries > 0 || (errno != ECONNREFUSED && errno != ENOENT)) {
-                fprintf(stderr,
-                        "[idk-client] connect(%s) failed after %d retries: %s\n",
+                IDK_ERR("client",
+                        "connect(%s) failed after %d retries: %s\n",
                         sockpath, retries, strerror(errno));
             }
             close(fd);
@@ -177,10 +178,10 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
         }
 
         g_sock_fd = fd;
-        fprintf(stderr, "[idk-client] Connected to %s (fd=%d)\n", sockpath, fd);
+        IDK_LOG("client", "Connected to %s (fd=%d)\n", sockpath, fd);
     } else {
         g_sock_fd = reuse_fd;
-        fprintf(stderr, "[idk-client] Reusing fd=%d for %s\n", reuse_fd, sockpath);
+        IDK_LOG("client", "Reusing fd=%d for %s\n", reuse_fd, sockpath);
     }
 
     return 0;
@@ -239,17 +240,17 @@ int idk_client_send_frame(int data_fd, const idk_client_frame_t *frame) {
          * Without this, sendmsg keeps failing every frame with EPIPE,
          * spamming the log — "Broken pipe" × hundreds of times per second. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
-            fprintf(stderr, "[idk-client] sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
+            IDK_ERR("client", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
                     errno, strerror(errno));
             idk_client_shutdown();
         } else {
-            fprintf(stderr, "[idk-client] sendmsg failed: %s\n", strerror(errno));
+            IDK_ERR("client", "sendmsg failed: %s\n", strerror(errno));
         }
         return -1;
     }
 
-    fprintf(stderr,
-            "[idk-client] Frame sent: %dx%d@(%d,%d) id=%d visible=%d fd=%d\n",
+    IDK_LOG("client",
+            "Frame sent: %dx%d@(%d,%d) id=%d visible=%d fd=%d\n",
             frame->width, frame->height, frame->x, frame->y,
             frame->id, frame->visible, data_fd);
     return 0;
@@ -264,7 +265,7 @@ int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame) 
     size_t pixel_size = (size_t)frame->width * (size_t)frame->height * 4;
     int shm_fd = copy_to_shm(pixels, pixel_size);
     if (shm_fd < 0) {
-        fprintf(stderr, "[idk-client] copy_to_shm failed\n");
+        IDK_ERR("client", "copy_to_shm failed\n");
         return -1;
     }
 
@@ -327,11 +328,11 @@ int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *fr
     if (n < 0) {
         /* Same EPIPE handling as idk_client_send_frame — see comment there. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
-            fprintf(stderr, "[idk-client] sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
+            IDK_ERR("client", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
                     errno, strerror(errno));
             idk_client_shutdown();
         } else {
-            fprintf(stderr, "[idk-client] sendmsg failed: %s\n", strerror(errno));
+            IDK_ERR("client", "sendmsg failed: %s\n", strerror(errno));
         }
         return -1;
     }
