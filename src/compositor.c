@@ -194,9 +194,9 @@ int idk_compositor_init(void) {
             struct sockaddr_un addr = { .sun_family = AF_UNIX };
             snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_sock_path);
             if (connect(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                fprintf(stderr, "[idk-comp] Another instance is alive — exiting\n");
+                fprintf(stderr, "[idk-comp] Another instance is alive — compositor disabled\n");
                 close(test_fd);
-                exit(0);
+                return -1;
             }
             close(test_fd);
         }
@@ -228,9 +228,11 @@ int idk_compositor_init(void) {
         unlink(g_sock_path);
         if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno == EADDRINUSE) {
-                /* Another instance owns this socket — we're a spare, exit */
-                fprintf(stderr, "[idk-comp] Another instance owns the socket, exiting\n");
-                exit(0);
+                /* Another instance owns this socket — compositor disabled */
+                fprintf(stderr, "[idk-comp] Another instance owns the socket, compositor disabled\n");
+                close(g_listen_fd);
+                g_listen_fd = -1;
+                return -1;
             }
             fprintf(stderr, "[idk-comp] bind() failed: %s\n", strerror(errno));
             close(g_listen_fd);
@@ -361,6 +363,12 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     uint32_t buf_size = pixel_size;
     uint8_t *buf = (uint8_t*)g_shm_map + (buffer_idx * buf_size);
 
+    /* Save GL_UNPACK_ALIGNMENT so we don't corrupt the host's pixel store
+     * state. glPixelStorei affects ALL subsequent glTexImage2D/glTexSubImage2D
+     * calls — including the host's — until restored. */
+    GLint last_unpack_align = 4;
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &last_unpack_align);
+
     /* Upload to the BACK texture (the one NOT currently displayed),
      * so the FRONT texture remains valid for concurrent drawing. */
     int back = 1 - g_tex_idx;
@@ -379,9 +387,17 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     } else {
         glBindTexture(GL_TEXTURE_2D, g_tex[back]);
+        if (idk_fn_glPixelStorei) {
+            idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        }
         idk_fn_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                                (GLsizei)w, (GLsizei)h,
                                GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    }
+
+    /* Restore GL_UNPACK_ALIGNMENT for the host. */
+    if (idk_fn_glPixelStorei) {
+        idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, last_unpack_align);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -734,6 +750,12 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
 
     GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
     GLint last_scissor_box[4]; glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
+
+    /* Save color mask — we overwrite it with all-TRUE during our draw.
+     * Without restoring, the host's glColorMask state leaks. */
+    GLint last_color_mask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+    glGetIntegerv(GL_COLOR_WRITEMASK, last_color_mask);
+
     GLenum last_blend_src_rgb; glGetIntegerv(GL_BLEND_SRC_RGB, (GLint*)&last_blend_src_rgb);
     GLenum last_blend_dst_rgb; glGetIntegerv(GL_BLEND_DST_RGB, (GLint*)&last_blend_dst_rgb);
     GLenum last_blend_src_alpha; glGetIntegerv(GL_BLEND_SRC_ALPHA, (GLint*)&last_blend_src_alpha);
@@ -935,6 +957,10 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     glDrawBuffer((GLenum)last_draw_buffer);
     if (last_fbo >= 0)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)last_fbo);
+
+    /* Restore color mask — was overwritten with all-TRUE during our draw. */
+    glColorMask((GLboolean)last_color_mask[0], (GLboolean)last_color_mask[1],
+                (GLboolean)last_color_mask[2], (GLboolean)last_color_mask[3]);
 }
 
 int idk_compositor_has_overlay(void) {

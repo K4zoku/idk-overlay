@@ -336,10 +336,10 @@ int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *fr
         return -1;
     }
 
-    fprintf(stderr,
-            "[idk-client] DMA-BUF sent: %dx%d@(%d,%d) id=%d visible=%d nfd=%d fd0=%d\n",
-            frame->width, frame->height, frame->x, frame->y,
-            frame->id, frame->visible, frame->nfd, dma_buf_fds[0]);
+    // fprintf(stderr,
+    //         "[idk-client] DMA-BUF sent: %dx%d@(%d,%d) id=%d visible=%d nfd=%d fd0=%d\n",
+    //         frame->width, frame->height, frame->x, frame->y,
+    //         frame->id, frame->visible, frame->nfd, dma_buf_fds[0]);
     return 0;
 }
 

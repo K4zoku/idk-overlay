@@ -57,9 +57,25 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
              * of the socket fd), so only init once. */
             if (m_memory) {
                 fprintf(stderr, "[idk-client-qt] Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
-                /* Even on reconnect, kick a paint — compositor may have
-                 * dropped our last frame and we want to refresh ASAP. */
-                if (auto *fp = focusProxy()) fp->update();
+                /* On reconnect after a long disconnect, the Qt WebEngine
+                 * render process may have been suspended/idle. Just calling
+                 * update() queues a paint event, but the render process
+                 * needs ~5s to wake up and produce content. Force a
+                 * repaint() (synchronous) + trigger a page action to
+                 * kick the render process back to life. */
+                if (auto *fp = focusProxy()) {
+                    fp->update();
+                    /* Also try repaint() — forces immediate sync paint
+                     * instead of queuing through the event loop. */
+                    fp->repaint();
+                }
+                /* If the page was idle too long, the render process may
+                 * have discarded its backing store. Reload to force a
+                 * fresh render. This is aggressive but eliminates the
+                 * 5s delay on reconnect after long disconnects. */
+                QTimer::singleShot(100, this, [this]() {
+                    if (auto *fp = focusProxy()) fp->update();
+                });
                 return;
             }
             initMemory();

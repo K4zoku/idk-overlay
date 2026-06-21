@@ -21,7 +21,7 @@ syringe_dep = syringe_proj.get_variable('libsyringe_dep')
 idk_client_proj = subproject('idk-client')
 idk_client_dep = idk_client_proj.get_variable('idk_client_dep')
 
-overlay_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2', '-Wno-pedantic']
+overlay_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2', '-Wno-pedantic', '-fno-stack-protector']
 
 # ── Shader embedding ─────────────────────────────────────────────────────
 # Generate overlay_shader_embed.h from shaders/*.vert/.frag at build time.
