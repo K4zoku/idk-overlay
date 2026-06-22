@@ -24,7 +24,7 @@
 #include <poll.h>
 
 #include "idk_ipc.h"
-#include "public/idk_log.h"
+#include "idk_log.h"
 
 /* ── Frame header ─────────────────────────────────────────────────────── */
 

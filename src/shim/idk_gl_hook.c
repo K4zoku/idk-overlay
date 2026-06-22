@@ -28,10 +28,10 @@
 #include <unistd.h>
 #include <stdint.h>
 
-#include "public/idk_gl_loader.h"   /* GL types + function pointer redirects */
+#include "idk_gl_loader.h"   /* GL types + function pointer redirects */
 #include "../core/compositor.h"
 #include "idk_ipc.h"
-#include "public/idk_log.h"
+#include "idk_log.h"
 
 /* ── Forward declarations ────────────────────────────────────────────── */
 

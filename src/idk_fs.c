@@ -32,7 +32,7 @@
 
 #include "idk_fs.h"
 #include "idk_ipc.h"
-#include "public/idk_log.h"
+#include "idk_log.h"
 
 /* ── Internal state ───────────────────────────────────────────────────── */
 

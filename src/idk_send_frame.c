@@ -46,7 +46,7 @@
 #include <sys/stat.h>
 
 #include "idk_fs.h"
-#include "public/idk_log.h"
+#include "idk_log.h"
 
 /* ── Config ───────────────────────────────────────────────────────────── */
 

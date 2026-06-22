@@ -22,7 +22,7 @@
 #include "hook/syringe_hook.h"
 #include "idk_vulkan.h"
 #include "idk_ipc.h"
-#include "public/idk_log.h"
+#include "idk_log.h"
 
 /* ── Vulkan types (opaque — we don't need full headers) ────────────────── */
 

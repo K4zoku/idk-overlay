@@ -32,7 +32,7 @@
 #include "idk_gl.h"
 #include "idk_ipc.h"
 #include "../core/compositor.h"
-#include "public/idk_log.h"
+#include "idk_log.h"
 
 /* ── GL function pointer types ─────────────────────────────────────── */
 

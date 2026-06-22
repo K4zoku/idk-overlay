@@ -1,6 +1,6 @@
 project(
     'idk-overlay',
-    'c',
+    ['c', 'cpp'],
     version: '0.1.0',
     default_options: [
         'warning_level=3',
@@ -10,6 +10,7 @@ project(
 )
 
 add_project_arguments('-fPIC', language: 'c')
+add_project_arguments('-fPIC', language: 'cpp')
 
 cc = meson.get_compiler('c')
 pthread_lib = cc.find_library('pthread', required: true)
@@ -18,10 +19,15 @@ dl_lib = cc.find_library('dl', required: true)
 syringe_proj = subproject('syringe')
 syringe_dep = syringe_proj.get_variable('libsyringe_dep')
 
-idk_fs_proj = subproject('idk-framesource')
-idk_fs_dep = idk_fs_proj.get_variable('idk_fs_dep')
-
-overlay_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2', '-Wno-pedantic', '-fno-stack-protector']
+overlay_c_flags = [
+    '-D_GNU_SOURCE',
+    '-Wall',
+    '-Wextra',
+    '-O2',
+    '-Wno-pedantic',
+    '-fno-stack-protector',
+]
+fs_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2']
 
 # ── Include directories ────────────────────────────────────────────────────
 inc = include_directories('include')
@@ -30,22 +36,26 @@ inc_public = include_directories('include/public')
 # ── Shader embedding ───────────────────────────────────────────────────────
 python3 = find_program('python3', required: false)
 shader_srcs = files(
-    'shaders/overlay_120.vert',
     'shaders/overlay_120.frag',
-    'shaders/overlay_130.vert',
+    'shaders/overlay_120.vert',
     'shaders/overlay_130.frag',
-    'shaders/overlay_300_es.vert',
+    'shaders/overlay_130.vert',
     'shaders/overlay_300_es.frag',
-    'shaders/overlay_410.vert',
+    'shaders/overlay_300_es.vert',
     'shaders/overlay_410.frag',
+    'shaders/overlay_410.vert',
 )
 if python3.found()
-    overlay_shader_embed_h = custom_target('embed-shaders',
+    overlay_shader_embed_h = custom_target(
+        'embed-shaders',
         input: shader_srcs,
         output: 'overlay_shader_embed.h',
-        command: [python3, meson.current_source_dir() / 'scripts/embed_shaders.py',
-                  '--output', '@OUTPUT@',
-                  '--shader-dir', meson.current_source_dir() / 'shaders'],
+        command: [
+            python3,
+            meson.current_source_dir() / 'scripts/embed_shaders.py',
+            '--output', '@OUTPUT@',
+            '--shader-dir', meson.current_source_dir() / 'shaders',
+        ],
         build_by_default: true,
     )
 else
@@ -131,10 +141,26 @@ idk_inject_exe = executable(
     install: true,
 )
 
+# ── libidk-framesource.so — frame sender library (built inline) ────────────
+idk_fs_lib = library(
+    'idk-framesource',
+    'src/idk_fs.c',
+    c_args: fs_c_flags,
+    include_directories: [inc, inc_public],
+    link_args: ['-ldl', '-lpthread'],
+    version: '0.1',
+    install: true,
+)
+
+idk_fs_dep = declare_dependency(
+    include_directories: [inc, inc_public],
+    link_with: idk_fs_lib,
+)
+
 # ── idk-send-frame (optional CLI — links libidk-framesource) ───────────────
 idk_send_frame_exe = executable(
     'idk-send-frame',
-    'src/framesource/idk-send-frame.c',
+    'src/idk_send_frame.c',
     c_args: overlay_c_flags,
     include_directories: [inc, inc_public],
     link_args: ['-ldl', '-lpthread'],
@@ -148,9 +174,35 @@ if not meson.is_subproject()
         'qt6',
         modules: ['Core', 'Gui', 'QuickWidgets', 'WebEngineWidgets', 'Widgets'],
         required: false,
+        private_headers: true,
     )
     if qt6_dep.found()
-        subproject('idk-webview', default_options: ['c_std=gnu11'])
+        qt = import('qt6')
+        webview_files = files(
+            'tools/idk-webview/groupconfig.cpp',
+            'tools/idk-webview/main.cpp',
+            'tools/idk-webview/manager.cpp',
+            'tools/idk-webview/rhi_texture_extractor.cpp',
+            'tools/idk-webview/utils.cpp',
+            'tools/idk-webview/webview.cpp',
+        )
+
+        webview_headers = files(
+            'tools/idk-webview/groupconfig.h',
+            'tools/idk-webview/manager.h',
+            'tools/idk-webview/rhi_texture_extractor.h',
+            'tools/idk-webview/utils.h',
+            'tools/idk-webview/webview.h',
+        )
+
+        idk_webview_moc = qt.preprocess(moc_headers: webview_headers, dependencies: qt6_dep)
+
+        idk_webview_exe = executable(
+            'idk-webview',
+            webview_files + idk_webview_moc,
+            dependencies: [qt6_dep, egl_dep2, idk_fs_dep],
+            install: true,
+        )
     else
         warning('Qt6 not found — idk-webview will not be built')
     endif
