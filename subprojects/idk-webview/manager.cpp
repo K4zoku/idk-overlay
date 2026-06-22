@@ -10,13 +10,13 @@
 #include <QMenu>
 #include <QDebug>
 
-#include "idk_client.h"
+#include "idk_fs.h"
 #include "idk_log.h"
 
 Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     : QObject(parent)
     , m_settings(new QSettings(
-        confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-client-qt.conf") : confFile,
+        confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-webview.conf") : confFile,
         QSettings::IniFormat, this))
     , m_reconnectTimer(new QTimer(this))
     , m_window(new QWidget())
@@ -29,15 +29,15 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
 
     /* ── Connection strategy ───────────────────────────────────────────
      * OLD design (commit 525c106 and earlier) used TWO sockets to the
-     * compositor: idk_client's internal g_sock_fd (for data) + a
+     * compositor: idk_fs's internal g_sock_fd (for data) + a
      * QLocalSocket m_socket (for status). The compositor only accepts
      * ONE client, so whichever socket connect()'d first got accept()'d.
-     * If QLocalSocket won the race, idk_client's frames went into a
+     * If QLocalSocket won the race, idk_fs's frames went into a
      * dead queue and the overlay never showed — this was the
      * "start client first → no overlay" bug.
      *
-     * NEW design: use idk_client as the SOLE connection. A QTimer polls
-     * idk_client_get_fd() every 1s to detect (dis)connect transitions
+     * NEW design: use idk_fs as the SOLE connection. A QTimer polls
+     * idk_fs_get_fd() every 1s to detect (dis)connect transitions
      * and emit socketConnected / socketDisconnected. No QLocalSocket —
      * no race, no dual-socket confusion. */
     const char *reuse_fd = getenv("IDK_SOCKET_FD");
@@ -45,8 +45,8 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     m_was_connected = false;
 
     if (fd >= 0) {
-        /* Reusing existing fd — idk_client_init stores it, no connect() */
-        if (idk_client_init(m_socketPath.toUtf8().data(), true) == 0) {
+        /* Reusing existing fd — idk_fs_init stores it, no connect() */
+        if (idk_fs_init(m_socketPath.toUtf8().data(), true) == 0) {
             m_was_connected = true;
             emit socketConnected();
         }
@@ -54,36 +54,36 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
         /* Try to connect now; if it fails, the reconnect timer will retry.
          * Uses blocking init with 30 retries (~3s) for the initial attempt —
          * handles the common case where compositor is already running. */
-        if (idk_client_init(m_socketPath.toUtf8().data(), false) == 0) {
+        if (idk_fs_init(m_socketPath.toUtf8().data(), false) == 0) {
             m_was_connected = true;
-            IDK_LOG("client-qt", "idk_client connected to %s\n",
+            IDK_LOG("webview", "idk_fs connected to %s\n",
                     m_socketPath.toUtf8().data());
             emit socketConnected();
         } else {
-            IDK_LOG("client-qt", "idk_client connect failed, will retry\n");
+            IDK_LOG("webview", "idk_fs connect failed, will retry\n");
         }
 
-        /* Poll idk_client_get_fd() every 1s to detect state transitions. */
+        /* Poll idk_fs_get_fd() every 1s to detect state transitions. */
         connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
-            int fd_now = idk_client_get_fd();
+            int fd_now = idk_fs_get_fd();
             bool connected_now = (fd_now >= 0);
 
             if (connected_now && !m_was_connected) {
                 /* Transition: disconnected → connected */
                 m_disconnect_count = 0;
-                IDK_LOG("client-qt", "idk_client connected (fd=%d)\n", fd_now);
+                IDK_LOG("webview", "idk_fs connected (fd=%d)\n", fd_now);
                 emit socketConnected();
             } else if (!connected_now && m_was_connected) {
                 /* Transition: connected → disconnected.
-                 * idk_client's fd went dead (compositor closed, EPIPE, etc.).
+                 * idk_fs's fd went dead (compositor closed, EPIPE, etc.).
                  * Try to reconnect; if it fails, the next timer tick retries.
                  * Log only ONCE per disconnect (not every retry) — the
                  * "still connecting" branch below handles subsequent retries. */
-                IDK_LOG("client-qt", "idk_client disconnected — attempting reconnect\n");
+                IDK_LOG("webview", "idk_fs disconnected — attempting reconnect\n");
                 emit socketDisconnected();
                 /* Attempt non-blocking reconnect (single attempt, no 3s block) */
-                if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
-                    IDK_LOG("client-qt", "idk_client reconnected\n");
+                if (idk_fs_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                    IDK_LOG("webview", "idk_fs reconnected\n");
                     emit socketConnected();
                     connected_now = true;
                     m_disconnect_count = 0;
@@ -108,11 +108,11 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                                    m_disconnect_count == 30 ||
                                    (m_disconnect_count > 30 && m_disconnect_count % 60 == 0));
                 if (should_log) {
-                    IDK_LOG("client-qt", "idk_client waiting for compositor (attempt %d)\n",
+                    IDK_LOG("webview", "idk_fs waiting for compositor (attempt %d)\n",
                             m_disconnect_count);
                 }
-                if (idk_client_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
-                    IDK_LOG("client-qt", "idk_client connected after %d attempts\n",
+                if (idk_fs_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                    IDK_LOG("webview", "idk_fs connected after %d attempts\n",
                             m_disconnect_count);
                     m_disconnect_count = 0;
                     emit socketConnected();
@@ -154,11 +154,11 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
         m_window->setGeometry(x, y, w, h);
         m_window->raise();
         m_window->activateWindow();
-        qDebug() << "[idk-client-qt] Resized window to" << w << "x" << h << "at" << x << "," << y;
+        qDebug() << "[idk-webview] Resized window to" << w << "x" << h << "at" << x << "," << y;
     });
 
     m_tray->setIcon(QIcon::fromTheme("image-x-generic"));
-    m_tray->setToolTip("idk-client-qt");
+    m_tray->setToolTip("idk-webview");
     m_tray->show();
 
     // Left-click tray: toggle window visibility
@@ -172,7 +172,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                 m_window->raise();
                 m_window->activateWindow();
             }
-            qDebug() << "[idk-client-qt] Window" << (*windowVisible ? "shown" : "hidden");
+            qDebug() << "[idk-webview] Window" << (*windowVisible ? "shown" : "hidden");
         }
     });
 
@@ -187,18 +187,18 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
 Manager::~Manager()
 {
     qDeleteAll(m_views);
-    idk_client_shutdown();
+    idk_fs_shutdown();
 }
 
 bool Manager::isConnected() const
 {
-    // Check if idk_client is connected
-    return idk_client_get_fd() >= 0;
+    // Check if idk_fs is connected
+    return idk_fs_get_fd() >= 0;
 }
 
 void Manager::onSocketReadyRead()
 {
-    // Handle incoming data — currently unused (idk_client handles data)
+    // Handle incoming data — currently unused (idk_fs handles data)
 }
 
 void Manager::onReconnectTimer()

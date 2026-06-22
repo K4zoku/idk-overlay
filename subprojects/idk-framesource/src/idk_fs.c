@@ -1,5 +1,5 @@
 /*
- * idk_client.c — Client library for sending overlay frames to idk-overlay socket
+ * idk_fs.c — Client library for sending overlay frames to idk-overlay socket
  *
  * Adapted from imgoverlay client. Bridges the imgoverlay message protocol
  * (create/update/destroy images via MSG_CREATE_IMAGE, MSG_UPDATE_IMAGE,
@@ -30,9 +30,9 @@
 #include <sys/un.h>
 #include <sys/mman.h>
 
-#include "idk_client.h"
+#include "idk_fs.h"
 #include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_log.h"
 
 /* ── Internal state ───────────────────────────────────────────────────── */
 
@@ -56,11 +56,11 @@ static uint32_t crc32_simple(const void *data, size_t len) {
 /* ── Frame header builder ─────────────────────────────────────────────── */
 
 /**
- * Build an idk-overlay frame header from an idk_client_frame.
+ * Build an idk-overlay frame header from an idk_fs_frame.
  *
  * Maps imgoverlay-style position/visibility info into the idk wire format.
  */
-static void build_frame_hdr(const idk_client_frame_t *frame,
+static void build_frame_hdr(const idk_fs_frame_t *frame,
                             uint8_t *hdr, size_t hdr_size) {
     if (hdr_size < sizeof(uint32_t) * 8) return;
 
@@ -84,16 +84,16 @@ static void build_frame_hdr(const idk_client_frame_t *frame,
  */
 static int copy_to_shm(const void *src, size_t size) {
     char shm_name[64];
-    snprintf(shm_name, sizeof(shm_name), "/idk-client-%d", (int)getpid());
+    snprintf(shm_name, sizeof(shm_name), "/idk-framesource-%d", (int)getpid());
 
     int fd = shm_open(shm_name, O_RDWR | O_CREAT, 0666);
     if (fd < 0) {
-        IDK_ERR("client", "shm_open failed: %s\n", strerror(errno));
+        IDK_ERR("fs", "shm_open failed: %s\n", strerror(errno));
         return -1;
     }
 
     if (ftruncate(fd, size) < 0) {
-        IDK_ERR("client", "ftruncate failed: %s\n", strerror(errno));
+        IDK_ERR("fs", "ftruncate failed: %s\n", strerror(errno));
         close(fd);
         shm_unlink(shm_name);
         return -1;
@@ -101,7 +101,7 @@ static int copy_to_shm(const void *src, size_t size) {
 
     void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (map == MAP_FAILED) {
-        IDK_ERR("client", "mmap failed: %s\n", strerror(errno));
+        IDK_ERR("fs", "mmap failed: %s\n", strerror(errno));
         close(fd);
         shm_unlink(shm_name);
         return -1;
@@ -115,14 +115,14 @@ static int copy_to_shm(const void *src, size_t size) {
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
-int idk_client_init(const char *sockpath, int reuse_fd) {
-    return idk_client_init2(sockpath, reuse_fd, 30);
+int idk_fs_init(const char *sockpath, int reuse_fd) {
+    return idk_fs_init2(sockpath, reuse_fd, 30);
 }
 
 /* Variant with configurable retry count for the connect() loop.
  * 0 retries = single attempt (non-blocking — for use in event loops).
  * 30 retries = ~3s total (legacy behavior, blocks the caller). */
-int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
+int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
     if (!sockpath) {
         errno = EINVAL;
         return -1;
@@ -140,7 +140,7 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
     if (!reuse_fd) {
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) {
-            IDK_ERR("client", "socket() failed: %s\n", strerror(errno));
+            IDK_ERR("fs", "socket() failed: %s\n", strerror(errno));
             return -1;
         }
 
@@ -157,7 +157,7 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
             connect_ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
             if (connect_ret == 0) break;
             if (errno != ECONNREFUSED && errno != ENOENT) {
-                IDK_ERR("client", "connect(%s) failed: %s\n",
+                IDK_ERR("fs", "connect(%s) failed: %s\n",
                         sockpath, strerror(errno));
                 close(fd);
                 return -1;
@@ -169,7 +169,7 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
             /* Don't log on ECONNREFUSED/ENOENT when retries=0 — expected
              * case when called from a timer poll. Caller handles -1. */
             if (retries > 0 || (errno != ECONNREFUSED && errno != ENOENT)) {
-                IDK_ERR("client",
+                IDK_ERR("fs",
                         "connect(%s) failed after %d retries: %s\n",
                         sockpath, retries, strerror(errno));
             }
@@ -178,27 +178,27 @@ int idk_client_init2(const char *sockpath, int reuse_fd, int retries) {
         }
 
         g_sock_fd = fd;
-        IDK_LOG("client", "Connected to %s (fd=%d)\n", sockpath, fd);
+        IDK_LOG("fs", "Connected to %s (fd=%d)\n", sockpath, fd);
     } else {
         g_sock_fd = reuse_fd;
-        IDK_LOG("client", "Reusing fd=%d for %s\n", reuse_fd, sockpath);
+        IDK_LOG("fs", "Reusing fd=%d for %s\n", reuse_fd, sockpath);
     }
 
     return 0;
 }
 
-int idk_client_get_fd(void) {
+int idk_fs_get_fd(void) {
     return g_sock_fd;
 }
 
-void idk_client_shutdown(void) {
+void idk_fs_shutdown(void) {
     if (g_sock_fd >= 0) {
         close(g_sock_fd);
         g_sock_fd = -1;
     }
 }
 
-int idk_client_send_frame(int data_fd, const idk_client_frame_t *frame) {
+int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
     if (g_sock_fd < 0) {
         errno = ENOTCONN;
         return -1;
@@ -235,28 +235,28 @@ int idk_client_send_frame(int data_fd, const idk_client_frame_t *frame) {
     ssize_t n = sendmsg(g_sock_fd, &msgh, 0);
     if (n < 0) {
         /* If the peer closed the socket (EPIPE / ECONNRESET), shut down
-         * our side immediately so idk_client_get_fd() returns -1. This
+         * our side immediately so idk_fs_get_fd() returns -1. This
          * lets the Manager's QTimer detect the disconnection and reconnect.
          * Without this, sendmsg keeps failing every frame with EPIPE,
          * spamming the log — "Broken pipe" × hundreds of times per second. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
-            IDK_ERR("client", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
+            IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
                     errno, strerror(errno));
-            idk_client_shutdown();
+            idk_fs_shutdown();
         } else {
-            IDK_ERR("client", "sendmsg failed: %s\n", strerror(errno));
+            IDK_ERR("fs", "sendmsg failed: %s\n", strerror(errno));
         }
         return -1;
     }
 
-    IDK_LOG("client",
+    IDK_LOG("fs",
             "Frame sent: %dx%d@(%d,%d) id=%d visible=%d fd=%d\n",
             frame->width, frame->height, frame->x, frame->y,
             frame->id, frame->visible, data_fd);
     return 0;
 }
 
-int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame) {
+int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
     if (!pixels || !frame) {
         errno = EINVAL;
         return -1;
@@ -265,11 +265,11 @@ int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame) 
     size_t pixel_size = (size_t)frame->width * (size_t)frame->height * 4;
     int shm_fd = copy_to_shm(pixels, pixel_size);
     if (shm_fd < 0) {
-        IDK_ERR("client", "copy_to_shm failed\n");
+        IDK_ERR("fs", "copy_to_shm failed\n");
         return -1;
     }
 
-    int rc = idk_client_send_frame(shm_fd, frame);
+    int rc = idk_fs_send_frame(shm_fd, frame);
     close(shm_fd);
 
     /*
@@ -288,7 +288,7 @@ int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame) 
  * Send a DMA-BUF fd directly (no SHM copy).
  * Supports multi-plane DMA-BUF via frame->nfd.
  */
-int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *frame) {
+int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     if (g_sock_fd < 0) {
         errno = ENOTCONN;
         return -1;
@@ -326,25 +326,25 @@ int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *fr
 
     ssize_t n = sendmsg(g_sock_fd, &msgh, 0);
     if (n < 0) {
-        /* Same EPIPE handling as idk_client_send_frame — see comment there. */
+        /* Same EPIPE handling as idk_fs_send_frame — see comment there. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
-            IDK_ERR("client", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
+            IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
                     errno, strerror(errno));
-            idk_client_shutdown();
+            idk_fs_shutdown();
         } else {
-            IDK_ERR("client", "sendmsg failed: %s\n", strerror(errno));
+            IDK_ERR("fs", "sendmsg failed: %s\n", strerror(errno));
         }
         return -1;
     }
 
     // fprintf(stderr,
-    //         "[idk-client] DMA-BUF sent: %dx%d@(%d,%d) id=%d visible=%d nfd=%d fd0=%d\n",
+    //         "[idk-framesource] DMA-BUF sent: %dx%d@(%d,%d) id=%d visible=%d nfd=%d fd0=%d\n",
     //         frame->width, frame->height, frame->x, frame->y,
     //         frame->id, frame->visible, frame->nfd, dma_buf_fds[0]);
     return 0;
 }
 
-int idk_client_wait_ack(void) {
+int idk_fs_wait_ack(void) {
     if (g_sock_fd < 0) {
         errno = ENOTCONN;
         return -1;

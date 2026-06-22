@@ -10,7 +10,7 @@ int main(int argc, char *argv[])
     qputenv("QT_XKB_SCREEN", "default");
 
     QApplication app(argc, argv);
-    app.setApplicationName("idk-client-qt");
+    app.setApplicationName("idk-webview");
 
     QCommandLineParser parser;
     parser.addHelpOption();

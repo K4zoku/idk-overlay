@@ -26,7 +26,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 
-#include "idk_client.h"
+#include "idk_fs.h"
 #include "idk_log.h"
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
         render(&img);
 
         // Send frame to idk-overlay
-        idk_client_frame_t frame;
+        idk_fs_frame_t frame;
         memset(&frame, 0, sizeof(frame));
         frame.width   = static_cast<uint32_t>(m_conf.width());
         frame.height  = static_cast<uint32_t>(m_conf.height());
@@ -163,11 +163,11 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
         if (s_send_failed > 0 && --s_send_failed > 0)
             return QWebEngineView::eventFilter(obj, event);
 
-        int rc = idk_client_send_dma_buf(&m_memfd, &frame);
+        int rc = idk_fs_send_dma_buf(&m_memfd, &frame);
         if (rc < 0) {
             s_frame_count++;
             if (s_frame_count <= 3 || s_frame_count % 60 == 0) {
-                qWarning() << "[idk-client-qt] send frame failed (attempt %d): %s",
+                qWarning() << "[idk-webview] send frame failed (attempt %d): %s",
                     s_frame_count, strerror(errno);
             }
             s_send_failed = 60;  /* skip next 60 frames */
@@ -182,7 +182,7 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
 
         /* Wait for compositor ACK — syncs webview to game swap rate.
          * This prevents SHM buffer races and flickering. */
-        idk_client_wait_ack();
+        idk_fs_wait_ack();
 
         /* Request next frame */
         focusProxy()->update();
@@ -229,7 +229,7 @@ void WebView::initMemory()
     // Allocate double-buffered shared memory for pixel data
     m_memsize = PIXELS_SIZE(m_conf.width(), m_conf.height()) * 2;
 
-    m_memfd = memfd_create("idk-client-qt", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    m_memfd = memfd_create("idk-webview", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (m_memfd < 0) {
         perror("memfd_create");
         return;

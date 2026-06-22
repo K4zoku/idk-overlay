@@ -1,5 +1,5 @@
 /*
- * idk_ipc.h — Minimal IPC constants for idk-client submodule
+ * idk_ipc.h — Minimal IPC constants for idk-framesource submodule
  *
  * Extracted from main project's idk_ipc.h. This submodule only needs
  * the socket path constant; full IPC functions are embedded locally.

@@ -14,7 +14,7 @@
 #   --no-gl         Disable OpenGL/EGL hooks
 #   --shim PATH     Path to libidk-shim.so (default: auto-detect)
 #   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
-#   --qt-client     Also start idk-client-qt after launching game
+#   --qt-client     Also start idk-webview after launching game
 #   -h, --help      Show this help
 #
 # The script auto-detects the build directory relative to its own location.
@@ -122,7 +122,7 @@ Options:
   --no-gl         Disable OpenGL/EGL hooks
   --shim PATH     Path to libidk-shim.so (default: auto-detect)
   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
-  --qt-client     Also start idk-client-qt after launching game
+  --qt-client     Also start idk-webview after launching game
   -h, --help      Show this help
 HELP
             exit 0
@@ -171,19 +171,19 @@ rm -f "$SOCKET" 2>/dev/null || true
 QT_CLIENT=""
 if [ $START_QT -eq 1 ]; then
     for dir in \
-        "$SCRIPT_DIR/../build/subprojects/idk-client-qt" \
-        "$SCRIPT_DIR/../../build/subprojects/idk-client-qt" \
-        "$PWD/build/subprojects/idk-client-qt" \
+        "$SCRIPT_DIR/../build/subprojects/idk-webview" \
+        "$SCRIPT_DIR/../../build/subprojects/idk-webview" \
+        "$PWD/build/subprojects/idk-webview" \
         "/usr/bin" \
         "/usr/local/bin"
     do
-        if [ -x "$dir/idk-client-qt" ]; then
-            QT_CLIENT="$dir/idk-client-qt"
+        if [ -x "$dir/idk-webview" ]; then
+            QT_CLIENT="$dir/idk-webview"
             break
         fi
     done
     if [ -z "$QT_CLIENT" ]; then
-        echo "[idk-overlay] WARNING: idk-client-qt not found, skipping" >&2
+        echo "[idk-overlay] WARNING: idk-webview not found, skipping" >&2
     fi
 fi
 

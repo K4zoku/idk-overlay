@@ -44,7 +44,7 @@
 /* Use MangoHud's elfhacks for proper ELF symbol resolution.
  * This avoids calling intercepted dlsym() during init. */
 #include "elfhacks.h"
-#include "idk_log.h"
+#include "public/idk_log.h"
 
 /* ── Real function pointers (populated by load_real_functions) ──────── */
 static void *(*real_dlsym)(void *, const char *) = NULL;

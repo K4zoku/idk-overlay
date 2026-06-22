@@ -31,7 +31,7 @@
 #include "idk_ipc.h"
 #include "idk_vulkan.h"
 #include "idk_egl.h"
-#include "idk_log.h"
+#include "public/idk_log.h"
 
 /* ── Global state ─────────────────────────────────────────────────────── */
 

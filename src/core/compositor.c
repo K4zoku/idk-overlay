@@ -31,15 +31,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "idk_gl_loader.h"   /* GL types + function pointer redirects */
+#include "public/idk_gl_loader.h"   /* GL types + function pointer redirects */
 #include "compositor.h"
 #include "overlay_shader_embed.h"
 #include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_log.h"
 
 /* ── Frame header from webview ─────────────────────────────────────── */
 /*
- * Wire format (matches idk_client_t::build_frame_hdr):
+ * Wire format (matches idk_fs_frame_t::build_frame_hdr):
  *   fields[0] = width
  *   fields[1] = height
  *   fields[2] = x position (overloaded "stride")

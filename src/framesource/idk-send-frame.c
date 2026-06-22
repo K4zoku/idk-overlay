@@ -1,25 +1,25 @@
 /*
- * idk-client.c — Standalone binary for sending overlay frames to idk-overlay
+ * idk-framesource.c — Standalone binary for sending overlay frames to idk-overlay
  *
- * Links against libidk-client (from subprojects/idk-client/) for socket IPC.
+ * Links against libidk-framesource (from subprojects/idk-framesource/) for socket IPC.
  * This binary handles CLI parsing, INI config, and frame I/O.
  *
  * Usage:
  *   # Send a single frame from a binary file
- *   idk-client --socket /tmp/idk-overlay-1234 --width 640 --height 480 \
+ *   idk-framesource --socket /tmp/idk-overlay-1234 --width 640 --height 480 \
  *              --x 100 --y 100 --id 1 --visible \
  *              frame.bin
  *
  *   # Send from stdin (pipe)
- *   cat frame.bin | idk-client --socket /tmp/idk-overlay-1234 --width 640 \
+ *   cat frame.bin | idk-framesource --socket /tmp/idk-overlay-1234 --width 640 \
  *              --height 480 --x 0 --y 0 --id 1
  *
  *   # Loop mode (repeatedly send frame every 33ms ≈ 30fps)
- *   idk-client --socket /tmp/idk-overlay-1234 --loop --width 640 \
+ *   idk-framesource --socket /tmp/idk-overlay-1234 --loop --width 640 \
  *              --height 480 --x 0 --y 0 --id 1 frame.bin
  *
  *   # Read config from INI file (like imgoverlay)
- *   idk-client --config idkclient.conf
+ *   idk-framesource --config idkclient.conf
  *
  * Config file format (INI):
  *   [General]
@@ -45,8 +45,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-#include "idk_client.h"
-#include "idk_log.h"
+#include "idk_fs.h"
+#include "public/idk_log.h"
 
 /* ── Config ───────────────────────────────────────────────────────────── */
 
@@ -250,7 +250,7 @@ static int send_overlay_frame(overlay_config_t *o) {
     }
 
     /* Send frame */
-    idk_client_frame_t frame = {
+    idk_fs_frame_t frame = {
         .width    = o->width,
         .height   = o->height,
         .x        = o->x,
@@ -261,7 +261,7 @@ static int send_overlay_frame(overlay_config_t *o) {
         .type     = IDK_FRAME_TYPE_SHM,
     };
 
-    int rc = idk_client_send_pixels(pixels, &frame);
+    int rc = idk_fs_send_pixels(pixels, &frame);
     free(pixels);
     return rc;
 }
@@ -395,7 +395,7 @@ int main(int argc, char **argv) {
     }
 
     /* Connect to socket */
-    if (idk_client_init(cfg.socket, 0) < 0) {
+    if (idk_fs_init(cfg.socket, 0) < 0) {
         IDK_ERR("client", "Failed to connect to %s\n", cfg.socket);
         return 1;
     }
@@ -427,13 +427,13 @@ int main(int argc, char **argv) {
             rc = send_overlay_frame(overlay);
             if (rc < 0) {
                 IDK_ERR("client", "Send failed\n");
-                idk_client_shutdown();
+                idk_fs_shutdown();
                 return 1;
             }
         }
     }
 
-    idk_client_shutdown();
+    idk_fs_shutdown();
     IDK_LOG("client", "Done.\n");
     return 0;
 }

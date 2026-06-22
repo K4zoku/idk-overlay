@@ -3,7 +3,7 @@
  *
  * Supports two frame sources:
  *   1. Injected library (GL/VK hooks) — full-screen framebuffer frames
- *   2. External client (idk-client) — overlay frames with position
+ *   2. External client (idk-framesource) — overlay frames with position
  *
  * Usage:
  *   idk-render [--socket /tmp/idk-overlay-XXXX] [--output frame.pnm]
@@ -35,7 +35,7 @@
 #include <poll.h>
 
 #include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_log.h"
 
 /* ── Overlay management ──────────────────────────────────────────────── */
 

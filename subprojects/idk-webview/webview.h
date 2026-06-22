@@ -10,7 +10,7 @@
  * WebView — renders web content and sends frames to idk-overlay.
  *
  * Adapted from imgoverlay's WebView. Uses QWebEngineView to render web content,
- * then extracts DMA-BUF from Qt6 RHI and sends via idk_client API.
+ * then extracts DMA-BUF from Qt6 RHI and sends via idk_fs API.
  */
 class WebView : public QWebEngineView
 {

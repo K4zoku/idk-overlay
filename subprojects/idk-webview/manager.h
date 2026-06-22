@@ -18,7 +18,7 @@ class WebView;
  * Adapted from imgoverlay's Manager. Handles:
  * - Connecting to idk-overlay socket
  * - Managing WebView instances (one per overlay group)
- * - Sending frames via idk_client_* API
+ * - Sending frames via idk_fs_* API
  */
 class Manager : public QObject
 {
@@ -93,7 +93,7 @@ private:
     QString m_socketPath;
     QTimer *m_reconnectTimer;
     int m_disconnect_count = 0;  // throttle disconnect log spam
-    bool m_was_connected = false; // track idk_client fd state transitions
+    bool m_was_connected = false; // track idk_fs fd state transitions
 
     // UI
     QWidget *m_window;

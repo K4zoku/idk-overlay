@@ -1,5 +1,5 @@
 /*
- * idk_client.h — Client module for sending overlay frames to idk-overlay socket
+ * idk_fs.h — Client module for sending overlay frames to idk-overlay socket
  *
  * Adapted from imgoverlay client protocol. Translates the imgoverlay
  * message model (create/update/destroy images) into idk-overlay's
@@ -19,12 +19,12 @@
  *   +------------------+
  *
  * Usage:
- *   idk_client_init("/tmp/idk-overlay-1234", true);   // connect
- *   idk_client_send_frame(fd, width, height, x, y, id, visible); // send
- *   idk_client_shutdown();                             // disconnect
+ *   idk_fs_init("/tmp/idk-overlay-1234", true);   // connect
+ *   idk_fs_send_frame(fd, width, height, x, y, id, visible); // send
+ *   idk_fs_shutdown();                             // disconnect
  */
-#ifndef IDK_CLIENT_H
-#define IDK_CLIENT_H
+#ifndef IDK_FS_H
+#define IDK_FS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -49,7 +49,7 @@ extern "C" {
  * Frame metadata for overlay frames sent from a client process.
  * Maps to idk-overlay's frame header with position info in stride/format.
  */
-typedef struct idk_client_frame {
+typedef struct idk_fs_frame {
     uint32_t width;       /* Frame width in pixels */
     uint32_t height;      /* Frame height in pixels */
     uint32_t x;           /* Overlay X position on screen */
@@ -58,7 +58,7 @@ typedef struct idk_client_frame {
     uint8_t  visible;     /* Visibility flag */
     uint8_t  nfd;         /* Number of file descriptors to send */
     uint8_t  type;        /* Frame type: IDK_FRAME_TYPE_DMABUF or IDK_FRAME_TYPE_SHM */
-} idk_client_frame_t;
+} idk_fs_frame_t;
 
 /* ── Client initialization ────────────────────────────────────────────── */
 
@@ -71,7 +71,7 @@ typedef struct idk_client_frame {
  *
  * Blocks up to ~3s (30 retries × 100ms) waiting for the server to come up.
  */
-int idk_client_init(const char *sockpath, int reuse_fd);
+int idk_fs_init(const char *sockpath, int reuse_fd);
 
 /**
  * Variant with configurable retry count.
@@ -81,17 +81,17 @@ int idk_client_init(const char *sockpath, int reuse_fd);
  *                   30 = ~3s total (legacy behavior, blocks the caller).
  * @return           0 on success, -1 on failure.
  */
-int idk_client_init2(const char *sockpath, int reuse_fd, int retries);
+int idk_fs_init2(const char *sockpath, int reuse_fd, int retries);
 
 /**
  * Get the connected socket fd. Returns -1 if not connected.
  */
-int idk_client_get_fd(void);
+int idk_fs_get_fd(void);
 
 /**
  * Shut down the client and close the socket.
  */
-void idk_client_shutdown(void);
+void idk_fs_shutdown(void);
 
 /* ── Sending frames ───────────────────────────────────────────────────── */
 
@@ -102,12 +102,12 @@ void idk_client_shutdown(void);
  * @param frame      Frame metadata (position, size, visibility).
  * @return           0 on success, -1 on failure.
  */
-int idk_client_send_frame(int fd, const idk_client_frame_t *frame);
+int idk_fs_send_frame(int fd, const idk_fs_frame_t *frame);
 
 /**
  * Send a raw pixel buffer as a frame (creates SHM internally).
  */
-int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame);
+int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame);
 
 /**
  * Wait for compositor ACK after sending a frame.
@@ -115,7 +115,7 @@ int idk_client_send_pixels(const void *pixels, const idk_client_frame_t *frame);
  * providing flow control that syncs client frame rate to game swap rate.
  * Returns 0 on ACK received, -1 on error.
  */
-int idk_client_wait_ack(void);
+int idk_fs_wait_ack(void);
 
 /**
  * Send DMA-BUF fds directly (no SHM copy — for GPU-rendered content).
@@ -125,10 +125,10 @@ int idk_client_wait_ack(void);
  * @param frame        Frame metadata (position, size, visibility, nfd, strides, offsets, modifier).
  * @return             0 on success, -1 on failure.
  */
-int idk_client_send_dma_buf(const int *dma_buf_fds, const idk_client_frame_t *frame);
+int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* IDK_CLIENT_H */
+#endif /* IDK_FS_H */
