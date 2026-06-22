@@ -32,7 +32,6 @@
  *   address from dlopen("libEGL.so.1", RTLD_NOLOAD) + dlsym.
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -60,6 +60,7 @@ Elf32_Word eh_hash_gnu(const char *name);
 
 int eh_find_callback(struct dl_phdr_info *info, size_t size, void *argptr)
 {
+    (void)size;
 	eh_obj_t *find = (eh_obj_t *) argptr;
 
 	if (find->name == NULL) {
@@ -83,6 +84,7 @@ int eh_find_callback(struct dl_phdr_info *info, size_t size, void *argptr)
 
 int eh_iterate_callback(struct dl_phdr_info *info, size_t size, void *argptr)
 {
+    (void)size;
 	struct eh_iterate_callback_args *args = argptr;
 	eh_obj_t obj;
 	int ret = 0;
@@ -423,6 +425,7 @@ int eh_find_sym_gnu_hash(eh_obj_t *obj, const char *name, eh_sym_t *sym)
 
 int eh_iterate_sym(eh_obj_t *obj, eh_iterate_sym_callback_func callback, void *arg)
 {
+	(void)obj; (void)callback; (void)arg;
 	return ENOTSUP;
 }
 

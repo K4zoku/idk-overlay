@@ -15,8 +15,6 @@
  *   4. Game + overlay are presented together
  */
 
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -193,7 +191,7 @@ int idk_compositor_init(void) {
         if (stat(g_sock_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
             int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
             struct sockaddr_un addr = { .sun_family = AF_UNIX };
-            snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_sock_path);
+            snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_sock_path);
             if (connect(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
                 IDK_ERR("comp", "Another instance is alive — compositor disabled\n");
                 close(test_fd);
@@ -222,7 +220,7 @@ int idk_compositor_init(void) {
     }
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_sock_path);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_sock_path);
 
     if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         /* Retry: stale socket may have been re-created between unlink and bind */
@@ -657,6 +655,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
  * vertex attribute setup (no VAO, manual glEnableVertexAttribArray).
  */
 void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
+    (void)x; (void)y;
     if (g_program == 0) return;
 
     /* ── Validate our program is still linked ──────────────────────────
@@ -969,7 +968,8 @@ int idk_compositor_has_overlay(void) {
 }
 
 int idk_compositor_set_overlay(int dmabuf_fd, uint32_t w, uint32_t h,
-                                uint32_t stride, uint32_t format) {
+                                 uint32_t stride, uint32_t format) {
+    (void)stride; (void)format;
     /* This is a legacy API — use idk_compositor_render() instead */
     /* For backward compat, just store and let render() pick it up */
     if (dmabuf_fd >= 0) {

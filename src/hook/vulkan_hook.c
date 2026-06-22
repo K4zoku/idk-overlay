@@ -103,7 +103,7 @@ static void *resolve_vk_proc(const char *name) {
  * or fall back to reading the present queue's image directly.
  */
 
-static int export_image_to_dmabuf(VkImage image, uint32_t width,
+static int __attribute__((unused)) export_image_to_dmabuf(VkImage image, uint32_t width,
                                   uint32_t height, uint32_t *out_fd) {
     /*
      * TODO: Full implementation requires:
@@ -218,7 +218,6 @@ int idk_vulkan_init(int ipc_fd, const char *socket_path) {
             IDK_LOG("vk", "jump built OK\n");
 
             /* Build reverse jump: jmp <original+14> */
-            uint8_t *ret = (uint8_t*)trampoline + 14;
             uint8_t rev_jmp[14] = { 0 };
             rev_jmp[0] = 0xFF; rev_jmp[1] = 0x25;
             uint8_t *ret_site = (uint8_t*)sym + 14;

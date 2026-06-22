@@ -1,8 +1,11 @@
 #pragma once
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsfinae-incomplete"
 #include <QUrl>
 #include <QString>
 #include <QVariant>
+#pragma GCC diagnostic pop
 
 /**
  * Configuration for a single overlay group (webview).

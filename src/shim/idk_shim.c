@@ -22,7 +22,6 @@
  *   dlopen() during initialization. This avoids infinite recursion.
  */
 
-#define _GNU_SOURCE
 #include <dlfcn.h>
 #include <link.h>
 #include <stdio.h>

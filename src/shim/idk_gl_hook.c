@@ -20,7 +20,6 @@
  *   Overlay rendered AFTER real swap (on top of game frame)
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -41,7 +41,7 @@ struct frame_hdr {
 
 /* ── CRC32 (same as idk_ipc.c) ────────────────────────────────────────── */
 
-static uint32_t crc32_simple(const void *data, size_t len) {
+static uint32_t __attribute__((unused)) crc32_simple(const void *data, size_t len) {
     const uint8_t *p = (const uint8_t *)data;
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < len; i++) {
@@ -161,7 +161,7 @@ void render_text(char *pixels, size_t stride,
         if (*text < 'A' || *text > 'Z') continue;
 
         int c = *text - 'A';
-        if (c < 0 || c >= font_AZ_rows) {
+        if (c < 0 || (size_t)c >= font_AZ_rows) {
             x += 7; /* advance for unknown char */
             continue;
         }

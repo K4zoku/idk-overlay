@@ -16,14 +16,11 @@ if qt6_dep.found()
         'utils.cpp',
         'webview.cpp',
     )
-    webview_headers = files(
-        'groupconfig.h',
+    webview_moc_headers = files(
         'manager.h',
-        'rhi_texture_extractor.h',
-        'utils.h',
         'webview.h',
     )
-    idk_webview_moc = qt.preprocess(moc_headers: webview_headers, dependencies: qt6_dep)
+    idk_webview_moc = qt.preprocess(moc_headers: webview_moc_headers, dependencies: qt6_dep)
     idk_webview_exe = executable(
         'idk-webview',
         webview_files + idk_webview_moc,

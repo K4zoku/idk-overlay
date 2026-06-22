@@ -167,8 +167,8 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
         if (rc < 0) {
             s_frame_count++;
             if (s_frame_count <= 3 || s_frame_count % 60 == 0) {
-                qWarning() << "[idk-webview] send frame failed (attempt %d): %s",
-                    s_frame_count, strerror(errno);
+                qWarning("[idk-webview] send frame failed (attempt %d): %s",
+                    s_frame_count, strerror(errno));
             }
             s_send_failed = 60;  /* skip next 60 frames */
         } else {
@@ -200,7 +200,7 @@ void WebView::contextMenuEvent(QContextMenuEvent *event)
     menu.addAction(pageAction(QWebEnginePage::Reload));
     menu.addSeparator();
     menu.addAction(pageAction(QWebEnginePage::ViewSource));
-    menu.addAction(tr("Inspect"), this, [=]() {
+    menu.addAction(tr("Inspect"), this, [=, this]() {
         if (page()->devToolsPage()) {
             triggerPageAction(QWebEnginePage::InspectElement);
         } else {
@@ -213,6 +213,7 @@ void WebView::contextMenuEvent(QContextMenuEvent *event)
 
 QWebEngineView *WebView::createWindow(QWebEnginePage::WebWindowType type)
 {
+    (void)type;
     QWebEngineView *view = new QWebEngineView;
     QVBoxLayout *layout = new QVBoxLayout;
     layout->addWidget(view);

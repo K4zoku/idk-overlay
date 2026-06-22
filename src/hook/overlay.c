@@ -85,7 +85,7 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     }
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_socket_path);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_socket_path);
 
     if (connect(g_ipc_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         DBG("IPC connect failed: %s (frame capture disabled)", strerror(errno));

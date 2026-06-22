@@ -25,6 +25,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     , m_statusLabel(new QLabel())
     , m_tray(new QSystemTrayIcon(this))
 {
+    (void)tray;
     m_socketPath = resolvePath(m_settings->value("Socket", "/tmp/idk-overlay").toString());
 
     /* ── Connection strategy ───────────────────────────────────────────
@@ -163,7 +164,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
 
     // Left-click tray: toggle window visibility
     bool *windowVisible = new bool(false);  // start hidden
-    connect(m_tray, &QSystemTrayIcon::activated, this, [=](QSystemTrayIcon::ActivationReason reason) {
+    connect(m_tray, &QSystemTrayIcon::activated, this, [=, this](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::Trigger) {
             *windowVisible = !*windowVisible;
             m_window->setAttribute(Qt::WA_DontShowOnScreen, !*windowVisible);

@@ -5,7 +5,11 @@
 
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
 #include <QQuickRenderTarget>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+#pragma GCC diagnostic ignored "-Wsfinae-incomplete"
 #include <QtGui/private/qrhi_p.h>  // Private header for RHI access
+#pragma GCC diagnostic pop
 #endif
 
 #define EGL_NO_X11
