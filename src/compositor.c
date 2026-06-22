@@ -912,7 +912,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         /* No else-branch — g_draw_err_count is reset in shm_to_texture /
          * dmabuf path when a NEW frame is uploaded, not on every draw. */
     }
-    glFinish();
+    // glFinish();
 
     /* Check if display texture is valid */
     GLuint cur = g_tex[g_tex_idx];
