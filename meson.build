@@ -70,7 +70,8 @@ idk_overlay_so = library(
     'idk-overlay',
     [
         'src/hook/overlay.c',
-        'src/gl/egl_hook.c',
+        'src/hook/egl_hook.c',
+        'src/hook/glx_hook.c',
         'src/core/compositor.c',
         'src/gl/gl_loader.c',
         'src/gl/shader_loader.c',
