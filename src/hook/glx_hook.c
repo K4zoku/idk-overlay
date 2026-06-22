@@ -12,6 +12,7 @@
 #include "hook/glx.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
+#include "shim/elfhacks.h"
 
 typedef void (*PFN_glReadPixelsFn)(int, int, int, int, int, int, void *);
 typedef void (*PFN_glGetIntegervFn)(int, int *);
@@ -22,9 +23,47 @@ typedef void* Display;
 typedef void* GLXDrawable;
 typedef void (*GlXSwapBuffersFn)(Display *, GLXDrawable);
 static GlXSwapBuffersFn orig_glXSwapBuffers = NULL;
+static int g_hook_installed = 0;
+static int g_retry_done = 0;
 
 static PFN_glReadPixelsFn fn_glReadPixels = NULL;
 static PFN_glGetIntegervFn fn_glGetIntegerv = NULL;
+
+static void *(*real_dlsym)(void *, const char *) = NULL;
+static void *(*real_dlopen)(const char *, int) = NULL;
+static int (*real_dlclose)(void *) = NULL;
+
+static int read_pixels_to_shm(uint32_t width, uint32_t height);
+
+static void load_real_functions(void) {
+    if (real_dlsym) return;
+
+    eh_obj_t lib;
+    const char *libs[] = {
+#if defined(__GLIBC__)
+        "*libdl.so*",
+#endif
+        "*libc.so*",
+        "*libc.*.so*",
+        "*ld-musl-*.so*",
+    };
+
+    for (size_t i = 0; i < sizeof(libs) / sizeof(*libs); i++) {
+        if (eh_find_obj(&lib, libs[i]) != 0) continue;
+        eh_find_sym(&lib, "dlsym", (void **)&real_dlsym);
+        eh_find_sym(&lib, "dlopen", (void **)&real_dlopen);
+        eh_find_sym(&lib, "dlclose", (void **)&real_dlclose);
+        eh_destroy_obj(&lib);
+        if (real_dlsym) break;
+    }
+
+    if (real_dlsym) {
+        IDK_LOG("glx", "real functions loaded: dlsym=%p dlopen=%p\n",
+                (void *)real_dlsym, (void *)real_dlopen);
+    }
+}
+
+static void send_frame(void);
 
 static int read_pixels_to_shm(uint32_t width, uint32_t height) {
     char shm_name[256];
@@ -128,40 +167,104 @@ static void send_frame(void) {
     close(shm_fd);
 }
 
+static void hook_glXSwapBuffers(Display *dpy, GLXDrawable drawable);
+static int install_glx_hook(void);
+
+static void call_real_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
+    load_real_functions();
+    if (real_dlsym) {
+        void *lib = dlopen("libGLX.so.0", RTLD_LAZY);
+        if (!lib) lib = dlopen("libGL.so.1", RTLD_LAZY);
+        if (lib) {
+            void *sym = real_dlsym(lib, "glXSwapBuffers");
+            if (sym) {
+                GlXSwapBuffersFn fn = (GlXSwapBuffersFn)sym;
+                fn(dpy, drawable);
+            }
+            if (real_dlclose) real_dlclose(lib);
+        }
+    }
+}
+
+static int install_glx_hook(void) {
+    load_real_functions();
+    if (g_hook_installed) return 0;
+    g_hook_installed = 1;
+
+    void *libgl = real_dlopen ? real_dlopen("libGL.so", RTLD_NOW) : dlopen("libGL.so", RTLD_NOW);
+    if (!libgl) libgl = real_dlopen ? real_dlopen("libGL.so.1", RTLD_NOW) : dlopen("libGL.so.1", RTLD_NOW);
+    if (libgl) {
+        fn_glReadPixels = (PFN_glReadPixelsFn)(real_dlsym ? real_dlsym(libgl, "glReadPixels") : dlsym(libgl, "glReadPixels"));
+        fn_glGetIntegerv = (PFN_glGetIntegervFn)(real_dlsym ? real_dlsym(libgl, "glGetIntegerv") : dlsym(libgl, "glGetIntegerv"));
+    }
+
+    static const char *glx_libs[] = {"libGLX.so.0", "libGL.so.1", NULL};
+    void *glx_sym = NULL;
+    for (int i = 0; glx_libs[i]; i++) {
+        void *h = real_dlopen ? real_dlopen(glx_libs[i], RTLD_NOW | RTLD_NOLOAD) : dlopen(glx_libs[i], RTLD_NOW | RTLD_NOLOAD);
+        if (!h)
+            h = real_dlopen ? real_dlopen(glx_libs[i], RTLD_NOW | RTLD_GLOBAL) : dlopen(glx_libs[i], RTLD_NOW | RTLD_GLOBAL);
+        if (!h)
+            continue;
+        glx_sym = real_dlsym ? real_dlsym(h, "glXSwapBuffers") : dlsym(h, "glXSwapBuffers");
+        if (glx_sym) break;
+    }
+
+    int n = 0;
+    if (glx_sym) {
+        n = syringe_hook_install_addr("glXSwapBuffers", glx_sym,
+                                      (void *)hook_glXSwapBuffers,
+                                      (void **)&orig_glXSwapBuffers);
+        if (n > 0) {
+            IDK_LOG("glx", "installed via install_addr");
+            return 0;
+        }
+    }
+
+    n = syringe_hook_install("glXSwapBuffers",
+                             (void *)hook_glXSwapBuffers,
+                             (void **)&orig_glXSwapBuffers);
+    if (n > 0) {
+        IDK_LOG("glx", "installed via GOT walk");
+        return 0;
+    }
+
+    if (glx_sym) {
+        n = syringe_hook_install_addr("glXSwapBuffers", glx_sym,
+                                      (void *)hook_glXSwapBuffers,
+                                      (void **)&orig_glXSwapBuffers);
+        if (n > 0) {
+            IDK_LOG("glx", "installed via install_addr (retry)");
+            return 0;
+        }
+    }
+
+    IDK_ERR("glx", "all install methods failed, deferring to first call");
+    return -1;
+}
+
 static void hook_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
+    if (!orig_glXSwapBuffers && !g_retry_done) {
+        g_retry_done = 1;
+        install_glx_hook();
+    }
+
     send_frame();
-    orig_glXSwapBuffers(dpy, drawable);
+    if (orig_glXSwapBuffers) {
+        orig_glXSwapBuffers(dpy, drawable);
+    } else {
+        call_real_glXSwapBuffers(dpy, drawable);
+    }
 }
 
 int idk_glx_init(int ipc_fd) {
     g_ipc_fd = ipc_fd;
-
-    void *libgl = dlopen("libGL.so", RTLD_NOW);
-    if (!libgl) libgl = dlopen("libGL.so.1", RTLD_NOW);
-    if (libgl) {
-        fn_glReadPixels = (PFN_glReadPixelsFn)dlsym(libgl, "glReadPixels");
-        fn_glGetIntegerv = (PFN_glGetIntegervFn)dlsym(libgl, "glGetIntegerv");
-    }
-
-    static const char *glx_libs[] = {"libGLX.so.0", "libGL.so.1", NULL};
-    for (int i = 0; glx_libs[i]; i++) {
-        void *h = dlopen(glx_libs[i], RTLD_NOW | RTLD_NOLOAD);
-        if (!h)
-            h = dlopen(glx_libs[i], RTLD_NOW | RTLD_GLOBAL);
-        if (!h)
-            continue;
-        void *p = dlsym(h, "glXSwapBuffers");
-        if (p) {
-            syringe_hook_install_addr("glXSwapBuffers", p,
-                                      (void *)hook_glXSwapBuffers,
-                                      (void **)&orig_glXSwapBuffers);
-            break;
-        }
-    }
-
-    return 0;
+    if (g_hook_installed) return 0;
+    return install_glx_hook();
 }
 
 void idk_glx_shutdown(void) {
     syringe_hook_remove("glXSwapBuffers");
+    g_hook_installed = 0;
+    g_retry_done = 0;
 }
