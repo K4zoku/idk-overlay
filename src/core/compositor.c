@@ -33,7 +33,7 @@
 
 #include "gl/gl_loader.h"   /* GL types + function pointer redirects */
 #include "core/compositor.h"
-#include "overlay_shader_embed.h"
+#include "shader.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
@@ -1094,19 +1094,39 @@ int idk_compositor_init_gl(void) {
     const char *ver_str = NULL;
     const char *vs_body = NULL;
     const char *fs_body = NULL;
+    size_t vs_size = 0, fs_size = 0;
+    int has_spirv = 0;
+
+#ifdef HAS_SPIRV
+    const unsigned char *vs_spirv = NULL;
+    const unsigned char *fs_spirv = NULL;
+    size_t vs_spirv_size = 0, fs_spirv_size = 0;
+#endif
 
     if (glsl_version <= 120) {
         ver_str = g_is_gles ? "#version 100\n" : "#version 120\n";
-        vs_body = overlay_vertex_120;
-        fs_body = overlay_fragment_120;
+        vs_body = glsl_overlay_vertex_120;    vs_size = glsl_overlay_vertex_120_size;
+        fs_body = glsl_overlay_fragment_120;  fs_size = glsl_overlay_fragment_120_size;
+#ifdef HAS_SPIRV
+        vs_spirv = spv_vertex_120;            vs_spirv_size = spv_vertex_120_size;
+        fs_spirv = spv_fragment_120;          fs_spirv_size = spv_fragment_120_size;
+#endif
     } else if (glsl_version == 300) {
         ver_str = "#version 300 es\n";
-        vs_body = overlay_vertex_300_es;
-        fs_body = overlay_fragment_300_es;
+        vs_body = glsl_overlay_vertex_300_es;   vs_size = glsl_overlay_vertex_300_es_size;
+        fs_body = glsl_overlay_fragment_300_es; fs_size = glsl_overlay_fragment_300_es_size;
+#ifdef HAS_SPIRV
+        vs_spirv = spv_vertex_300_es;           vs_spirv_size = spv_vertex_300_es_size;
+        fs_spirv = spv_fragment_300_es;         fs_spirv_size = spv_fragment_300_es_size;
+#endif
     } else if (glsl_version >= 410) {
         ver_str = "#version 410 core\n";
-        vs_body = overlay_vertex_410;
-        fs_body = overlay_fragment_410;
+        vs_body = glsl_overlay_vertex_410;    vs_size = glsl_overlay_vertex_410_size;
+        fs_body = glsl_overlay_fragment_410;  fs_size = glsl_overlay_fragment_410_size;
+#ifdef HAS_SPIRV
+        vs_spirv = spv_vertex_410;            vs_spirv_size = spv_vertex_410_size;
+        fs_spirv = spv_fragment_410;          fs_spirv_size = spv_fragment_410_size;
+#endif
     } else {
         /* 130-409: use 130-style shaders */
         if (glsl_version >= 330)
@@ -1115,71 +1135,104 @@ int idk_compositor_init_gl(void) {
             ver_str = "#version 150\n";
         else
             ver_str = "#version 130\n";
-        vs_body = overlay_vertex_130;
-        fs_body = overlay_fragment_130;
+        vs_body = glsl_overlay_vertex_130;    vs_size = glsl_overlay_vertex_130_size;
+        fs_body = glsl_overlay_fragment_130;  fs_size = glsl_overlay_fragment_130_size;
+#ifdef HAS_SPIRV
+        vs_spirv = spv_vertex_130;            vs_spirv_size = spv_vertex_130_size;
+        fs_spirv = spv_fragment_130;          fs_spirv_size = spv_fragment_130_size;
+#endif
     }
-
-    GLint vs_len = (GLint)(strlen(ver_str) + strlen(vs_body));
-    GLint fs_len = (GLint)(strlen(ver_str) + strlen(fs_body));
-
-    /* Build vertex shader source: version + body */
-    char *vs_full = malloc((size_t)vs_len + 1);
-    if (!vs_full) { IDK_ERR("comp", "vs_full malloc failed\n"); return -1; }
-    strcpy(vs_full, ver_str);
-    strcat(vs_full, vs_body);
-
-    /* Build fragment shader source: version + body */
-    char *fs_full = malloc((size_t)fs_len + 1);
-    if (!fs_full) { free(vs_full); IDK_ERR("comp", "fs_full malloc failed\n"); return -1; }
-    strcpy(fs_full, ver_str);
-    strcat(fs_full, fs_body);
 
     IDK_LOG("comp", "Using GLSL %s shader variant\n", ver_str);
 
-    /* Compile vertex shader */
-    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    const char *vs_src = vs_full;
-    glShaderSource(vs, 1, &vs_src, NULL);
-    glCompileShader(vs);
+    /* ── Check SPIR-V support (driver must advertise the format) ──── */
+#ifdef HAS_SPIRV
+    if (idk_fn_glShaderBinary && vs_spirv && vs_spirv_size > 4) {
+        GLint formats[16] = {0};
+        glGetIntegerv(GL_SHADER_BINARY_FORMATS, formats);
+        for (int i = 0; i < 16 && formats[i]; i++) {
+            if (formats[i] == GL_SHADER_BINARY_FORMAT_SPIR_V) {
+                has_spirv = 1;
+                break;
+            }
+        }
+    }
+#endif
 
+    GLuint vs, fs;
     GLint ok;
-    glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        GLchar log[512];
-        glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &ok);
-        if (ok > 0) {
-            glGetShaderInfoLog(vs, 512, NULL, log);
-            IDK_ERR("comp", "VS log:\n%s\n", log);
+
+    if (has_spirv) {
+        /* ── SPIR-V path ─────────────────────────────────────────── */
+        IDK_LOG("comp", "Using SPIR-V shader compilation\n");
+
+        vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderBinary(1, &vs, GL_SHADER_BINARY_FORMAT_SPIR_V,
+                       vs_spirv, (GLsizei)vs_spirv_size);
+        glCompileShader(vs);
+        glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            IDK_LOG("comp", "SPIR-V vs failed, fallback to GLSL\n");
+            has_spirv = 0;
+            glDeleteShader(vs);
+        } else {
+            fs = glCreateShader(GL_FRAGMENT_SHADER);
+            glShaderBinary(1, &fs, GL_SHADER_BINARY_FORMAT_SPIR_V,
+                           fs_spirv, (GLsizei)fs_spirv_size);
+            glCompileShader(fs);
+            glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+            if (!ok) {
+                IDK_LOG("comp", "SPIR-V fs failed, fallback to GLSL\n");
+                has_spirv = 0;
+                glDeleteShader(vs);
+                glDeleteShader(fs);
+            }
         }
-        glDeleteShader(vs);
-        free(vs_full);
-        free(fs_full);
-        return -1;
     }
 
-    /* Compile fragment shader */
-    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-    const char *fs_src = fs_full;
-    glShaderSource(fs, 1, &fs_src, NULL);
-    glCompileShader(fs);
+    if (!has_spirv) {
+        /* ── GLSL string literal fallback ────────────────────────── */
+        IDK_LOG("comp", "Using GLSL string literal compilation\n");
 
-    glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        GLchar log[512];
-        glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &ok);
-        if (ok > 0) {
-            glGetShaderInfoLog(fs, 512, NULL, log);
-            IDK_ERR("comp", "FS log:\n%s\n", log);
+        const GLchar *vs_src[] = { ver_str, vs_body };
+        const GLint  vs_len[]  = { (GLint)strlen(ver_str), (GLint)vs_size };
+
+        vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 2, vs_src, vs_len);
+        glCompileShader(vs);
+
+        glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            GLchar log[512];
+            glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &ok);
+            if (ok > 0) {
+                glGetShaderInfoLog(vs, 512, NULL, log);
+                IDK_ERR("comp", "VS log:\n%s\n", log);
+            }
+            glDeleteShader(vs);
+            return -1;
         }
-        glDeleteShader(vs);
-        glDeleteShader(fs);
-        free(vs_full);
-        free(fs_full);
-        return -1;
-    }
 
-    free(vs_full);
-    free(fs_full);
+        const GLchar *fs_src[] = { ver_str, fs_body };
+        const GLint  fs_len[]  = { (GLint)strlen(ver_str), (GLint)fs_size };
+
+        fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 2, fs_src, fs_len);
+        glCompileShader(fs);
+
+        glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            GLchar log[512];
+            glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &ok);
+            if (ok > 0) {
+                glGetShaderInfoLog(fs, 512, NULL, log);
+                IDK_ERR("comp", "FS log:\n%s\n", log);
+            }
+            glDeleteShader(vs);
+            glDeleteShader(fs);
+            return -1;
+        }
+    }
 
     /* Link program */
     g_program = glCreateProgram();

@@ -150,6 +150,10 @@ typedef void (*PFN_idk_glBindSampler)(GLuint, GLuint);
 typedef void (*PFN_idk_glPolygonMode)(GLenum, GLenum);
 typedef void (*PFN_idk_glBindFramebuffer)(GLenum, GLuint);
 
+/* ── SPIR-V function pointer typedefs ────────────────────────────────── */
+typedef void (*PFN_idk_glShaderBinary)(GLsizei, const GLuint*, GLenum, const GLvoid*, GLsizei);
+typedef void (*PFN_idk_glSpecializeShader)(GLuint, const GLchar*, GLuint, const GLuint*, const GLuint*);
+
 /* ── Global function pointers (resolved by idk_gl_loader_init) ──────────── */
 
 extern PFN_idk_glGetIntegerv          idk_fn_glGetIntegerv;
@@ -212,6 +216,8 @@ extern PFN_idk_glDeleteVertexArrays   idk_fn_glDeleteVertexArrays;
 extern PFN_idk_glBindSampler          idk_fn_glBindSampler;
 extern PFN_idk_glPolygonMode          idk_fn_glPolygonMode;
 extern PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer;
+extern PFN_idk_glShaderBinary         idk_fn_glShaderBinary;
+extern PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader;
 
 /* ── Macro redirect: glGetIntegerv → (*idk_fn_glGetIntegerv) ──────────────
  *
@@ -283,6 +289,8 @@ extern PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer;
 #define glBindSampler          (*idk_fn_glBindSampler)
 #define glPolygonMode          (*idk_fn_glPolygonMode)
 #define glBindFramebuffer      (*idk_fn_glBindFramebuffer)
+#define glShaderBinary         (*idk_fn_glShaderBinary)
+#define glSpecializeShader     (*idk_fn_glSpecializeShader)
 
 /* GL draw buffer and clear enums */
 #define GL_DRAW_BUFFER          0x0C01
@@ -319,6 +327,10 @@ extern PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer;
 #define GL_FRAMEBUFFER_SRGB    0x8DB9
 #define GL_STENCIL_TEST         0x0B90
 #define GL_ONE                  1
+
+/* ── SPIR-V enums ─────────────────────────────────────────────────────── */
+#define GL_SHADER_BINARY_FORMAT_SPIR_V   0x9307
+#define GL_SHADER_BINARY_FORMATS         0x8207
 
 /* ── Init ─────────────────────────────────────────────────────────────────
  *

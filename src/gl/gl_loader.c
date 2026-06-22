@@ -79,6 +79,8 @@ PFN_idk_glDeleteVertexArrays   idk_fn_glDeleteVertexArrays   = NULL;
 PFN_idk_glBindSampler          idk_fn_glBindSampler          = NULL;
 PFN_idk_glPolygonMode          idk_fn_glPolygonMode          = NULL;
 PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer      = NULL;
+PFN_idk_glShaderBinary         idk_fn_glShaderBinary         = NULL;
+PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader     = NULL;
 
 /* ── Init ──────────────────────────────────────────────────────────────────
  *
@@ -187,6 +189,8 @@ int idk_gl_loader_init(void) {
     RESOLVE(glBindSampler);
     RESOLVE(glPolygonMode);
     RESOLVE(glBindFramebuffer);
+    RESOLVE(glShaderBinary);
+    RESOLVE(glSpecializeShader);
 
     #undef RESOLVE
 

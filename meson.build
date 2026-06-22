@@ -35,32 +35,143 @@ inc = include_directories('include')
 # Internal headers via #include "core/...", "gl/...", "inject/...", etc.
 
 # ── Shader embedding ───────────────────────────────────────────────────────
-python3 = find_program('python3', required: false)
-shader_srcs = files(
-    'shaders/overlay_120.frag',
-    'shaders/overlay_120.vert',
-    'shaders/overlay_130.frag',
-    'shaders/overlay_130.vert',
-    'shaders/overlay_300_es.frag',
-    'shaders/overlay_300_es.vert',
-    'shaders/overlay_410.frag',
-    'shaders/overlay_410.vert',
-)
-if python3.found()
-    overlay_shader_embed_h = custom_target(
-        'embed-shaders',
-        input: shader_srcs,
-        output: 'overlay_shader_embed.h',
-        command: [
-            python3,
-            meson.current_source_dir() / 'scripts/embed_shaders.py',
-            '--output', '@OUTPUT@',
-            '--shader-dir', meson.current_source_dir() / 'shaders',
-        ],
-        build_by_default: true,
+#
+# Pipeline for EACH shader:
+#   1. configure_file(copy:true) → copy to build dir (tên sạch)
+#   2. sed '2,$w'              → strip #version line (compositor prepends at runtime)
+#   3. ld -r -b binary         → embed text as ELF .o
+#   4. objcopy --redefine-sym  → rename auto-generated symbols to clean names
+#
+# If glslc is found, SPIR-V objects are also built:
+#   5. glslc -c                → compile GLSL → SPIR-V
+#   6. ld -r -b binary         → embed SPIR-V as ELF .o
+#   7. objcopy --redefine-sym  → rename symbols
+
+fs   = import('fs')
+sed  = find_program('sed')
+ld   = find_program('ld')
+objcopy = find_program('objcopy')
+glslc = find_program('glslc', required: false)
+cp    = find_program('cp')
+
+shader_dir = meson.current_source_dir() / 'src/shaders'
+
+# [filename, variant_label, glslc_stage]
+shaders = [
+  ['overlay_120.vert',   'vertex_120',   'vert'],
+  ['overlay_120.frag',   'fragment_120', 'frag'],
+  ['overlay_130.vert',   'vertex_130',   'vert'],
+  ['overlay_130.frag',   'fragment_130', 'frag'],
+  ['overlay_300_es.vert','vertex_300_es','vert'],
+  ['overlay_300_es.frag','fragment_300_es','frag'],
+  ['overlay_410.vert',   'vertex_410',   'vert'],
+  ['overlay_410.frag',   'fragment_410', 'frag'],
+]
+
+glsl_o_files = []
+spv_o_files = []
+
+foreach s : shaders
+  fname   = s[0]
+  variant = s[1]
+  stage   = s[2]
+
+  glsl_sym = 'glsl_overlay_' + variant
+  spv_sym  = 'spv_' + variant
+
+  # ── Step 1: Copy shader → build dir ──
+  shader_copy = configure_file(
+    input: shader_dir / fname,
+    output: fname,
+    copy: true,
+  )
+
+  # Compute ld -b binary old symbol names from the absolute build path
+  fpath = shader_copy.full_path()
+  safe  = fpath.replace('/', '_').replace('.', '_').replace('-', '_')
+  old_start = '_binary_' + safe + '_start'
+  old_size  = '_binary_' + safe + '_size'
+
+  # ── Step 2: Strip #version with sed ──
+  body_file = custom_target('strip_' + glsl_sym,
+    input: shader_copy,
+    output: glsl_sym + '_body.txt',
+    command: [sed, '-n', '2,$w @OUTPUT@', '@INPUT@'],
+    build_by_default: true,
+  )
+
+  # ── Step 3: ld -b binary → raw .o (symbols based on @INPUT@ path) ──
+  glsl_raw = custom_target('ld_' + glsl_sym,
+    input: body_file,
+    output: glsl_sym + '_raw.o',
+    command: [ld, '-r', '-b', 'binary', '-z', 'noexecstack',
+              '@INPUT@', '-o', '@OUTPUT@'],
+    build_by_default: true,
+  )
+
+  # ── Step 4: objcopy --redefine-sym → clean symbol names ──
+  glsl_o_files += custom_target('obj_' + glsl_sym,
+    input: glsl_raw,
+    output: glsl_sym + '.o',
+    command: [objcopy,
+      '--redefine-sym', old_start + '=' + glsl_sym,
+      '--redefine-sym', old_size  + '=' + glsl_sym + '_size',
+      '@INPUT@', '@OUTPUT@'],
+    build_by_default: true,
+  )
+
+  # ── Step 5-7: SPIR-V pipeline (only if glslc found) ──
+  if glslc.found()
+    # Step 5: glslc compile
+    spv_file = custom_target('spv_' + spv_sym,
+      input: shader_copy,
+      output: spv_sym + '.spv',
+      command: [glslc, '-c', '-fshader-stage=' + stage,
+                '@INPUT@', '-o', '@OUTPUT@'],
+      build_by_default: true,
     )
+
+    # Step 5b: Copy .spv to build root so ld symbol names are clean
+    spv_clean = custom_target('spvc_' + spv_sym,
+      input: spv_file,
+      output: spv_sym + '.bin',
+      command: [cp, '@INPUT@', '@OUTPUT@'],
+      build_by_default: true,
+    )
+
+    # Compute SPIR-V old symbol names
+    spv_fpath = spv_clean.full_path()
+    spv_safe  = spv_fpath.replace('/', '_').replace('.', '_').replace('-', '_')
+    spv_old_start = '_binary_' + spv_safe + '_start'
+    spv_old_size  = '_binary_' + spv_safe + '_size'
+
+    # Step 6: ld -b binary
+    spv_raw = custom_target('ld_' + spv_sym,
+      input: spv_clean,
+      output: spv_sym + '_raw.o',
+      command: [ld, '-r', '-b', 'binary', '-z', 'noexecstack',
+                '@INPUT@', '-o', '@OUTPUT@'],
+      build_by_default: true,
+    )
+
+    # Step 7: objcopy rename
+    spv_o_files += custom_target('obj_' + spv_sym,
+      input: spv_raw,
+      output: spv_sym + '.o',
+      command: [objcopy,
+        '--redefine-sym', spv_old_start + '=' + spv_sym,
+        '--redefine-sym', spv_old_size  + '=' + spv_sym + '_size',
+        '@INPUT@', '@OUTPUT@'],
+      build_by_default: true,
+    )
+  endif
+endforeach
+
+if glslc.found()
+  add_project_arguments('-DHAS_SPIRV', language: 'c')
+  message('SPIR-V shader compilation enabled (glslc found)')
 else
-    overlay_shader_embed_h = files('src/overlay_shader_embed.h')
+  message('SPIR-V shader compilation disabled (glslc not found, GLSL fallback only)')
 endif
 
 vk_found = cc.has_function('vkCreateInstance', prefix: '#include <vulkan/vulkan.h>')
@@ -80,21 +191,22 @@ idk_shim_so = library(
 egl_dep = dependency('egl', required: false)
 gles2_dep = dependency('glesv2', required: false)
 if egl_dep.found() and gles2_dep.found()
-    idk_gl_so = library(
-        'idk-gl',
-        [
-            'src/shim/idk_gl_hook.c',
-            'src/core/compositor.c',
-            'src/gl/gl_loader.c',
-            overlay_shader_embed_h,
-        ],
-        c_args: overlay_c_flags,
-        include_directories: [inc],
-        dependencies: [egl_dep, gles2_dep],
-        link_args: ['-ldl', '-lpthread'],
-        version: '0.1',
-        install: true,
-    )
+idk_gl_so = library(
+    'idk-gl',
+    [
+        'src/shim/idk_gl_hook.c',
+        'src/core/compositor.c',
+        'src/gl/gl_loader.c',
+        glsl_o_files,
+    ],
+    c_args: overlay_c_flags,
+    include_directories: [inc],
+    dependencies: [egl_dep, gles2_dep],
+    link_args: ['-ldl', '-lpthread'],
+    objects: spv_o_files,
+    version: '0.1',
+    install: true,
+)
 else
     warning('EGL/GLES2 dev headers not found — libidk-gl.so will not be built.')
 endif
@@ -110,12 +222,13 @@ idk_overlay_so = library(
         'src/gl/gl_loader.c',
         'src/inject/vulkan_hook.c',
         'src/ipc/ipc.c',
-        overlay_shader_embed_h,
+        glsl_o_files,
     ],
     c_args: overlay_c_flags,
     include_directories: [inc],
     dependencies: [syringe_dep, egl_dep2],
     link_args: ['-ldl', '-lpthread'],
+    objects: spv_o_files,
     version: '0.1',
     install: true,
 )
