@@ -17,21 +17,10 @@ class WebView : public QWebEngineView
     Q_OBJECT
 
 public:
-    /**
-     * Create a new WebView for an overlay group.
-     * 
-     * @param id      Overlay ID (1-based)
-     * @param conf    Configuration from INI file
-     * @param manager Parent manager (for socket IPC)
-     * @param parent  Parent widget
-     */
     WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget *parent = nullptr);
     ~WebView();
 
 signals:
-    /**
-     * Emitted when a frame is successfully sent.
-     */
     void frameSent();
 
 protected:
@@ -39,25 +28,11 @@ protected:
     QWebEngineView *createWindow(QWebEnginePage::WebWindowType type) override;
 
 private slots:
-    /**
-     * Initialize DMA-BUF extraction when QtQuick window is ready (Qt6 only).
-     */
     void initDmaBuf();
-
-    /**
-     * Send create image message to idk-overlay via manager.
-     */
     void sendCreateImage();
 
 private:
-    /**
-     * Initialize SHM-based frame sending (fallback for Qt5 or no DMA-BUF).
-     */
     void initShm();
-
-    /**
-     * Allocate shared memory for pixel data.
-     */
     void initMemory();
 
     uint8_t m_id;                       // Overlay ID
@@ -85,9 +60,6 @@ private:
     bool eventFilter(QObject *obj, QEvent *event) override;
 };
 
-/**
- * Custom WebPage for console message handling.
- */
 class WebPage : public QWebEnginePage
 {
     Q_OBJECT

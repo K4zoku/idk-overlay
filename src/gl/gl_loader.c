@@ -16,7 +16,7 @@
 #include "gl/gl_loader.h"
 #include "core/log.h"
 
-/* ── Global function pointers (default NULL) ────────────────────────────── */
+/* ── Global function pointers ─────────────────────────────────────────── */
 
 PFN_idk_glGetIntegerv          idk_fn_glGetIntegerv          = NULL;
 PFN_idk_glEnable               idk_fn_glEnable               = NULL;
@@ -193,7 +193,6 @@ int idk_gl_loader_init(void) {
 
     #undef RESOLVE
 
-    /* Sanity check: a few critical ones must be present */
     if (!idk_fn_glGetIntegerv || !idk_fn_glDrawArrays || !idk_fn_glUseProgram) {
         IDK_ERR("gl-loader", "Critical GL functions missing — "
                         "glGetIntegerv=%p glDrawArrays=%p glUseProgram=%p\n",

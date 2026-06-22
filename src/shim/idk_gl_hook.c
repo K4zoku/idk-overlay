@@ -66,18 +66,12 @@ static int g_enable_gl = 1;
 
 /* ── EGL function resolution ─────────────────────────────────────────── */
 
-/**
- * Resolve EGL/GL function addresses (like MangoHud's get_egl_proc_address).
- * Uses multiple fallback strategies.
- */
 static void *resolve_egl_function(const char *name) {
-    /* Strategy 1: Use real eglGetProcAddress if available */
     if (real_eglGetProcAddress) {
         void *fn = real_eglGetProcAddress(name);
         if (fn) return fn;
     }
 
-    /* Strategy 2: Load from libEGL.so.1 directly */
     void *lib_egl = dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib_egl) {
         void *fn = dlsym(lib_egl, name);
@@ -85,7 +79,6 @@ static void *resolve_egl_function(const char *name) {
         if (fn) return fn;
     }
 
-    /* Strategy 3: Try libEGL.so (without version) */
     lib_egl = dlopen("libEGL.so", RTLD_LAZY);
     if (lib_egl) {
         void *fn = dlsym(lib_egl, name);
@@ -96,9 +89,6 @@ static void *resolve_egl_function(const char *name) {
     return NULL;
 }
 
-/**
- * Load all real EGL functions on first use.
- */
 static void load_real_functions(void) {
     if (real_eglGetProcAddress) return;
 
@@ -165,14 +155,12 @@ static void render_overlay(void) {
      * This updates the texture if a new frame arrived. */
     idk_compositor_render();
 
-    /* Get surface dimensions via eglQuerySurface (MangoHud approach) */
     int fb_w = 0, fb_h = 0;
     if (fn_eglQuerySurface && g_current_dpy && g_current_surface) {
         fn_eglQuerySurface(g_current_dpy, g_current_surface, EGL_HEIGHT, &fb_h);
         fn_eglQuerySurface(g_current_dpy, g_current_surface, EGL_WIDTH, &fb_w);
     }
 
-    /* Fallback to glGetIntegerv if eglQuerySurface failed */
     if (fb_w <= 0 || fb_h <= 0) {
         GLint vp[4] = {0, 0, 0, 0};
         if (idk_fn_glGetIntegerv) {
@@ -194,14 +182,9 @@ static void render_overlay(void) {
 
 /* ── Exported hook functions (called by shim) ────────────────────────── */
 
-/**
- * Hooked eglGetProcAddress — intercept GL function resolution.
- * Returns our hook functions when asked for them.
- */
 void *idk_eglGetProcAddress(const char *procName) {
     load_real_functions();
 
-    /* Return our own hooks if requested */
     if (strcmp(procName, "eglSwapBuffers") == 0) {
         return (void *)idk_eglSwapBuffers;
     }
@@ -218,12 +201,10 @@ void *idk_eglGetProcAddress(const char *procName) {
         return (void *)idk_eglDestroyContext;
     }
 
-    /* For all other functions, use real eglGetProcAddress */
     if (real_eglGetProcAddress) {
         return real_eglGetProcAddress(procName);
     }
 
-    /* Fallback: try to resolve directly */
     return resolve_egl_function(procName);
 }
 
@@ -242,7 +223,6 @@ unsigned int idk_eglSwapBuffers(void *dpy, void *surface) {
         return 0;
     }
 
-    /* Lazy-init GL resources on first swap (GL context is now current) */
     if (!g_gl_resources_ready) {
         if (idk_compositor_init_gl() == 0) {
             g_gl_resources_ready = 1;
@@ -250,7 +230,6 @@ unsigned int idk_eglSwapBuffers(void *dpy, void *surface) {
         }
     }
 
-    /* Save dpy/surface for eglQuerySurface in render_overlay */
     g_current_dpy = dpy;
     g_current_surface = surface;
 
@@ -261,13 +240,9 @@ unsigned int idk_eglSwapBuffers(void *dpy, void *surface) {
      * eglQuerySurface dimensions. */
     render_overlay();
 
-    /* Call real eglSwapBuffers */
     return real_eglSwapBuffers(dpy, surface);
 }
 
-/**
- * Hooked eglGetDisplay — wrapper around real eglGetDisplay.
- */
 void *idk_eglGetDisplay(void *native_display) {
     load_real_functions();
 
@@ -275,7 +250,6 @@ void *idk_eglGetDisplay(void *native_display) {
         return real_eglGetDisplay(native_display);
     }
 
-    /* Fallback: dlopen + dlsym eglGetDisplay */
     void *lib = dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib) {
         void *(*fn)(void*) = (void*(*)(void*))dlsym(lib, "eglGetDisplay");
@@ -284,9 +258,6 @@ void *idk_eglGetDisplay(void *native_display) {
     return NULL;
 }
 
-/**
- * Hooked eglGetPlatformDisplay — wrapper around real eglGetPlatformDisplay.
- */
 void *idk_eglGetPlatformDisplay(unsigned int platform,
                                  void *native_display,
                                  const intptr_t *attrib_list) {
@@ -296,7 +267,6 @@ void *idk_eglGetPlatformDisplay(unsigned int platform,
         return real_eglGetPlatformDisplay(platform, native_display, attrib_list);
     }
 
-    /* Fallback */
     void *lib = dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib) {
         void *(*fn)(unsigned int, void*, const intptr_t*) =
@@ -306,15 +276,12 @@ void *idk_eglGetPlatformDisplay(unsigned int platform,
     return NULL;
 }
 
-/**
- * Hooked eglTerminate — wrapper around real eglTerminate.
- */
 int idk_eglTerminate(void *display) {
     load_real_functions();
 
     if (real_eglTerminate) {
         int ret = real_eglTerminate(display);
-        g_gl_initialized = false; /* reset on terminate */
+        g_gl_initialized = false;
         return ret;
     }
 
@@ -326,15 +293,12 @@ int idk_eglTerminate(void *display) {
     return 0;
 }
 
-/**
- * Hooked eglDestroyContext — wrapper around real eglDestroyContext.
- */
 unsigned int idk_eglDestroyContext(void *dpy, void *ctx) {
     load_real_functions();
 
     if (real_eglDestroyContext) {
         unsigned int ret = real_eglDestroyContext(dpy, ctx);
-        g_gl_initialized = false; /* reset on context destroy */
+        g_gl_initialized = false;
         return ret;
     }
 

@@ -108,11 +108,9 @@ static int accept_client(int server_fd) {
 }
 
 static int find_or_create_overlay(uint8_t id) {
-    /* Search for existing overlay */
     for (int i = 0; i < g_num_overlays; i++) {
         if (g_overlays[i].id == id) return i;
     }
-    /* Create new overlay slot */
     if (g_num_overlays >= RENDER_MAX_OVERLAYS) {
         IDK_ERR("render", "Max overlays (%d) reached\n", RENDER_MAX_OVERLAYS);
         return -1;
@@ -146,7 +144,6 @@ static void update_overlay(render_overlay_t *ov, const void *info, size_t info_l
     ov->pixel_size = (uint32_t)hdr->pid;
     ov->visible  = (uint8_t)hdr->reserved;
 
-    /* Close previous fd */
     if (ov->fd >= 0) {
         if (ov->pixels) {
             munmap(ov->pixels, ov->pixel_size);
@@ -155,7 +152,6 @@ static void update_overlay(render_overlay_t *ov, const void *info, size_t info_l
         close(ov->fd);
     }
 
-    /* mmap new fd */
     ov->fd = fd;
     if (ov->pixel_size > 0) {
         ov->pixels = mmap(NULL, ov->pixel_size, PROT_READ, MAP_SHARED, fd, 0);
@@ -187,12 +183,10 @@ static void process_frame(const void *info, size_t info_len, int fd) {
         uint32_t checksum;
     } *hdr = (struct frame_hdr *)info;
 
-    /* Determine if this is an overlay frame or a full-screen frame */
     uint8_t overlay_id = (uint8_t)hdr->num_planes;
     int is_overlay = (overlay_id >= 1 && overlay_id <= RENDER_MAX_OVERLAYS);
 
     if (is_overlay) {
-        /* External client frame — overlay with position */
         int idx = find_or_create_overlay(overlay_id);
         if (idx < 0) {
             close(fd);
@@ -206,7 +200,6 @@ static void process_frame(const void *info, size_t info_len, int fd) {
                 g_frame_count, hdr->width, hdr->height, hdr->stride,
                 hdr->format, hdr->pid, fd);
 
-        /* Validate format */
         if (hdr->format != 0x34325258) {
             IDK_ERR("render", "Unknown format 0x%08X, skipping\n",
                     hdr->format);
@@ -214,7 +207,6 @@ static void process_frame(const void *info, size_t info_len, int fd) {
             return;
         }
 
-        /* mmap SHM to read pixel data */
         size_t pixel_size = (size_t)hdr->width * (size_t)hdr->height * 4;
         uint8_t *pixels = mmap(NULL, pixel_size, PROT_READ, MAP_SHARED, fd, 0);
         if (pixels == MAP_FAILED) {

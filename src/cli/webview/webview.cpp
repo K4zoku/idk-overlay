@@ -227,7 +227,6 @@ QWebEngineView *WebView::createWindow(QWebEnginePage::WebWindowType type)
 
 void WebView::initMemory()
 {
-    // Allocate double-buffered shared memory for pixel data
     m_memsize = PIXELS_SIZE(m_conf.width(), m_conf.height()) * 2;
 
     m_memfd = memfd_create("idk-webview", MFD_CLOEXEC | MFD_ALLOW_SEALING);
@@ -257,18 +256,11 @@ void WebView::initMemory()
 
 void WebView::initDmaBuf()
 {
-    // This slot is called from afterRendering signal when DMA-BUF is available
-    // For now, we just use SHM mode since the DMA-BUF path requires
-    // QQuickWidget focusProxy setup which QWebEngineView doesn't have
-    // This is a placeholder for future DMA-BUF integration
     Q_UNUSED(this);
 }
 
 void WebView::sendCreateImage()
 {
-    // Send "create" message to tell overlay that we're ready
-    // This is a no-op for now — the overlay will receive frames via DMA-BUF
-    // but we need the proper wire protocol adaptation
     IDK_LOG("client-qt", "Overlay %u ready: %dx%d@(%d,%d)\n",
             m_id, m_conf.width(), m_conf.height(), m_conf.x(), m_conf.y());
 }

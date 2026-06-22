@@ -43,7 +43,6 @@ bool RhiTextureExtractor::extractTextureInfo(QQuickWindow *window, TextureInfo &
         return false;
     }
 
-    // Extract texture ID from render target
     textureInfo.textureId = renderTarget->description()
         .colorAttachmentAt(0)
         ->texture()
@@ -55,7 +54,6 @@ bool RhiTextureExtractor::extractTextureInfo(QQuickWindow *window, TextureInfo &
         return false;
     }
 
-    // Create EGL image from texture for DMA-BUF export
     EGLDisplay dpy = eglGetCurrentDisplay();
     s_eglImage = eglCreateImage(dpy, eglGetCurrentContext(),
                                 EGL_GL_TEXTURE_2D,
@@ -67,7 +65,6 @@ bool RhiTextureExtractor::extractTextureInfo(QQuickWindow *window, TextureInfo &
         return false;
     }
 
-    // Query DMA-BUF export parameters
     PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC eglExportDMABUFImageQueryMESA =
         (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC) eglGetProcAddress("eglExportDMABUFImageQueryMESA");
     PFNEGLEXPORTDMABUFIMAGEMESAPROC eglExportDMABUFImageMESA =

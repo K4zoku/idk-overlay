@@ -25,67 +25,24 @@ class Manager : public QObject
     Q_OBJECT
 
 public:
-    /**
-     * Create a new Manager.
-     *
-     * @param confFile  Path to INI config file
-     * @param tray      Start minimized in system tray
-     * @param parent    Parent QObject
-     */
     explicit Manager(const QString &confFile, bool tray, QObject *parent = nullptr);
     ~Manager();
 
-    /**
-     * Check if connected to idk-overlay socket.
-     */
     bool isConnected() const;
-
-    /**
-     * Get the resolved socket path from config.
-     */
     QString socketPath() const { return m_socketPath; }
 
 signals:
-    /**
-     * Emitted when socket connection is established.
-     */
     void socketConnected();
-
-    /**
-     * Emitted when socket connection is lost.
-     */
     void socketDisconnected();
 
 private slots:
-    /**
-     * Handle incoming data from socket.
-     */
     void onSocketReadyRead();
-
-    /**
-     * Reconnect timer — retry socket connection.
-     */
     void onReconnectTimer();
 
 private:
-    /**
-     * Initialize WebView instances from config.
-     */
     void initWebViews();
-
-    /**
-     * Show/hide a specific view by tab index.
-     */
     void showView(int index);
-
-    /**
-     * Update status label.
-     */
     void updateStatus();
-
-    /**
-     * Resolve path relative to config file directory.
-     */
     QString resolvePath(const QString &path) const;
 
     // State

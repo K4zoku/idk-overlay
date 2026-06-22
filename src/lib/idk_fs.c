@@ -127,7 +127,6 @@ int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
         return -1;
     }
 
-    /* If reusing, just store path and return */
     size_t len = strlen(sockpath);
     if (len >= IDK_IPC_SOCKNAME_MAX) {
         errno = ERANGE;
@@ -207,7 +206,6 @@ int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    /* Build and send using idk-overlay's wire format */
     uint8_t hdr[32] = { 0 };
     build_frame_hdr(frame, hdr, sizeof(hdr));
 
@@ -297,11 +295,9 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    /* Build header */
     uint8_t hdr[32] = { 0 };
     build_frame_hdr(frame, hdr, sizeof(hdr));
 
-    /* Calculate checksum */
     uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t));
     ((uint32_t *)hdr)[7] = checksum;
 
@@ -315,7 +311,6 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
         .msg_controllen = sizeof(ctrl_buf),
     };
 
-    /* Write all DMA-BUF fds as ancillary data */
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;

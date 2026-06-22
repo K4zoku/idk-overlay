@@ -121,7 +121,6 @@ static PFN_eglDestroyContext fn_eglDestroyContext = NULL;
 static bool load_gl_hook(void) {
     if (g_loaded) return true;
 
-    /* Find our own path using dladdr */
     Dl_info info;
     memset(&info, 0, sizeof(info));
     if (!dladdr((void *)load_gl_hook, &info) || !info.dli_fname) {
@@ -129,7 +128,6 @@ static bool load_gl_hook(void) {
         return false;
     }
 
-    /* Extract directory */
     const char *slash = strrchr(info.dli_fname, '/');
     char dir[1024];
     if (slash) {
@@ -139,11 +137,9 @@ static bool load_gl_hook(void) {
         strcpy(dir, ".");
     }
 
-    /* Build path to libidk-gl.so */
     char lib_path[1024];
     snprintf(lib_path, sizeof(lib_path), "%s/libidk-gl.so", dir);
 
-    /* Check if environment overrides the path */
     const char *env_lib = getenv("IDK_GL_LIB");
     if (env_lib) {
         snprintf(lib_path, sizeof(lib_path), "%s", env_lib);
@@ -158,7 +154,6 @@ static bool load_gl_hook(void) {
         return false;
     }
 
-    /* Resolve hook functions from libidk-gl.so */
     if (real_dlsym) {
         fn_eglGetProcAddress = (PFN_eglGetProcAddress)real_dlsym(g_gl_handle, "idk_eglGetProcAddress");
         fn_eglSwapBuffers = (PFN_eglSwapBuffers)real_dlsym(g_gl_handle, "idk_eglSwapBuffers");
@@ -178,13 +173,11 @@ static bool load_gl_hook(void) {
 static void *hook_eglGetProcAddress(const char *procName) {
     if (!g_loaded) load_gl_hook();
 
-    /* If we have our own hook, return it */
     if (g_loaded && fn_eglGetProcAddress) {
         void *hook = fn_eglGetProcAddress(procName);
         if (hook) return hook;
     }
 
-    /* Fall back to real eglGetProcAddress */
     if (real_dlsym) {
         void *lib_egl = real_dlopen("libEGL.so.1", RTLD_LAZY);
         if (lib_egl) {
@@ -201,7 +194,6 @@ static unsigned int hook_eglSwapBuffers(void *dpy, void *surface) {
     if (!g_loaded) load_gl_hook();
 
     if (!g_loaded || !fn_eglSwapBuffers) {
-        /* Fallback: call real eglSwapBuffers */
         void *lib_egl = real_dlopen("libEGL.so.1", RTLD_LAZY);
         if (lib_egl) {
             PFN_eglSwapBuffers real_fn =
@@ -226,7 +218,6 @@ static void *hook_eglGetDisplay(void *native_display) {
         return fn_eglGetDisplay(native_display);
     }
 
-    /* Fallback */
     void *lib_egl = real_dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib_egl) {
         PFN_eglGetDisplay real_fn =
@@ -250,7 +241,7 @@ static void *hook_eglGetPlatformDisplay(unsigned int platform,
         return fn_eglGetPlatformDisplay(platform, native_display, attrib_list);
     }
 
-    /* Fallback */
+
     void *lib_egl = real_dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib_egl) {
         PFN_eglGetPlatformDisplay real_fn =
@@ -272,7 +263,6 @@ static int hook_eglTerminate(void *display) {
         return fn_eglTerminate(display);
     }
 
-    /* Fallback */
     void *lib_egl = real_dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib_egl) {
         PFN_eglTerminate real_fn =
@@ -294,7 +284,6 @@ static unsigned int hook_eglDestroyContext(void *dpy, void *ctx) {
         return fn_eglDestroyContext(dpy, ctx);
     }
 
-    /* Fallback */
     void *lib_egl = real_dlopen("libEGL.so.1", RTLD_LAZY);
     if (lib_egl) {
         PFN_eglDestroyContext real_fn =
@@ -330,18 +319,14 @@ static const struct hook_entry hooks[] = {
 /* ── dlsym() interceptor ─────────────────────────────────────────────── */
 
 void *dlsym(void *handle, const char *name) {
-    /* Load real functions if not yet loaded */
     if (!real_dlsym) load_real_functions();
 
-    /* If still not loaded (e.g., recursion during init), return NULL */
     if (!real_dlsym) return NULL;
 
-    /* Only intercept EGL hooks if GL is enabled */
     const char *env_gl = getenv("IDK_GL");
     int gl_enabled = env_gl ? atoi(env_gl) : 1;
 
     if (gl_enabled) {
-        /* Intercept known GL/EGL hooks */
         for (size_t i = 0; i < NUM_HOOKS; i++) {
             if (strcmp(hooks[i].name, name) == 0) {
                 return hooks[i].ptr;
@@ -349,7 +334,6 @@ void *dlsym(void *handle, const char *name) {
         }
     }
 
-    /* For all other symbols, use real dlsym */
     return real_dlsym(handle, name);
 }
 

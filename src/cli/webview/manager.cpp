@@ -125,7 +125,6 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
         m_reconnectTimer->start(1000);
     }
 
-    // Setup UI
     QWebEngineProfile::defaultProfile()->setHttpCacheType(QWebEngineProfile::MemoryHttpCache);
 
     // Make the window a proper overlay: frameless, topmost, no taskbar entry
@@ -142,7 +141,6 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     m_window->setAttribute(Qt::WA_DontShowOnScreen, true);
     m_window->show();
 
-    // Size and position the window based on the first overlay config
     QTimer::singleShot(200, this, [this]() {
         if (!m_settings) { return; }
         const auto groups = m_settings->childGroups();
@@ -162,8 +160,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     m_tray->setToolTip("idk-webview");
     m_tray->show();
 
-    // Left-click tray: toggle window visibility
-    bool *windowVisible = new bool(false);  // start hidden
+    bool *windowVisible = new bool(false);
     connect(m_tray, &QSystemTrayIcon::activated, this, [=, this](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::Trigger) {
             *windowVisible = !*windowVisible;
@@ -193,18 +190,15 @@ Manager::~Manager()
 
 bool Manager::isConnected() const
 {
-    // Check if idk_fs is connected
     return idk_fs_get_fd() >= 0;
 }
 
 void Manager::onSocketReadyRead()
 {
-    // Handle incoming data — currently unused (idk_fs handles data)
 }
 
 void Manager::onReconnectTimer()
 {
-    // Timer callback now handled by lambda in constructor
 }
 
 void Manager::initWebViews()
