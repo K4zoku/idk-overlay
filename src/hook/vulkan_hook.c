@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 #include "hook/syringe_hook.h"
-#include "inject/vulkan.h"
+#include "hook/vulkan.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 

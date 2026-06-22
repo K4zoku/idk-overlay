@@ -27,9 +27,9 @@
 #include <sys/un.h>
 
 #include "hook/syringe_hook.h"
-#include "inject/overlay.h"
+#include "hook/overlay.h"
 #include "public/idk_ipc.h"
-#include "inject/vulkan.h"
+#include "hook/vulkan.h"
 #include "gl/egl.h"
 #include "core/log.h"
 
