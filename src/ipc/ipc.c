@@ -11,8 +11,8 @@
 #include <sys/un.h>
 #include <poll.h>
 
-#include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_ipc.h"
+#include "core/log.h"
 
 typedef struct idk_frame_hdr {
     uint32_t width;

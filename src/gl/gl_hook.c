@@ -29,10 +29,10 @@
 #include <sys/stat.h>
 
 #include "hook/syringe_hook.h"
-#include "idk_gl.h"
-#include "idk_ipc.h"
-#include "../core/compositor.h"
-#include "idk_log.h"
+#include "gl/gl.h"
+#include "public/idk_ipc.h"
+#include "core/compositor.h"
+#include "core/log.h"
 
 /* ── GL function pointer types ─────────────────────────────────────── */
 

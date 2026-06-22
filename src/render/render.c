@@ -34,8 +34,8 @@
 #include <sys/mman.h>
 #include <poll.h>
 
-#include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_ipc.h"
+#include "core/log.h"
 
 /* ── Overlay management ──────────────────────────────────────────────── */
 

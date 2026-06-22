@@ -31,11 +31,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "idk_gl_loader.h"   /* GL types + function pointer redirects */
-#include "compositor.h"
+#include "gl/gl_loader.h"   /* GL types + function pointer redirects */
+#include "core/compositor.h"
 #include "overlay_shader_embed.h"
-#include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_ipc.h"
+#include "core/log.h"
 
 /* ── Frame header from webview ─────────────────────────────────────── */
 /*

@@ -30,9 +30,9 @@
 #include <sys/un.h>
 #include <sys/mman.h>
 
-#include "idk_fs.h"
-#include "idk_ipc.h"
-#include "idk_log.h"
+#include "public/idk_fs.h"
+#include "public/idk_ipc.h"
+#include "core/log.h"
 
 /* ── Internal state ───────────────────────────────────────────────────── */
 

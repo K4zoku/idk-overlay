@@ -27,11 +27,11 @@
 #include <sys/un.h>
 
 #include "hook/syringe_hook.h"
-#include "idk_overlay.h"
-#include "idk_ipc.h"
-#include "idk_vulkan.h"
-#include "idk_egl.h"
-#include "idk_log.h"
+#include "inject/overlay.h"
+#include "public/idk_ipc.h"
+#include "inject/vulkan.h"
+#include "gl/egl.h"
+#include "core/log.h"
 
 /* ── Global state ─────────────────────────────────────────────────────── */
 

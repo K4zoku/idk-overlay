@@ -31,7 +31,8 @@ fs_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2']
 
 # ── Include directories ────────────────────────────────────────────────────
 inc = include_directories('include')
-inc_public = include_directories('include/public')
+# Public headers accessed via #include "public/idk_xxx.h"
+# Internal headers via #include "core/...", "gl/...", "inject/...", etc.
 
 # ── Shader embedding ───────────────────────────────────────────────────────
 python3 = find_program('python3', required: false)
@@ -69,7 +70,7 @@ idk_shim_so = library(
     'idk-shim',
     ['src/shim/idk_shim.c', 'src/shim/elfhacks.c'],
     c_args: overlay_c_flags,
-    include_directories: [inc, inc_public],
+    include_directories: [inc],
     link_args: ['-ldl', '-lpthread'],
     version: '0.1',
     install: true,
@@ -88,7 +89,7 @@ if egl_dep.found() and gles2_dep.found()
             overlay_shader_embed_h,
         ],
         c_args: overlay_c_flags,
-        include_directories: [inc, inc_public],
+        include_directories: [inc],
         dependencies: [egl_dep, gles2_dep],
         link_args: ['-ldl', '-lpthread'],
         version: '0.1',
@@ -112,7 +113,7 @@ idk_overlay_so = library(
         overlay_shader_embed_h,
     ],
     c_args: overlay_c_flags,
-    include_directories: [inc, inc_public],
+    include_directories: [inc],
     dependencies: [syringe_dep, egl_dep2],
     link_args: ['-ldl', '-lpthread'],
     version: '0.1',
@@ -124,7 +125,7 @@ idk_render_exe = executable(
     'idk-render',
     ['src/render/render.c', 'src/render/receive.c', 'src/ipc/ipc.c'],
     c_args: overlay_c_flags,
-    include_directories: [inc, inc_public],
+    include_directories: [inc],
     link_args: ['-ldl', '-lpthread'],
     dependencies: [syringe_dep, pthread_lib],
     install: true,
@@ -135,37 +136,26 @@ idk_inject_exe = executable(
     'idk-inject',
     'src/inject/inject.c',
     c_args: overlay_c_flags,
-    include_directories: [inc, inc_public],
+    include_directories: [inc],
     link_args: ['-ldl', '-lpthread'],
     dependencies: [syringe_dep],
     install: true,
 )
 
-# ── libidk-framesource.so — frame sender library (built inline) ────────────
+# ── libidk-framesource.so — frame sender library (used by idk-webview) ─────
 idk_fs_lib = library(
     'idk-framesource',
-    'src/idk_fs.c',
+    'src/lib/idk_fs.c',
     c_args: fs_c_flags,
-    include_directories: [inc, inc_public],
+    include_directories: [inc],
     link_args: ['-ldl', '-lpthread'],
     version: '0.1',
     install: true,
 )
 
 idk_fs_dep = declare_dependency(
-    include_directories: [inc, inc_public],
+    include_directories: [inc],
     link_with: idk_fs_lib,
-)
-
-# ── idk-send-frame (optional CLI — links libidk-framesource) ───────────────
-idk_send_frame_exe = executable(
-    'idk-send-frame',
-    'src/idk_send_frame.c',
-    c_args: overlay_c_flags,
-    include_directories: [inc, inc_public],
-    link_args: ['-ldl', '-lpthread'],
-    dependencies: [idk_fs_dep, pthread_lib],
-    install: true,
 )
 
 # ── idk-webview (optional — requires Qt6WebEngine) ─────────────────────────
@@ -215,6 +205,5 @@ message('  libidk-overlay.so:    inject path (EGL + Vulkan hooks)')
 message('  libidk-framesource:   shared library (frame sender)')
 message('  idk-webview:          Qt6 webview (DMA-BUF + idk socket)')
 message('  idk-render:           render process (receive + read pixels)')
-message('  idk-send-frame:       CLI (links libidk-framesource)')
 message('  idk-inject:           CLI (wraps syringe_inject)')
 message('=============================================\n')

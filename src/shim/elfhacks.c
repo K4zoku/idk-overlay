@@ -17,7 +17,7 @@
 #include <elf.h>
 #include <link.h>
 #include <fnmatch.h>
-#include "elfhacks.h"
+#include "shim/elfhacks.h"
 
 #ifndef __ELF_NATIVE_CLASS
 #include "sys/reg.h"

@@ -20,9 +20,9 @@
 #include <unistd.h>
 
 #include "hook/syringe_hook.h"
-#include "idk_vulkan.h"
-#include "idk_ipc.h"
-#include "idk_log.h"
+#include "inject/vulkan.h"
+#include "public/idk_ipc.h"
+#include "core/log.h"
 
 /* ── Vulkan types (opaque — we don't need full headers) ────────────────── */
 

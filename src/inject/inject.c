@@ -20,7 +20,7 @@
 #include <errno.h>
 
 #include "syringe.h"
-#include "idk_log.h"
+#include "core/log.h"
 
 static void usage(const char *prog) {
     fprintf(stderr,

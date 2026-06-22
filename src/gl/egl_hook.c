@@ -41,10 +41,10 @@
 #include <stdint.h>
 
 #include "hook/syringe_hook.h"
-#include "idk_egl.h"
-#include "idk_gl_loader.h"   /* GL types + function pointer redirects */
-#include "../core/compositor.h"
-#include "idk_log.h"
+#include "gl/egl.h"
+#include "gl/gl_loader.h"   /* GL types + function pointer redirects */
+#include "core/compositor.h"
+#include "core/log.h"
 
 /* Debug log file — bypass stderr (which AppImage may redirect). */
 static FILE *g_dbg = NULL;

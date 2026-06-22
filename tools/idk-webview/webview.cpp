@@ -26,8 +26,8 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 
-#include "idk_fs.h"
-#include "idk_log.h"
+#include "public/idk_fs.h"
+#include "core/log.h"
 
 // ── Constants ───────────────────────────────────────────────────────────
 

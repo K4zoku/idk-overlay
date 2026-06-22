@@ -14,8 +14,8 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <dlfcn.h>
-#include "idk_gl_loader.h"
-#include "idk_log.h"
+#include "gl/gl_loader.h"
+#include "core/log.h"
 
 /* ── Global function pointers (default NULL) ────────────────────────────── */
 

@@ -10,8 +10,8 @@
 #include <QMenu>
 #include <QDebug>
 
-#include "idk_fs.h"
-#include "idk_log.h"
+#include "public/idk_fs.h"
+#include "core/log.h"
 
 Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     : QObject(parent)
