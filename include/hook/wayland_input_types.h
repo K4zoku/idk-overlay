@@ -40,6 +40,15 @@ struct wl_seat;
 struct wl_registry;
 struct wl_event_queue;
 
+/* wl_message — from wayland-util.h, needed for manual protocol interface
+ * construction (wp_cursor_shape_manager_v1, wp_cursor_shape_device_v1). */
+struct wl_interface;
+struct wl_message {
+    const char *name;
+    const char *signature;
+    const struct wl_interface **types;
+};
+
 /* ── Fixed-point (24.8 signed) ──────────────────────────────────────────── */
 
 typedef int32_t wl_fixed_t;

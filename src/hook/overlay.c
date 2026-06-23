@@ -178,6 +178,27 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
         }
     }
 
+    /* Force-load libwayland-client.so.0 in the constructor — this ensures
+     * our hooks are installed BEFORE any game/SDL3 code runs, eliminating
+     * the race condition where syringe GOT patching happens while SDL3
+     * worker threads are mid-dispatch or mid-init.
+     *
+     * Previously we used RTLD_NOLOAD (don't force-load, only use if loaded),
+     * which meant hooks were often installed by the background thread AFTER
+     * SDL3 had already started its Wayland event loop — race → segfault.
+     *
+     * RTLD_NOW force-loads the library if not already loaded; the library
+     * is small (no GPU driver side-effects), so this is safe in a constructor.
+     * We dlclose() after hook install — resolve_wayland_symbols() opens its
+     * own handle. */
+    void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
+    if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
+    if (wlh) {
+        DBG("libwayland-client force-loaded — installing wayland input hook immediately");
+        idk_overlay_try_install_wayland_input();
+        dlclose(wlh);
+    }
+
     /* Start background thread to install hooks when GL/Vulkan libraries
      * are loaded by the game. This avoids the constructor crash (elfhacks +
      * code patching before linker is ready) while ensuring hooks ARE

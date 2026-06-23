@@ -232,8 +232,10 @@ if(el.tagName==='INPUT'||el.tagName==='TEXTAREA'){
 }
 )";
 
-/* Generic KeyboardEvent dispatch (Escape, Tab, arrows, F-keys, Space) */
+/* Generic KeyboardEvent dispatch (Escape, Tab, arrows, F-keys, Space)
+ * Uses document.activeElement (no preamble needed — works on any page). */
 static const char *JS_KEY_EVENT_FMT = R"(
+var el=document.activeElement||document.body;
 el.dispatchEvent(new KeyboardEvent('keydown',{key:'%1',bubbles:true,cancelable:true}));
 el.dispatchEvent(new KeyboardEvent('keyup',{key:'%1',bubbles:true,cancelable:true}));
 )";
@@ -246,25 +248,36 @@ el.setSelectionRange(start+1,start+1);
 el.dispatchEvent(new InputEvent('input',{inputType:'insertText',bubbles:true,cancelable:true,data:' '}));
 )";
 
-/* Mouse move via elementFromPoint */
+/* Mouse move — standalone, no preamble needed */
 static const char *JS_MOUSE_MOVE = R"(
+(function(){
+try{
 var el=document.elementFromPoint(%1,%2)||document.body;
 el.dispatchEvent(new MouseEvent('mousemove',{clientX:%1,clientY:%2,bubbles:true,view:window}));
+}catch(e){console.error('idk:mouse '+e.message);}
+})();
 )";
 
-/* Mouse down/up */
+/* Mouse down/up — standalone, no preamble needed */
 static const char *JS_MOUSE_DOWN = R"(
+(function(){
+try{
 var el=document.elementFromPoint(%1,%2)||document.body;
 el.dispatchEvent(new MouseEvent('mousedown',{clientX:%1,clientY:%2,button:%3,bubbles:true,view:window}));
+}catch(e){console.error('idk:mouse '+e.message);}
+})();
 )";
 
 static const char *JS_MOUSE_UP = R"(
+(function(){
+try{
 var el=document.elementFromPoint(%1,%2)||document.body;
 el.dispatchEvent(new MouseEvent('mouseup',{clientX:%1,clientY:%2,button:%3,bubbles:true,view:window}));
+}catch(e){console.error('idk:mouse '+e.message);}
+})();
 )";
 
-/* Scroll via scrollBy — lightweight, no preamble needed.
- * elementFromPoint → walk up to scrollable ancestor → scrollBy. */
+/* Scroll via scrollBy — standalone, no preamble needed. */
 static const char *JS_SCROLL = R"(
 (function(){
 try{
@@ -398,7 +411,7 @@ void InputReceiver::injectMouseEvent(const InputEvent &ev)
 
     switch (ev.type) {
     case IDK_INPUT_MOTION: {
-        QString js = QString(JS_PREAMBLE) + QString(JS_MOUSE_MOVE).arg(m_mouseX).arg(m_mouseY) + JS_SUFFIX;
+        QString js = QString(JS_MOUSE_MOVE).arg(m_mouseX).arg(m_mouseY);
         runJs(page, m_webview, js);
         break;
     }
@@ -410,7 +423,7 @@ void InputReceiver::injectMouseEvent(const InputEvent &ev)
         else return;
 
         const char *tmpl = (ev.state == 1) ? JS_MOUSE_DOWN : JS_MOUSE_UP;
-        QString js = QString(JS_PREAMBLE) + QString(tmpl).arg(m_mouseX).arg(m_mouseY).arg(btn) + JS_SUFFIX;
+        QString js = QString(tmpl).arg(m_mouseX).arg(m_mouseY).arg(btn);
         runJs(page, m_webview, js);
 
         const char *btn_name = btn == 0 ? "left" : btn == 2 ? "right" : "middle";

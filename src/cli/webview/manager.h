@@ -36,9 +36,6 @@ public:
 
     bool isConnected() const;
     QString socketPath() const { return m_socketPath; }
-    int cursorX() const { return m_cursorX; }
-    int cursorY() const { return m_cursorY; }
-    bool cursorVisible() const { return m_cursorVisible; }
 
 signals:
     void socketConnected();
@@ -65,8 +62,6 @@ private:
     bool m_was_connected = false; // track idk_fs fd state transitions
     InputReceiver *m_inputRx = nullptr;
     QTimer *m_inputRetryTimer = nullptr;
-    int m_cursorX = -1, m_cursorY = -1;
-    bool m_cursorVisible = false;
 
     // UI
     QWidget *m_window;

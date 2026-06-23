@@ -63,6 +63,12 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
+/* Forward declarations for wayland object types not in wayland_input_types.h */
+struct wl_compositor;
+struct wl_shm;
+struct wl_buffer;
+struct wl_shm_pool;
+
 /* ── libwayland-client function pointers (resolved via dlopen) ──────────── */
 
 typedef int   (*wl_proxy_add_listener_fn)(struct wl_proxy *,
@@ -104,6 +110,19 @@ struct wl_interface {
     const void *events;   /* const struct wl_message * */
 };
 
+/* wl_argument union (from wayland-util.h) — needed to intercept
+ * wl_proxy_marshal_array_flags for cursor state tracking. */
+union wl_argument {
+    int32_t i;
+    uint32_t u;
+    wl_fixed_t f;
+    const char *s;
+    void *o;       /* struct wl_object * (we use void* to avoid defining wl_object) */
+    int32_t h;     /* fd */
+    void *a;       /* struct wl_array * */
+    uint32_t n;    /* new_id */
+};
+
 typedef struct wl_event_queue *(*wl_display_create_queue_fn)(struct wl_display *display);
 typedef struct wl_proxy *(*wl_proxy_create_wrapper_fn)(struct wl_proxy *proxy);
 typedef void (*wl_proxy_wrapper_destroy_fn)(struct wl_proxy *wrapper);
@@ -121,6 +140,11 @@ typedef struct wl_proxy *(*wl_proxy_marshal_flags_fn)(
     struct wl_proxy *proxy, uint32_t opcode,
     const struct wl_interface *interface,
     uint32_t version, uint32_t flags, ...);
+typedef struct wl_proxy *(*wl_proxy_marshal_array_flags_fn)(
+    struct wl_proxy *proxy, uint32_t opcode,
+    const struct wl_interface *interface,
+    uint32_t version, uint32_t flags,
+    union wl_argument *args);
 
 static wl_display_create_queue_fn          real_wl_display_create_queue = NULL;
 static wl_proxy_create_wrapper_fn          real_wl_proxy_create_wrapper = NULL;
@@ -133,20 +157,51 @@ static wl_proxy_get_version_fn             real_wl_proxy_get_version = NULL;
 static wl_proxy_destroy_fn                 real_wl_proxy_destroy = NULL;
 static wl_proxy_marshal_constructor_versioned_fn real_wl_proxy_marshal_constructor_versioned = NULL;
 static wl_proxy_marshal_flags_fn           real_wl_proxy_marshal_flags = NULL;
+static wl_proxy_marshal_array_flags_fn     real_wl_proxy_marshal_array_flags = NULL;
 
 /* Interface structs — resolved via dlsym (exported as global variables) */
 static const struct wl_interface *g_wl_seat_interface = NULL;
 static const struct wl_interface *g_wl_keyboard_interface = NULL;
 static const struct wl_interface *g_wl_registry_interface = NULL;
+static const struct wl_interface *g_wl_pointer_interface = NULL;
 
-/* Wayland protocol opcodes (from wayland.xml):
- *   wl_display::sync = 0, wl_display::get_registry = 1
- *   wl_registry::bind = 0 (only request)
- *   wl_seat::get_pointer = 0, wl_seat::get_keyboard = 1, wl_seat::get_touch = 2
- */
+/* wp_cursor_shape_device_v1 interface — crafted manually since it's not
+ * exported by libwayland-client (staging protocol, not core wayland). */
+static const struct wl_message g_device_requests[] = {
+    { "destroy", "", NULL },
+    { "set_shape", "uu", NULL },
+};
+static const struct wl_interface g_wp_cursor_shape_device_v1_interface = {
+    "wp_cursor_shape_device_v1", 2, 2, g_device_requests, 0, NULL,
+};
+
+/* wp_cursor_shape_manager_v1 interface — minimal for our marshal use. */
+static const struct wl_interface *g_manager_get_pointer_types[] = {
+    &g_wp_cursor_shape_device_v1_interface,
+    NULL,
+};
+static const struct wl_message g_manager_requests[] = {
+    { "destroy", "", NULL },
+    { "get_pointer", "no", g_manager_get_pointer_types },
+};
+static const struct wl_interface g_wp_cursor_shape_manager_v1_interface = {
+    "wp_cursor_shape_manager_v1", 2, 2, g_manager_requests, 0, NULL,
+};
+
+/* Wayland protocol opcodes */
 #define WL_DISPLAY_GET_REGISTRY 1
 #define WL_REGISTRY_BIND 0
+#define WL_SEAT_GET_POINTER 0
 #define WL_SEAT_GET_KEYBOARD 1
+#define WP_CURSOR_SHAPE_DEVICE_SET_SHAPE 1
+#define WL_POINTER_SET_CURSOR 0
+
+/* wp_cursor_shape_device_v1 shape values (from cursor-shape-v1.xml) */
+#define WP_CURSOR_SHAPE_DEFAULT   1
+#define WP_CURSOR_SHAPE_CROSSHAIR 8
+
+/* wl_proxy marshal flag for destructor requests */
+#define WL_MARSHAL_FLAG_DESTROY 1
 
 /* Manual implementation of static-inline wayland functions using
  * wl_proxy_marshal_flags / wl_proxy_marshal_constructor_versioned */
@@ -194,6 +249,15 @@ static struct wl_keyboard *my_wl_seat_get_keyboard(struct wl_seat *seat) {
         real_wl_proxy_get_version((struct wl_proxy *)seat), 0, NULL);
 }
 
+static struct wl_pointer *my_wl_seat_get_pointer(struct wl_seat *seat) {
+    if (!real_wl_proxy_marshal_flags || !g_wl_pointer_interface)
+        return NULL;
+    return (struct wl_pointer *)real_wl_proxy_marshal_flags(
+        (struct wl_proxy *)seat, WL_SEAT_GET_POINTER,
+        g_wl_pointer_interface,
+        real_wl_proxy_get_version((struct wl_proxy *)seat), 0, NULL);
+}
+
 __attribute__((unused))
 static void my_wl_keyboard_destroy(struct wl_keyboard *kb) {
     if (real_wl_proxy_destroy)
@@ -206,12 +270,56 @@ static void my_wl_seat_destroy(struct wl_seat *seat) {
         real_wl_proxy_destroy((struct wl_proxy *)seat);
 }
 
+/* wp_cursor_shape_device_v1 marshal helpers */
+static void my_wp_cursor_shape_device_set_shape(struct wl_proxy *device,
+    uint32_t serial, uint32_t shape) {
+    if (!real_wl_proxy_marshal_flags) return;
+    real_wl_proxy_marshal_flags(device, WP_CURSOR_SHAPE_DEVICE_SET_SHAPE,
+        NULL, 2, 0, serial, shape);
+}
+
+/* Hide/show cursor via wl_pointer.set_cursor — used to restore the game's
+ * cursor state (hidden or visible) when capture turns OFF. */
+static void my_wl_pointer_set_cursor(struct wl_proxy *p, uint32_t serial,
+    void *surface, int32_t hx, int32_t hy) {
+    if (!real_wl_proxy_marshal_flags) return;
+    real_wl_proxy_marshal_flags(p, WL_POINTER_SET_CURSOR,
+        NULL, real_wl_proxy_get_version(p), 0,
+        serial, surface, hx, hy);
+}
+
 /* Sidecar state */
 static struct wl_display *g_sidecar_display = NULL;
 static struct wl_event_queue *g_sidecar_queue = NULL;
 static struct wl_seat *g_sidecar_seat = NULL;
 static struct wl_keyboard *g_sidecar_keyboard = NULL;
+static struct wl_pointer *g_sidecar_pointer = NULL;
+static struct wl_proxy *g_sidecar_cursor_shape_manager = NULL;
 static int g_sidecar_initialized = 0;
+
+/* Cursor shape device — created lazily for the game's wl_pointer proxy */
+static struct wl_proxy *g_cursor_shape_device = NULL;
+static struct wl_proxy *g_shape_device_pointer_proxy = NULL;
+
+/* Sidecar pointer enter state — fresh serial/surface from compositor,
+ * used for set_shape and synthetic enter when we missed the game's
+ * initial enter event. */
+static uint32_t g_sidecar_pointer_enter_serial = 0;
+static void *g_sidecar_surface = NULL;
+static wl_fixed_t g_sidecar_sx = 0;
+static wl_fixed_t g_sidecar_sy = 0;
+
+/* Game cursor state — tracked by intercepting wl_pointer.set_cursor calls
+ * via wl_proxy_marshal_array_flags hook. When the game calls set_cursor
+ * with surface=NULL, the cursor is hidden. We restore this state when
+ * capture turns OFF.
+ *
+ * g_pre_capture_cursor_hidden saves the snapshot taken when capture turns
+ * ON, so we can restore the EXACT pre-capture state on OFF — ignoring any
+ * set_cursor calls the game makes during capture (e.g. on forwarded
+ * enter events) or during the re-sync motion. */
+static int g_game_cursor_hidden = 0;
+static int g_pre_capture_cursor_hidden = 0;
 
 /* ── libxkbcommon function pointers (resolved via dlopen) ───────────────── */
 
@@ -300,10 +408,20 @@ static uint32_t g_mods = 0;
 static int32_t g_cursor_x = 0;
 static int32_t g_cursor_y = 0;
 
+/* Hardware cursor management — used to restore game cursor on capture OFF */
+static uint32_t g_last_enter_serial = 0;
+static uint32_t g_last_pointer_serial = 0;  /* latest serial from any pointer event */
+static struct wl_surface *g_last_enter_surface = NULL;
+static struct wl_proxy *g_game_pointer_proxy = NULL;
+static int g_pointer_in_surface = 0;  /* is pointer currently inside game's surface? */
+
 /* ── Logging ────────────────────────────────────────────────────────────── */
 
 #define WLOG(fmt, ...) IDK_LOG("wl-input", fmt "\n", ##__VA_ARGS__)
 #define WERR(fmt, ...) IDK_ERR("wl-input", fmt "\n", ##__VA_ARGS__)
+
+/* Wayland fixed-point helpers (not provided by vendored types) */
+#define WL_INT_TO_FIXED(i) ((wl_fixed_t)((i) * 256))
 
 /* ── Symbol resolution ──────────────────────────────────────────────────── */
 
@@ -363,6 +481,8 @@ static int resolve_wayland_symbols(void) {
         dlsym(g_wl_handle, "wl_proxy_marshal_constructor_versioned");
     real_wl_proxy_marshal_flags = (wl_proxy_marshal_flags_fn)
         dlsym(g_wl_handle, "wl_proxy_marshal_flags");
+    real_wl_proxy_marshal_array_flags = (wl_proxy_marshal_array_flags_fn)
+        dlsym(g_wl_handle, "wl_proxy_marshal_array_flags");
 
     /* Resolve interface structs — exported as global variables */
     g_wl_seat_interface = (const struct wl_interface *)
@@ -371,6 +491,8 @@ static int resolve_wayland_symbols(void) {
         dlsym(g_wl_handle, "wl_keyboard_interface");
     g_wl_registry_interface = (const struct wl_interface *)
         dlsym(g_wl_handle, "wl_registry_interface");
+    g_wl_pointer_interface = (const struct wl_interface *)
+        dlsym(g_wl_handle, "wl_pointer_interface");
 
     WLOG("libwayland-client resolved: add_listener=%p get_class=%p sidecar=%s",
          (void *)real_wl_proxy_add_listener, (void *)real_wl_proxy_get_class,
@@ -516,20 +638,6 @@ static void send_capture_state(uint32_t capture) {
     send_event_to_webview(&ev);
 }
 
-/* ── Capture state ──────────────────────────────────────────────────────── */
-
-int idk_wayland_input_is_captured(void) {
-    return g_captured;
-}
-
-void idk_wayland_input_set_capture(int enable) {
-    int new_state = enable ? 1 : 0;
-    if (new_state == g_captured) return;
-    g_captured = new_state;
-    WLOG("input capture %s", new_state ? "ENABLED" : "DISABLED");
-    send_capture_state((uint32_t)new_state);
-}
-
 /* ── Per-proxy saved state ──────────────────────────────────────────────── */
 
 struct ptr_state {
@@ -541,6 +649,78 @@ struct kb_state {
     const struct wl_keyboard_listener *game;
     void *game_data;
 };
+
+/* Forward declarations for cursor functions defined later */
+static void sidecar_ensure_cursor_shape_device(struct wl_pointer *p);
+
+/* ── Capture state ──────────────────────────────────────────────────────── */
+
+int idk_wayland_input_is_captured(void) {
+    return g_captured;
+}
+
+void idk_wayland_input_set_capture(int enable) {
+    int new_state = enable ? 1 : 0;
+    if (new_state == g_captured) return;
+
+    g_captured = new_state;
+
+    if (g_game_pointer_proxy) {
+        sidecar_ensure_cursor_shape_device(
+            (struct wl_pointer *)g_game_pointer_proxy);
+
+        uint32_t serial = g_last_enter_serial ? g_last_enter_serial
+                       : g_sidecar_pointer_enter_serial ? g_sidecar_pointer_enter_serial
+                       : g_last_pointer_serial;
+
+        if (new_state) {
+            /* Capture ON: save pre-capture cursor state, set crosshair */
+            g_pre_capture_cursor_hidden = g_game_cursor_hidden;
+            if (g_cursor_shape_device && serial) {
+                WLOG("set_capture(ON): serial=%u shape=crosshair device=%p "
+                     "(enter=%u sidecar_enter=%u ptr=%u pre_hidden=%d)",
+                     serial, (void *)g_cursor_shape_device,
+                     g_last_enter_serial, g_sidecar_pointer_enter_serial,
+                     g_last_pointer_serial, g_pre_capture_cursor_hidden);
+                my_wp_cursor_shape_device_set_shape(
+                    g_cursor_shape_device, serial, WP_CURSOR_SHAPE_CROSSHAIR);
+            }
+        } else {
+            /* Capture OFF: fire synthetic motion so game re-syncs cursor
+             * position, then restore pre-capture cursor state (ignoring
+             * whatever set_cursor the game did during the re-sync). */
+            if (g_pointer_in_surface && g_game_pointer_proxy) {
+                void **data_ptr = (void **)((char *)g_game_pointer_proxy + 48);
+                struct ptr_state *st = (struct ptr_state *)*data_ptr;
+                if (st && st->game && st->game->motion) {
+                    WLOG("set_capture(OFF): re-sync motion to game (%d,%d)",
+                         g_cursor_x, g_cursor_y);
+                    st->game->motion(st->game_data,
+                        (struct wl_pointer *)g_game_pointer_proxy, 0,
+                        WL_INT_TO_FIXED(g_cursor_x), WL_INT_TO_FIXED(g_cursor_y));
+                }
+            }
+            if (g_cursor_shape_device && serial) {
+                if (g_pre_capture_cursor_hidden) {
+                    WLOG("set_capture(OFF): serial=%u → hide cursor "
+                         "(pre-capture was hidden)", serial);
+                    my_wl_pointer_set_cursor(
+                        g_game_pointer_proxy, serial, NULL, 0, 0);
+                } else {
+                    WLOG("set_capture(OFF): serial=%u shape=default device=%p",
+                         serial, (void *)g_cursor_shape_device);
+                    my_wp_cursor_shape_device_set_shape(
+                        g_cursor_shape_device, serial, WP_CURSOR_SHAPE_DEFAULT);
+                }
+            }
+        }
+    } else if (!new_state) {
+        WLOG("set_capture(OFF): no game pointer proxy — cursor unchanged");
+    }
+
+    WLOG("input capture %s", new_state ? "ENABLED" : "DISABLED");
+    send_capture_state((uint32_t)new_state);
+}
 
 /* ── Forward declarations of wrapper vtables ────────────────────────────── */
 
@@ -599,11 +779,35 @@ static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
     g_cursor_x = WL_FIXED_TO_INT(sx);
     g_cursor_y = WL_FIXED_TO_INT(sy);
 
-    /* ALWAYS forward enter/leave to the game so it can call
-     * wl_pointer.set_cursor() with the enter serial — otherwise
-     * the compositor hides the cursor when no surface has a cursor
-     * set, and the user can't see where they're clicking.
-     * Motion/button/axis are still swallowed when captured. */
+    /* Save state for cursor management — used to restore game cursor
+     * when capture turns off while pointer is still on the surface. */
+    g_last_enter_serial = serial;
+    g_last_pointer_serial = serial;
+    g_last_enter_surface = s;
+    g_game_pointer_proxy = (struct wl_proxy *)p;
+    g_pointer_in_surface = 1;
+
+    /* Always create cursor shape device on enter (even when not captured)
+     * so it's ready when capture is toggled — set_shape needs the device
+     * to exist BEFORE the toggle, otherwise the first set_shape after
+     * get_pointer may be ignored by some compositors. */
+    sidecar_ensure_cursor_shape_device(p);
+    WLOG("wptr_enter: serial=%u device=%p captured=%d",
+         serial, (void *)g_cursor_shape_device, g_captured);
+
+    if (g_captured) {
+        /* Forward enter to game FIRST so it always has correct pointer
+         * focus state. Then override cursor shape. */
+        if (st->game && st->game->enter)
+            st->game->enter(st->game_data, p, serial, s, sx, sy);
+        if (g_cursor_shape_device) {
+            my_wp_cursor_shape_device_set_shape(
+                g_cursor_shape_device, serial,
+                WP_CURSOR_SHAPE_CROSSHAIR);
+        }
+        return;
+    }
+
     if (st->game && st->game->enter)
         st->game->enter(st->game_data, p, serial, s, sx, sy);
 }
@@ -611,6 +815,10 @@ static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
 static void wptr_leave(void *d, struct wl_pointer *p, uint32_t serial,
                        struct wl_surface *s) {
     struct ptr_state *st = (struct ptr_state *)d;
+    g_pointer_in_surface = 0;
+    /* Always forward leave to game so it knows it lost pointer focus.
+     * Without this, alt-tab back can leave the game frozen because the
+     * enter/leave sequence is broken. */
     if (st->game && st->game->leave)
         st->game->leave(st->game_data, p, serial, s);
 }
@@ -622,6 +830,14 @@ static void wptr_motion(void *d, struct wl_pointer *p, uint32_t time,
     g_cursor_y = WL_FIXED_TO_INT(sy);
 
     if (g_captured) {
+        /* Re-apply crosshair on every motion during capture — overrides any
+         * set_shape calls the game may have made (SDL3's own cursor shape
+         * device, game render-loop cursor changes, etc.). The last set_shape
+         * on the pointer wins, so this ensures crosshair stays visible. */
+        if (g_cursor_shape_device && g_last_enter_serial)
+            my_wp_cursor_shape_device_set_shape(
+                g_cursor_shape_device, g_last_enter_serial,
+                WP_CURSOR_SHAPE_CROSSHAIR);
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_MOTION;
         ev.time   = time;
@@ -639,7 +855,20 @@ static void wptr_motion(void *d, struct wl_pointer *p, uint32_t time,
 static void wptr_button(void *d, struct wl_pointer *p, uint32_t serial,
                         uint32_t time, uint32_t button, uint32_t state) {
     struct ptr_state *st = (struct ptr_state *)d;
+    g_last_pointer_serial = serial;
+    /* Button events only arrive when pointer is inside the surface.
+     * If we missed the initial enter (hook installed after game received
+     * it), this is our best signal that pointer IS in surface. */
+    if (!g_pointer_in_surface) {
+        g_pointer_in_surface = 1;
+        g_game_pointer_proxy = (struct wl_proxy *)p;
+        WLOG("wptr_button: inferred in_surface=1 (missed enter), serial=%u", serial);
+    }
     if (g_captured) {
+        if (g_cursor_shape_device && g_last_enter_serial)
+            my_wp_cursor_shape_device_set_shape(
+                g_cursor_shape_device, g_last_enter_serial,
+                WP_CURSOR_SHAPE_CROSSHAIR);
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_BUTTON;
         ev.time   = time;
@@ -661,6 +890,10 @@ static void wptr_axis(void *d, struct wl_pointer *p, uint32_t time,
                       uint32_t axis, wl_fixed_t value) {
     struct ptr_state *st = (struct ptr_state *)d;
     if (g_captured) {
+        if (g_cursor_shape_device && g_last_enter_serial)
+            my_wp_cursor_shape_device_set_shape(
+                g_cursor_shape_device, g_last_enter_serial,
+                WP_CURSOR_SHAPE_CROSSHAIR);
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_AXIS;
         ev.time   = time;
@@ -959,6 +1192,7 @@ static void *direct_overwrite_implementation(struct wl_proxy *proxy,
 #define MAX_INTERCEPTED 16
 static struct wl_proxy *g_intercepted_proxies[MAX_INTERCEPTED];
 static int g_intercepted_count = 0;
+static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int is_already_intercepted(struct wl_proxy *proxy) {
     for (int i = 0; i < g_intercepted_count; i++) {
@@ -976,9 +1210,14 @@ static void mark_intercepted(struct wl_proxy *proxy) {
 static void scan_and_intercept_input_proxies(struct wl_display *display) {
     if (!real_wl_proxy_get_class || !real_wl_proxy_get_version) return;
 
+    pthread_mutex_lock(&g_scan_mutex);
+
     struct wl_proxy *display_proxy = (struct wl_proxy *)display;
     struct wl_event_queue *queue = *(struct wl_event_queue **)((char *)display_proxy + 32);
-    if (!queue) return;
+    if (!queue) {
+        pthread_mutex_unlock(&g_scan_mutex);
+        return;
+    }
 
     /* Iterate proxy_list of this queue */
     struct wl_list *head = (struct wl_list *)((char *)queue + WL_EVENT_QUEUE_PROXY_LIST_OFFSET);
@@ -992,13 +1231,11 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
         const char *cls = real_wl_proxy_get_class(proxy);
         if (!cls) continue;
 
-        /* Check if already intercepted (our wrapper installed) */
         void **impl_ptr = (void **)((char *)proxy + 8);
         if (*impl_ptr == (void *)&g_kb_wrapper ||
             *impl_ptr == (void *)&g_ptr_wrapper) continue;
         if (is_already_intercepted(proxy)) continue;
 
-        /* Skip our sidecar's proxies */
         if (proxy == (struct wl_proxy *)g_sidecar_keyboard) continue;
 
         if (strcmp(cls, "wl_keyboard") == 0) {
@@ -1022,11 +1259,34 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
             st->game = (const struct wl_pointer_listener *)old_impl;
             st->game_data = old_data;
             mark_intercepted(proxy);
+            g_game_pointer_proxy = proxy;
             WLOG("scan: intercepted game pointer: proxy=%p game=%p data=%p",
                  (void *)proxy, (void *)st->game, st->game_data);
+            /* If sidecar already received an enter (compositor sent enter
+             * before we intercepted the game's pointer), fire the game's
+             * original enter handler to initialize cursor state tracking.
+             * This ensures g_game_cursor_hidden is populated before the
+             * first F8 press. */
+            if (g_sidecar_pointer_enter_serial && st->game && st->game->enter) {
+                WLOG("scan: firing synthetic enter for cursor state init "
+                     "(serial=%u surface=%p)", g_sidecar_pointer_enter_serial,
+                     g_sidecar_surface);
+                g_last_enter_serial = g_sidecar_pointer_enter_serial;
+                g_last_pointer_serial = g_sidecar_pointer_enter_serial;
+                g_pointer_in_surface = 1;
+                st->game->enter(st->game_data,
+                    (struct wl_pointer *)proxy,
+                    g_sidecar_pointer_enter_serial,
+                    (struct wl_surface *)g_sidecar_surface,
+                    g_sidecar_sx, g_sidecar_sy);
+                WLOG("scan: after synthetic enter: g_game_cursor_hidden=%d",
+                     g_game_cursor_hidden);
+            }
             found++;
         }
     }
+
+    pthread_mutex_unlock(&g_scan_mutex);
 }
 
 /* ── The hook on wl_proxy_add_listener ──────────────────────────────────── */
@@ -1116,6 +1376,7 @@ static int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
             st->game = (const struct wl_pointer_listener *)old_impl;
             st->game_data = old_data;
         }
+        g_game_pointer_proxy = proxy;
         WLOG("intercepted wl_pointer: game=%p data=%p proxy=%p (direct overwrite, old_impl=%p)",
              (void *)st->game, st->game_data, (void *)proxy, old_impl);
         return 0;
@@ -1291,6 +1552,67 @@ static void configure_hotkey(void) {
  */
 
 #define WL_SEAT_CAPABILITY_KEYBOARD 2
+#define WL_SEAT_CAPABILITY_POINTER  1
+
+/* ── Sidecar pointer listener (for fresh enter serial) ─────────────────── */
+
+static void sidecar_ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
+                              struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy) {
+    (void)d; (void)p;
+    g_sidecar_pointer_enter_serial = serial;
+    g_sidecar_surface = (void *)s;
+    g_sidecar_sx = sx;
+    g_sidecar_sy = sy;
+    WLOG("sidecar_ptr_enter: serial=%u surface=%p (fresh enter for set_shape)",
+         serial, (void *)s);
+
+    /* If the game's pointer was intercepted but never received an enter
+     * (the initial enter was dispatched before our scan), synthesize one
+     * so the game calls set_cursor() and we can track cursor hidden state. */
+    if (g_game_pointer_proxy && !g_pointer_in_surface) {
+        void **data_ptr = (void **)((char *)g_game_pointer_proxy + 48);
+        struct ptr_state *st = (struct ptr_state *)*data_ptr;
+        if (st && st->game && st->game->enter) {
+            g_pointer_in_surface = 1;
+            g_last_enter_serial = serial;
+            g_last_pointer_serial = serial;
+            WLOG("sidecar_ptr_enter: synthetic enter to game (serial=%u)"
+                 " for cursor state init", serial);
+            st->game->enter(st->game_data,
+                (struct wl_pointer *)g_game_pointer_proxy,
+                serial, s, sx, sy);
+            WLOG("sidecar_ptr_enter: after synthetic enter:"
+                 " g_game_cursor_hidden=%d", g_game_cursor_hidden);
+        }
+    }
+}
+static void sidecar_ptr_leave(void *d, struct wl_pointer *p, uint32_t serial,
+                              struct wl_surface *s) { (void)d; (void)p; (void)serial; (void)s; }
+static void sidecar_ptr_motion(void *d, struct wl_pointer *p, uint32_t time,
+                               wl_fixed_t sx, wl_fixed_t sy) { (void)d; (void)p; (void)time; (void)sx; (void)sy; }
+static void sidecar_ptr_button(void *d, struct wl_pointer *p, uint32_t serial,
+                               uint32_t time, uint32_t button, uint32_t state) {
+    (void)d; (void)p; (void)time; (void)button; (void)state;
+    g_sidecar_pointer_enter_serial = serial;
+}
+static void sidecar_ptr_axis(void *d, struct wl_pointer *p, uint32_t time,
+                             uint32_t axis, wl_fixed_t value) { (void)d; (void)p; (void)time; (void)axis; (void)value; }
+static void sidecar_ptr_frame(void *d, struct wl_pointer *p) { (void)d; (void)p; }
+static void sidecar_ptr_axis_source(void *d, struct wl_pointer *p, uint32_t src) { (void)d; (void)p; (void)src; }
+static void sidecar_ptr_axis_stop(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis) { (void)d; (void)p; (void)time; (void)axis; }
+static void sidecar_ptr_axis_discrete(void *d, struct wl_pointer *p, uint32_t axis, int32_t disc) { (void)d; (void)p; (void)axis; (void)disc; }
+
+static const struct wl_pointer_listener g_sidecar_ptr_listener = {
+    .enter          = sidecar_ptr_enter,
+    .leave          = sidecar_ptr_leave,
+    .motion         = sidecar_ptr_motion,
+    .button         = sidecar_ptr_button,
+    .axis           = sidecar_ptr_axis,
+    .frame          = sidecar_ptr_frame,
+    .axis_source    = sidecar_ptr_axis_source,
+    .axis_stop      = sidecar_ptr_axis_stop,
+    .axis_discrete  = sidecar_ptr_axis_discrete,
+};
 
 static void sidecar_kb_keymap(void *d, struct wl_keyboard *kb,
                               uint32_t fmt, int32_t fd, uint32_t sz) {
@@ -1410,6 +1732,17 @@ static const struct wl_keyboard_listener g_sidecar_kb_listener = {
 
 static void sidecar_seat_capabilities(void *d, struct wl_seat *seat, uint32_t caps) {
     (void)d;
+    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !g_sidecar_pointer) {
+        g_sidecar_pointer = my_wl_seat_get_pointer(seat);
+        if (g_sidecar_pointer) {
+            void *old_data = NULL;
+            void *old_impl = direct_overwrite_implementation(
+                (struct wl_proxy *)g_sidecar_pointer,
+                (void *)&g_sidecar_ptr_listener, NULL, &old_data);
+            WLOG("sidecar: wl_pointer bound + listener installed (old_impl=%p)",
+                 old_impl);
+        }
+    }
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !g_sidecar_keyboard) {
         g_sidecar_keyboard = my_wl_seat_get_keyboard(seat);
         if (g_sidecar_keyboard) {
@@ -1453,6 +1786,12 @@ static void sidecar_registry_global(void *d, struct wl_registry *reg,
                                        (void (**)(void))&g_sidecar_seat_listener, NULL);
             WLOG("sidecar: wl_seat listener installed");
         }
+    } else if (strcmp(iface, "wp_cursor_shape_manager_v1") == 0 && !g_sidecar_cursor_shape_manager) {
+        uint32_t bind_ver = ver < 2 ? ver : 2;
+        g_sidecar_cursor_shape_manager = (struct wl_proxy *)my_wl_registry_bind(
+            reg, name, &g_wp_cursor_shape_manager_v1_interface, bind_ver);
+        WLOG("sidecar: wp_cursor_shape_manager_v1 bound → %p (ver=%u)",
+             (void *)g_sidecar_cursor_shape_manager, bind_ver);
     }
 }
 
@@ -1568,6 +1907,46 @@ static int sidecar_init(struct wl_display *display) {
     return 0;
 }
 
+/* ── Cursor shape device management ──────────────────────────────────────── */
+
+/* Lazily create a wp_cursor_shape_device_v1 for the given wl_pointer.
+ * Re-creates if the pointer proxy changes (seat reconnect, etc.). */
+static void sidecar_ensure_cursor_shape_device(struct wl_pointer *p) {
+    if (!g_sidecar_cursor_shape_manager) {
+        WLOG("cursor: no cursor_shape_manager — can't set cursor shape");
+        return;
+    }
+    if (g_cursor_shape_device &&
+        g_shape_device_pointer_proxy == (struct wl_proxy *)p)
+        return;
+
+    /* Destroy old device if proxy changed */
+    if (g_cursor_shape_device) {
+        real_wl_proxy_marshal_flags(g_cursor_shape_device, 0,  /* destroy */
+            NULL, 2, WL_MARSHAL_FLAG_DESTROY);
+        g_cursor_shape_device = NULL;
+        g_shape_device_pointer_proxy = NULL;
+    }
+
+    /* wp_cursor_shape_manager_v1.get_pointer: opcode 1, signature "no"
+     * Variadic args must match ALL non-version chars in the signature:
+     *   'n' (new_id) → NULL (library creates the new proxy internally)
+     *   'o' (object) → p (the wl_pointer proxy)
+     * Missing the NULL for 'n' causes va_list to read garbage for 'o' → crash. */
+    g_cursor_shape_device = real_wl_proxy_marshal_constructor_versioned(
+        g_sidecar_cursor_shape_manager, 1,
+        &g_wp_cursor_shape_device_v1_interface, 2,
+        NULL, p);
+    if (!g_cursor_shape_device) {
+        WERR("cursor: get_pointer failed");
+        return;
+    }
+    g_shape_device_pointer_proxy = (struct wl_proxy *)p;
+    WLOG("cursor: shape device created for pointer %p → device %p (manager=%p)",
+         (void *)p, (void *)g_cursor_shape_device,
+         (void *)g_sidecar_cursor_shape_manager);
+}
+
 /* Forward declaration — defined later, after hook function */
 static int (*orig_wl_display_dispatch_queue_pending)(struct wl_display *, struct wl_event_queue *) = NULL;
 
@@ -1679,6 +2058,91 @@ static int hook_wl_display_dispatch_queue_pending(struct wl_display *display,
     return -1;
 }
 
+/* ── Hook on wl_proxy_marshal_array_flags (for cursor state tracking) ────── */
+/*
+ * We hook this to intercept the game's wl_pointer.set_cursor calls.
+ * When the game calls set_cursor(serial, NULL, 0, 0), it's hiding the
+ * cursor. We record this so we can restore the hidden state when
+ * capture turns OFF.
+ *
+ * wl_proxy_marshal_flags (variadic) internally calls
+ * wl_proxy_marshal_array_flags (array-based) via the GOT. By hooking
+ * the array version, we intercept ALL marshal calls without dealing
+ * with variadic arg forwarding.
+ *
+ * The hook only inspects set_cursor calls (opcode 0 on wl_pointer);
+ * everything else passes through untouched.
+ */
+
+static struct wl_proxy *(*orig_wl_proxy_marshal_array_flags)(
+    struct wl_proxy *, uint32_t, const struct wl_interface *,
+    uint32_t, uint32_t, union wl_argument *) = NULL;
+
+static struct wl_proxy *hook_wl_proxy_marshal_array_flags(
+    struct wl_proxy *proxy, uint32_t opcode,
+    const struct wl_interface *interface,
+    uint32_t version, uint32_t flags, union wl_argument *args) {
+    /* Only intercept set_cursor on the game's pointer proxy */
+    if (proxy && proxy == g_game_pointer_proxy && opcode == WL_POINTER_SET_CURSOR
+        && args && !g_captured) {
+        /* wl_pointer.set_cursor signature: "u o i i"
+         * args[0].u = serial, args[1].o = surface (NULL = hide cursor) */
+        g_game_cursor_hidden = (args[1].o == NULL);
+    }
+    /* Always call original — never modify args */
+    if (orig_wl_proxy_marshal_array_flags)
+        return orig_wl_proxy_marshal_array_flags(proxy, opcode, interface,
+                                                  version, flags, args);
+    if (real_wl_proxy_marshal_array_flags)
+        return real_wl_proxy_marshal_array_flags(proxy, opcode, interface,
+                                                  version, flags, args);
+    return NULL;
+}
+
+/* ── Hook on wl_proxy_destroy (for stale cursor shape device tracking) ───── */
+/*
+ * SDL3 destroys and recreates wl_pointer when transitioning rendering modes
+ * (e.g., osu! menu → gameplay). When the old pointer is destroyed, our
+ * cursor shape device (created via get_pointer on the old pointer) becomes
+ * a zombie — set_shape requests to it are silently ignored by the compositor.
+ *
+ * By hooking wl_proxy_destroy, we detect when the game's pointer is being
+ * destroyed and clean up our references BEFORE the proxy actually dies.
+ * This ensures that on the next wptr_enter (with the new pointer proxy),
+ * sidecar_ensure_cursor_shape_device creates a fresh, valid device.
+ */
+
+static void (*orig_wl_proxy_destroy)(struct wl_proxy *) = NULL;
+
+static void hook_wl_proxy_destroy(struct wl_proxy *proxy) {
+    /* If game is destroying its pointer proxy, clean up our cursor
+     * shape device BEFORE the pointer goes away. The cursor shape
+     * manager spec requires the wl_pointer to outlive the device.
+     * Order: destroy device → then let pointer die. */
+    if (proxy && proxy == g_game_pointer_proxy) {
+        WLOG("wl_proxy_destroy: game pointer %p — destroying cursor shape device",
+             (void *)proxy);
+        if (g_cursor_shape_device) {
+            real_wl_proxy_marshal_flags(g_cursor_shape_device, 0,
+                NULL, 2, WL_MARSHAL_FLAG_DESTROY);
+            g_cursor_shape_device = NULL;
+            g_shape_device_pointer_proxy = NULL;
+        }
+        g_game_pointer_proxy = NULL;
+        g_pointer_in_surface = 0;
+    }
+
+    /* Sidecar pointer is also destroyed during teardown — clear ref */
+    if (proxy == (struct wl_proxy *)g_sidecar_pointer) {
+        g_sidecar_pointer = NULL;
+    }
+
+    if (orig_wl_proxy_destroy)
+        orig_wl_proxy_destroy(proxy);
+    else if (real_wl_proxy_destroy)
+        real_wl_proxy_destroy(proxy);
+}
+
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
 int idk_wayland_input_init(void) {
@@ -1750,10 +2214,35 @@ int idk_wayland_input_init(void) {
              "sidecar lazy init + dispatch will not work", n5);
     }
 
+    /* Hook wl_proxy_marshal_array_flags to track the game's cursor state.
+     * When the game calls wl_pointer.set_cursor(serial, NULL, ...), it
+     * hides the cursor. We record this to restore the hidden state when
+     * capture turns OFF. */
+    int n6 = syringe_hook_install("wl_proxy_marshal_array_flags",
+                                   (void *)hook_wl_proxy_marshal_array_flags,
+                                   (void **)&orig_wl_proxy_marshal_array_flags);
+    if (n6 <= 0) {
+        WLOG("wl_proxy_marshal_array_flags hook not installed (n=%d) — "
+             "cursor state tracking disabled", n6);
+    }
+
+    /* Hook wl_proxy_destroy to detect game pointer destruction.
+     * When SDL3 destroys and recreates a wl_pointer (e.g., on render mode
+     * switch), our cursor shape device for the old pointer becomes stale.
+     * This hook lets us clean up and recreate the device on the next enter. */
+    int n7 = syringe_hook_install("wl_proxy_destroy",
+                                   (void *)hook_wl_proxy_destroy,
+                                   (void **)&orig_wl_proxy_destroy);
+    if (n7 <= 0) {
+        WLOG("wl_proxy_destroy hook not installed (n=%d) — "
+             "cursor shape device may go stale on pointer recreate", n7);
+    }
+
     g_hook_installed = 1;
     WLOG("hooks installed: add_listener=%d add_dispatcher=%d "
-         "display_connect=%d display_connect_to_fd=%d dispatch_queue_pending=%d",
-         n, n2, n3, n4, n5);
+         "display_connect=%d display_connect_to_fd=%d dispatch_queue_pending=%d "
+         "marshal_array=%d proxy_destroy=%d",
+         n, n2, n3, n4, n5, n6, n7);
     return 0;
 }
 
@@ -1769,7 +2258,17 @@ void idk_wayland_input_shutdown(void) {
     g_sidecar_display = NULL;
     g_sidecar_keyboard = NULL;
     g_sidecar_seat = NULL;
+    g_sidecar_cursor_shape_manager = NULL;
     g_sidecar_queue = NULL;
+
+    /* Don't destroy cursor shape device — the display is being torn
+     * down concurrently and marshalling on a dead connection segfaults.
+     * Just NULL our pointers and let the OS reclaim resources. */
+    g_cursor_shape_device = NULL;
+    g_shape_device_pointer_proxy = NULL;
+
+    /* NULL orig hooks so teardown path doesn't call wayland functions */
+    orig_wl_proxy_destroy = NULL;
 
     if (g_accept_thread_started) {
         if (g_input_listen_fd >= 0) {

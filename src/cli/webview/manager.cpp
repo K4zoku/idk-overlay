@@ -281,13 +281,6 @@ void Manager::startInputReceiver()
         m_inputRx = new InputReceiver(m_socketPath, this);
         connect(m_inputRx, &InputReceiver::inputCaptureChanged,
                 this, &Manager::inputCaptureChanged);
-        connect(m_inputRx, &InputReceiver::cursorMoved, this, [this](int x, int y) {
-            m_cursorX = x;
-            m_cursorY = y;
-        });
-        connect(m_inputRx, &InputReceiver::inputCaptureChanged, this, [this](bool c) {
-            m_cursorVisible = c;
-        });
     }
 
     /* Always refresh the webview — may be called before initWebViews()

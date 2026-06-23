@@ -202,26 +202,6 @@ void WebView::doRenderAndSend()
     img.fill(Qt::transparent);
     render(&img);
 
-    /* ── Draw software cursor ──────────────────────────────────────── */
-    if (m_manager->cursorVisible()) {
-        int cx = m_manager->cursorX();
-        int cy = m_manager->cursorY();
-        auto sp = [&](int x, int y, QRgb c) {
-            if (x >= 0 && x < img.width() && y >= 0 && y < img.height())
-                img.setPixel(x, y, c);
-        };
-        for (int i = -5; i <= 5; i++) {
-            sp(cx + i, cy - 1, 0xFF000000);
-            sp(cx + i, cy + 1, 0xFF000000);
-            sp(cx - 1, cy + i, 0xFF000000);
-            sp(cx + 1, cy + i, 0xFF000000);
-        }
-        for (int i = -5; i <= 5; i++) {
-            sp(cx + i, cy, 0xFFFFFFFF);
-            sp(cx, cy + i, 0xFFFFFFFF);
-        }
-    }
-
     /* ── Send frame ───────────────────────────────────────────────── */
     idk_fs_frame_t frame;
     memset(&frame, 0, sizeof(frame));
