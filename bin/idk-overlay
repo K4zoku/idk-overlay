@@ -2,19 +2,15 @@
 # idk-overlay — wrapper script to launch a game with idk-overlay injected
 #
 # Usage:
-#   idk-overlay <game> [game args...]
-#   idk-overlay osu-lazer
-#   idk-overlay glmark2-egl
-#   idk-overlay --socket /tmp/custom.sock osu-lazer
-#   idk-overlay --no-vk --no-gl osu-lazer   (disable all hooks, just load)
+#   idk-overlay [options] <game> [game args...]
 #
 # Options:
-#   --socket PATH   Unix socket path (default: /tmp/idk-overlay)
+#   --socket PATH   Unix socket path (default: /tmp/idk-overlay-<pid>)
 #   --no-vk         Disable Vulkan hooks
 #   --no-gl         Disable OpenGL/EGL hooks
-#   --shim PATH     Path to libidk-shim.so (default: auto-detect)
 #   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
 #   --qt-client     Also start idk-webview after launching game
+#   --webview PATH  Path to idk-webview binary (default: auto-detect)
 #   -h, --help      Show this help
 #
 # The script auto-detects the build directory relative to its own location.
@@ -23,10 +19,11 @@
 set -e
 
 # ── Defaults ────────────────────────────────────────────────────────────
-SOCKET="/tmp/idk-overlay"
+SOCKET=""
 ENABLE_VK=1
 ENABLE_GL=1
 START_QT=0
+WEBVIEW_PATH=""
 
 # ── Find script directory (resolve symlinks) ────────────────────────────
 SCRIPT="$0"
@@ -43,8 +40,6 @@ SCRIPT_DIR=$(dirname "$SCRIPT")
 # ── Find library ────────────────────────────────────────────────────────
 find_lib() {
     name="$1"
-    # Try: 1) build dir relative to script, 2) build dir relative to CWD,
-    #      3) system install paths
     for dir in \
         "$SCRIPT_DIR/../build" \
         "$SCRIPT_DIR/../../build" \
@@ -57,7 +52,6 @@ find_lib() {
             printf '%s' "$dir/$name"
             return 0
         fi
-        # Try with version suffix
         for f in "$dir"/${name}.*; do
             if [ -f "$f" ]; then
                 printf '%s' "$f"
@@ -68,7 +62,6 @@ find_lib() {
     return 1
 }
 
-SHIM_LIB=$(find_lib "libidk-shim.so" 2>/dev/null || true)
 OVERLAY_LIB=$(find_lib "libidk-overlay.so" 2>/dev/null || true)
 
 # ── Parse args ──────────────────────────────────────────────────────────
@@ -90,14 +83,6 @@ while [ $# -gt 0 ]; do
             ENABLE_GL=0
             shift
             ;;
-        --shim)
-            SHIM_LIB="$2"
-            shift 2
-            ;;
-        --shim=*)
-            SHIM_LIB="${1#--shim=}"
-            shift
-            ;;
         --lib)
             OVERLAY_LIB="$2"
             shift 2
@@ -110,6 +95,14 @@ while [ $# -gt 0 ]; do
             START_QT=1
             shift
             ;;
+        --webview)
+            WEBVIEW_PATH="$2"
+            shift 2
+            ;;
+        --webview=*)
+            WEBVIEW_PATH="${1#--webview=}"
+            shift
+            ;;
         -h|--help)
             cat <<'HELP'
 idk-overlay — launch a game with overlay injected
@@ -117,12 +110,12 @@ idk-overlay — launch a game with overlay injected
 Usage: idk-overlay [options] <game> [game args...]
 
 Options:
-  --socket PATH   Unix socket path (default: /tmp/idk-overlay)
+  --socket PATH   Unix socket path (default: /tmp/idk-overlay-<pid>)
   --no-vk         Disable Vulkan hooks
   --no-gl         Disable OpenGL/EGL hooks
-  --shim PATH     Path to libidk-shim.so (default: auto-detect)
   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
   --qt-client     Also start idk-webview after launching game
+  --webview PATH  Path to idk-webview binary (default: auto-detect)
   -h, --help      Show this help
 HELP
             exit 0
@@ -151,62 +144,64 @@ fi
 GAME="$1"
 shift
 
-# ── Verify libraries exist ──────────────────────────────────────────────
-if [ -z "$SHIM_LIB" ] || [ ! -f "$SHIM_LIB" ]; then
-    echo "idk-overlay: libidk-shim.so not found!" >&2
+# ── Verify library exists ────────────────────────────────────────────────
+if [ -z "$OVERLAY_LIB" ] || [ ! -f "$OVERLAY_LIB" ]; then
+    echo "idk-overlay: libidk-overlay.so not found!" >&2
     echo "  Build first: meson setup build && ninja -C build" >&2
-    echo "  Or specify: --shim /path/to/libidk-shim.so" >&2
+    echo "  Or specify: --lib /path/to/libidk-overlay.so" >&2
     exit 1
 fi
 
-echo "[idk-overlay] shim:   $SHIM_LIB" >&2
-echo "[idk-overlay] socket: $SOCKET" >&2
+echo "[idk-overlay] lib:     $OVERLAY_LIB" >&2
 echo "[idk-overlay] vk=$ENABLE_VK gl=$ENABLE_GL" >&2
-echo "[idk-overlay] game:   $GAME $*" >&2
+echo "[idk-overlay] game:    $GAME $*" >&2
+
+# ── Set socket path ──────────────────────────────────────────────────────
+# If not specified, use PID-based path. The .so constructor will also
+# default to /tmp/idk-overlay-<pid> if IDK_SOCKET is not set.
+if [ -z "$SOCKET" ]; then
+    SOCKET="/tmp/idk-overlay-$$"
+fi
 
 # ── Clean up stale socket ───────────────────────────────────────────────
 rm -f "$SOCKET" 2>/dev/null || true
 
-# ── Start Qt client if requested ────────────────────────────────────────
-QT_CLIENT=""
-if [ $START_QT -eq 1 ]; then
+# ── Find webview if requested ───────────────────────────────────────────
+if [ $START_QT -eq 1 ] && [ -z "$WEBVIEW_PATH" ]; then
     for dir in \
-        "$SCRIPT_DIR/../build/subprojects/idk-webview" \
-        "$SCRIPT_DIR/../../build/subprojects/idk-webview" \
-        "$PWD/build/subprojects/idk-webview" \
+        "$SCRIPT_DIR/../build/src/cli/webview" \
+        "$SCRIPT_DIR/../../build/src/cli/webview" \
+        "$PWD/build/src/cli/webview" \
         "/usr/bin" \
         "/usr/local/bin"
     do
         if [ -x "$dir/idk-webview" ]; then
-            QT_CLIENT="$dir/idk-webview"
+            WEBVIEW_PATH="$dir/idk-webview"
             break
         fi
     done
-    if [ -z "$QT_CLIENT" ]; then
-        echo "[idk-overlay] WARNING: idk-webview not found, skipping" >&2
-    fi
 fi
 
 # ── Launch game with LD_PRELOAD ─────────────────────────────────────────
-# LD_PRELOAD propagates through execve, so it works with AppImage wrappers
-# (dash → AppImage → osu! binary). MangoHud uses the same approach.
-
-export LD_PRELOAD="$SHIM_LIB"
+export LD_PRELOAD="$OVERLAY_LIB"
 export IDK_SOCKET="$SOCKET"
 export IDK_VK="$ENABLE_VK"
 export IDK_GL="$ENABLE_GL"
 
-# Start Qt client in background (after short delay for socket to be created)
-if [ -n "$QT_CLIENT" ]; then
-    (
-        sleep 2
-        echo "[idk-overlay] Starting Qt client: $QT_CLIENT" >&2
-        IDK_SOCKET="$SOCKET" "$QT_CLIENT" &
-    ) &
+# Start webview in background (after short delay for socket to be created)
+if [ $START_QT -eq 1 ]; then
+    if [ -n "$WEBVIEW_PATH" ] && [ -x "$WEBVIEW_PATH" ]; then
+        (
+            sleep 2
+            echo "[idk-overlay] Starting webview: $WEBVIEW_PATH" >&2
+            IDK_SOCKET="$SOCKET" "$WEBVIEW_PATH" &
+        ) &
+    else
+        echo "[idk-overlay] WARNING: idk-webview not found, skipping" >&2
+    fi
 fi
 
-echo "[idk-overlay] Launching: LD_PRELOAD=$SHIM_LIB IDK_SOCKET=$SOCKET IDK_VK=$ENABLE_VK IDK_GL=$ENABLE_GL $GAME $*" >&2
+echo "[idk-overlay] Launching: LD_PRELOAD=$OVERLAY_LIB IDK_SOCKET=$SOCKET $GAME $*" >&2
 echo "" >&2
 
-# Exec the game — LD_PRELOAD + env vars propagate to children
 exec "$GAME" "$@"
