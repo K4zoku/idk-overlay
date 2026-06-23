@@ -173,14 +173,14 @@ static char g_sock_path[512];
  * Start listening for overlay frames from webview clients.
  * Must be called from main thread (creates/binds socket).
  * Returns 0 on success.
- * Uses IDK_SOCKET env var if set, falls back to /tmp/idk-overlay.
+ * Uses IDK_SOCKET env var if set, falls back to /tmp/idk-overlay-<pid>.
  */
 int idk_compositor_init(void) {
     const char *env_sock = getenv("IDK_SOCKET");
     if (env_sock && env_sock[0] != '\0') {
         snprintf(g_sock_path, sizeof(g_sock_path), "%s", env_sock);
     } else {
-        snprintf(g_sock_path, sizeof(g_sock_path), "/tmp/idk-overlay");
+        snprintf(g_sock_path, sizeof(g_sock_path), "/tmp/idk-overlay-%d", getpid());
     }
 
     /* Check if a previous instance is still alive.

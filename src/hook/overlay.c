@@ -45,7 +45,7 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     if (socket_path)
         snprintf(g_socket_path, sizeof(g_socket_path), "%s", socket_path);
     else
-        snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay");
+        snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay-%d", getpid());
 
     DBG("PID=%d sock=%s vk=%d gl=%d", getpid(), g_socket_path, enable_vk, enable_gl);
 
