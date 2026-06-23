@@ -11,12 +11,12 @@
  *   -h, --help      Show this help
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <getopt.h>
-#include <libgen.h>
+#include <limits.h>
 #include <errno.h>
 
 #include "syringe.h"
@@ -30,12 +30,13 @@ static void usage(const char *prog) {
         "\n"
         "Arguments:\n"
         "  pid            Target process ID\n"
-        "  library.so     Path to libidk-overlay.so (default: ./libidk-overlay.so)\n"
+        "  library.so     Path to libidk-overlay.so (default: auto-detect)\n"
         "\n"
         "Options:\n"
         "  --socket PATH  Unix socket path for IPC (default: /tmp/idk-overlay-<pid>)\n"
         "  --vk 0|1       Enable Vulkan hooks (default: 1)\n"
         "  --gl 0|1       Enable OpenGL hooks (default: 1)\n"
+        "  -v, --verbose  Enable verbose logging\n"
         "  -h, --help     Show this help\n",
         prog);
 }
@@ -48,7 +49,7 @@ int main(int argc, char **argv) {
 
     pid_t target_pid = (pid_t)atoi(argv[1]);
     if (target_pid <= 0) {
-        IDK_ERR("inject", "Error: invalid PID\n");
+        IDK_ERR("inject", "invalid PID\n");
         return 1;
     }
 
@@ -56,8 +57,8 @@ int main(int argc, char **argv) {
     const char *sock_path = NULL;
     int enable_vk = 1;
     int enable_gl = 1;
+    int verbose = 0;
 
-    /* Parse remaining args */
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             sock_path = argv[++i];
@@ -65,65 +66,68 @@ int main(int argc, char **argv) {
             enable_vk = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--gl") == 0 && i + 1 < argc) {
             enable_gl = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            verbose = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
-        } else if (!lib_path) {
+        } else if (!lib_path && argv[i][0] != '-') {
             lib_path = argv[i];
         }
     }
 
+    /* Auto-detect library path */
+    char abs_path[PATH_MAX];
     if (!lib_path) {
-        /* Default: libidk-overlay.so in current directory */
-        lib_path = "./libidk-overlay.so";
+        /* Try common locations */
+        const char *candidates[] = {
+            "./build/libidk-overlay.so",
+            "./libidk-overlay.so",
+            "/usr/lib/libidk-overlay.so",
+            "/usr/local/lib/libidk-overlay.so",
+            NULL,
+        };
+        for (int i = 0; candidates[i]; i++) {
+            if (realpath(candidates[i], abs_path) != NULL) {
+                lib_path = abs_path;
+                break;
+            }
+        }
+        if (!lib_path) {
+            IDK_ERR("inject", "cannot find libidk-overlay.so. Specify path explicitly.\n");
+            return 1;
+        }
+    } else {
+        if (realpath(lib_path, abs_path) == NULL) {
+            IDK_ERR("inject", "cannot resolve library path: %s (%s)\n", lib_path, strerror(errno));
+            return 1;
+        }
+        lib_path = abs_path;
     }
 
-    /* Resolve to absolute path */
-    char abs_path[4096];
-    if (realpath(lib_path, abs_path) == NULL) {
-        IDK_ERR("inject", "Error: cannot resolve library path: %s (%s)\n", lib_path, strerror(errno));
-        return 1;
-    }
-
-    /* Default socket path */
+    /* Default socket path: PID-based */
     char default_sock[64];
     snprintf(default_sock, sizeof(default_sock), "/tmp/idk-overlay-%d", target_pid);
     if (!sock_path) {
         sock_path = default_sock;
     }
 
-    IDK_LOG("inject", "idk-inject: targeting PID %d\n", target_pid);
-    IDK_LOG("inject", "  library:  %s\n", abs_path);
+    IDK_LOG("inject", "targeting PID %d\n", target_pid);
+    IDK_LOG("inject", "  library:  %s\n", lib_path);
     IDK_LOG("inject", "  socket:   %s\n", sock_path);
     IDK_LOG("inject", "  Vulkan:   %s\n", enable_vk ? "enabled" : "disabled");
     IDK_LOG("inject", "  OpenGL:   %s\n", enable_gl ? "enabled" : "disabled");
 
-    /* Set environment variables that the injected .so will read.
-     * syringe_inject() doesn't pass env vars itself, but the constructor
-     * of libidk-overlay.so reads them via getenv() from the target's
-     * environment. We need to either:
-     *   (a) modify the target's /proc/<pid>/environ before inject, OR
-     *   (b) pass socket/vk/gl via argv to idk-inject and document that
-     *       user must export IDK_SOCKET etc. before running the target.
-     *
-     * For now: if user set IDK_SOCKET in env, write it to a sidecar
-     * file /tmp/idk-overlay-<pid>.env that the .so can read.
-     * Better: just print clear instructions. */
-    IDK_LOG("inject", "\n  NOTE: Make sure IDK_SOCKET/IDK_VK/IDK_GL env vars\n"
-                    "        are set in the TARGET process (osu!) before inject.\n"
-                    "        Or pass --socket and let the .so default.\n");
-
-    /* Skip render process for now — it's optional and was causing
-     * "command not found" errors. User can start idk-render manually. */
-    IDK_LOG("inject", "\n[1/1] Injecting library...\n");
-    int rc = syringe_inject(target_pid, abs_path);
+    /* Inject. syringe auto-detects .NET vs native. */
+    IDK_LOG("inject", "[1/1] Injecting library...\n");
+    int rc = syringe_inject(target_pid, lib_path);
 
     if (rc == 0) {
-        IDK_LOG("inject", "\n[success] Injection complete!\n");
-        IDK_LOG("inject", "  Socket path: %s\n", sock_path);
-        IDK_LOG("inject", "  Check log:   stderr of PID %d\n", target_pid);
+        fprintf(stderr, "[+] Injection complete!\n");
+        fprintf(stderr, "    Socket: %s\n", sock_path);
+        fprintf(stderr, "    Start webview: IDK_SOCKET=%s idk-webview\n", sock_path);
     } else {
-        IDK_ERR("inject", "\n[error] Injection failed: %s\n", strerror(errno));
+        IDK_ERR("inject", "injection failed: %s\n", strerror(errno));
         return 1;
     }
 
