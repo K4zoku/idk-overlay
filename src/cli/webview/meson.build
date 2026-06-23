@@ -10,6 +10,7 @@ if qt6_dep.found()
     qt = import('qt6')
     webview_files = files(
         'groupconfig.cpp',
+        'input_receiver.cpp',
         'main.cpp',
         'manager.cpp',
         'rhi_texture_extractor.cpp',
@@ -17,6 +18,7 @@ if qt6_dep.found()
         'webview.cpp',
     )
     webview_moc_headers = files(
+        'input_receiver.h',
         'manager.h',
         'webview.h',
     )

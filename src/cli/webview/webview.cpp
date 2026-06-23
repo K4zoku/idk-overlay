@@ -5,6 +5,7 @@
 #include <QVBoxLayout>
 #include <QDialog>
 #include <QMenu>
+#include <QDateTime>
 
 #include <QQuickWidget>
 #include <QWebEngineSettings>
@@ -25,6 +26,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <poll.h>
 
 #include "public/idk_fs.h"
 #include "core/log.h"
@@ -60,20 +62,18 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
                 IDK_LOG("client-qt", "Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
                 /* On reconnect after a long disconnect, the Qt WebEngine
                  * render process may have been suspended/idle. Just calling
-                 * update() queues a paint event, but the render process
-                 * needs ~5s to wake up and produce content. Force a
-                 * repaint() (synchronous) + trigger a page action to
-                 * kick the render process back to life. */
+                 * update() queues a paint event — this is the correct
+                 * non-recursive way to trigger a repaint. DO NOT call
+                 * repaint() (synchronous) — Qt logs "Recursive repaint
+                 * detected" and the call is a no-op when we're already
+                 * inside a paint event handler. */
                 if (auto *fp = focusProxy()) {
                     fp->update();
-                    /* Also try repaint() — forces immediate sync paint
-                     * instead of queuing through the event loop. */
-                    fp->repaint();
                 }
                 /* If the page was idle too long, the render process may
-                 * have discarded its backing store. Reload to force a
-                 * fresh render. This is aggressive but eliminates the
-                 * 5s delay on reconnect after long disconnects. */
+                 * have discarded its backing store. Schedule an update
+                 * after a short delay to give the render process time to
+                 * wake up. */
                 QTimer::singleShot(100, this, [this]() {
                     if (auto *fp = focusProxy()) fp->update();
                 });
@@ -132,64 +132,139 @@ WebView::~WebView()
 bool WebView::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == focusProxy() && event->type() == QEvent::Paint) {
-        if (m_waitReply || !m_manager->isConnected())
+        /* Guard against recursive paint events. */
+        static bool s_in_paint = false;
+        if (s_in_paint) {
             return QWebEngineView::eventFilter(obj, event);
+        }
+        s_in_paint = true;
 
-        // Double-buffer: render to current buffer, then swap
-        uint8_t buffer = m_buffer;
-        m_buffer = (m_buffer + 1) % 2;
-        uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_conf.width(), m_conf.height()) * buffer);
-        QImage img(memory, m_conf.width(), m_conf.height(), QImage::Format_RGBA8888);
-        img.fill(Qt::transparent);
-        render(&img);
-
-        // Send frame to idk-overlay
-        idk_fs_frame_t frame;
-        memset(&frame, 0, sizeof(frame));
-        frame.width   = static_cast<uint32_t>(m_conf.width());
-        frame.height  = static_cast<uint32_t>(m_conf.height());
-        frame.x       = static_cast<uint32_t>(m_conf.x());
-        frame.y       = static_cast<uint32_t>(m_conf.y());
-        frame.id      = buffer;  // tell compositor which double-buffer half has fresh data
-        frame.visible = static_cast<uint8_t>(1);
-        frame.nfd     = 1;
-        frame.type    = IDK_FRAME_TYPE_SHM;
-
-        static int s_frame_count = 0;
-        static int s_send_failed = 0;
-
-        /* If send failed before, don't keep trying every frame.
-         * Retry every 60 frames (~1/sec at 60fps). */
-        if (s_send_failed > 0 && --s_send_failed > 0)
+        if (m_waitReply || !m_manager->isConnected()) {
+            s_in_paint = false;
             return QWebEngineView::eventFilter(obj, event);
-
-        int rc = idk_fs_send_dma_buf(&m_memfd, &frame);
-        if (rc < 0) {
-            s_frame_count++;
-            if (s_frame_count <= 3 || s_frame_count % 60 == 0) {
-                qWarning("[idk-webview] send frame failed (attempt %d): %s",
-                    s_frame_count, strerror(errno));
-            }
-            s_send_failed = 60;  /* skip next 60 frames */
-        } else {
-            if (s_frame_count == 0 || s_frame_count % 60 == 0) {
-                IDK_LOG("client-qt", "frame %d sent OK (%dx%d type=SHM fd=%d)\n",
-                        s_frame_count, frame.width, frame.height, m_memfd);
-            }
-            s_frame_count++;
-            emit frameSent();
         }
 
-        /* Wait for compositor ACK — syncs webview to game swap rate.
-         * This prevents SHM buffer races and flickering. */
-        idk_fs_wait_ack();
+        /* Schedule the render + send OUTSIDE the paint event handler. */
+        QTimer::singleShot(0, this, [this]() {
+            doRenderAndSend();
+        });
 
-        /* Request next frame */
-        focusProxy()->update();
-
+        s_in_paint = false;
         return true;
     }
     return QWebEngineView::eventFilter(obj, event);
+}
+
+void WebView::doRenderAndSend()
+{
+    if (m_waitReply || !m_manager->isConnected()) {
+        QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
+        return;
+    }
+
+    /* ── ACK flow control ──────────────────────────────────────────
+     * If a frame is pending (sent but compositor hasn't ACK'd yet),
+     * check for ACK before sending another. This prevents the SHM buffer
+     * race: without ACK sync, the webview would overwrite buffer X while
+     * the compositor still has an in-flight frame pointing to buffer X.
+     *
+     * The poll is NON-BLOCKING (0 timeout) — never blocks the event loop.
+     * Safety timeout: if ACK is missing for 100ms (e.g., dropped by
+     * compositor due to EAGAIN), force-unlock and send anyway. */
+    if (m_pending) {
+        int ack_fd = idk_fs_get_fd();
+        if (ack_fd >= 0) {
+            struct pollfd pfd = { .fd = ack_fd, .events = POLLIN, .revents = 0 };
+            if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+                char ack;
+                if (read(ack_fd, &ack, 1) > 0) {
+                    m_pending = false;
+                }
+            }
+        }
+        int now = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+        if (m_pending && (now - m_sendTime) > 100) {
+            IDK_LOG("client-qt", "ACK timeout (%dms) — force-unlock pending\n",
+                    now - m_sendTime);
+            m_pending = false;
+        }
+        if (m_pending) {
+            QTimer::singleShot(4, this, [this]() { doRenderAndSend(); });
+            return;
+        }
+    }
+
+    /* ── Render to SHM ────────────────────────────────────────────── */
+    uint8_t buffer = m_buffer;
+    m_buffer = (m_buffer + 1) % 2;
+    uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_conf.width(), m_conf.height()) * buffer);
+    QImage img(memory, m_conf.width(), m_conf.height(), QImage::Format_RGBA8888);
+    img.fill(Qt::transparent);
+    render(&img);
+
+    /* ── Draw software cursor ──────────────────────────────────────── */
+    if (m_manager->cursorVisible()) {
+        int cx = m_manager->cursorX();
+        int cy = m_manager->cursorY();
+        auto sp = [&](int x, int y, QRgb c) {
+            if (x >= 0 && x < img.width() && y >= 0 && y < img.height())
+                img.setPixel(x, y, c);
+        };
+        for (int i = -5; i <= 5; i++) {
+            sp(cx + i, cy - 1, 0xFF000000);
+            sp(cx + i, cy + 1, 0xFF000000);
+            sp(cx - 1, cy + i, 0xFF000000);
+            sp(cx + 1, cy + i, 0xFF000000);
+        }
+        for (int i = -5; i <= 5; i++) {
+            sp(cx + i, cy, 0xFFFFFFFF);
+            sp(cx, cy + i, 0xFFFFFFFF);
+        }
+    }
+
+    /* ── Send frame ───────────────────────────────────────────────── */
+    idk_fs_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.width   = static_cast<uint32_t>(m_conf.width());
+    frame.height  = static_cast<uint32_t>(m_conf.height());
+    frame.x       = static_cast<uint32_t>(m_conf.x());
+    frame.y       = static_cast<uint32_t>(m_conf.y());
+    frame.id      = buffer;
+    frame.visible = static_cast<uint8_t>(1);
+    frame.nfd     = 1;
+    frame.type    = IDK_FRAME_TYPE_SHM;
+
+    static int s_consecutive_failures = 0;
+
+    int rc = idk_fs_send_dma_buf(&m_memfd, &frame);
+    if (rc < 0) {
+        s_consecutive_failures++;
+        if (s_consecutive_failures <= 3 || s_consecutive_failures % 60 == 0) {
+            qWarning("[idk-webview] send failed (attempt %d): %s",
+                     s_consecutive_failures, strerror(errno));
+        }
+        if (s_consecutive_failures > 300) {
+            IDK_LOG("client-qt", "Too many consecutive send failures — "
+                    "forcing disconnect\n");
+            idk_fs_shutdown();
+            s_consecutive_failures = 0;
+        }
+        QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
+        return;
+    }
+    s_consecutive_failures = 0;
+
+    IDK_LOG("client-qt", "frame sent OK (%dx%d type=SHM fd=%d)\n",
+            frame.width, frame.height, m_memfd);
+    emit frameSent();
+
+    /* Mark pending — compositor must ACK before next frame.
+     * No timer: next render is triggered by paint events (from page changes
+     * or input-driven focusProxy()->update()). The retry timer inside the
+     * ACK-wait block handles the case where a frame is pending and we need
+     * to poll for ACK before the next trigger. */
+    m_pending = true;
+    m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
 }
 
 void WebView::contextMenuEvent(QContextMenuEvent *event)
@@ -271,7 +346,7 @@ void WebPage::javaScriptConsoleMessage(QWebEnginePage::JavaScriptConsoleMessageL
                                        const QString &sourceId)
 {
     Q_UNUSED(level);
-    Q_UNUSED(message);
-    Q_UNUSED(lineNumber);
     Q_UNUSED(sourceId);
+    if (message.startsWith(QLatin1String("idk:")))
+        qDebug() << "[idk-js]" << message << "at line" << lineNumber;
 }

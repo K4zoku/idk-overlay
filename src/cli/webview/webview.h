@@ -34,6 +34,7 @@ private slots:
 private:
     void initShm();
     void initMemory();
+    void doRenderAndSend();  // Render webview to SHM + send frame (called via QTimer)
 
     uint8_t m_id;                       // Overlay ID
     GroupConfig m_conf;                 // Overlay configuration
@@ -45,6 +46,10 @@ private:
     void *m_memory = nullptr;
     uint8_t m_buffer = 0;               // Double-buffer index
     bool m_waitReply = false;
+
+    // ACK flow control
+    bool m_pending = false;             // true if frame sent but no ACK yet
+    int m_sendTime = 0;                 // timestamp of last send (ms, from QElapsedTimer)
 
     // DMA-BUF state (Qt6 RHI)
     bool m_useDmaBuf = true;

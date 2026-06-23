@@ -11,6 +11,7 @@
 #include <QSystemTrayIcon>
 
 class WebView;
+class InputReceiver;
 
 /**
  * Manager — manages socket connection to idk-overlay and webview lifecycle.
@@ -19,21 +20,30 @@ class WebView;
  * - Connecting to idk-overlay socket
  * - Managing WebView instances (one per overlay group)
  * - Sending frames via idk_fs_* API
+ * - Receiving input events from the game's wayland input hook
+ *   (InputReceiver, when the user toggles input capture with F8)
  */
 class Manager : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit Manager(const QString &confFile, bool tray, QObject *parent = nullptr);
+    explicit Manager(const QString &confFile,
+                     const QString &socketPath,
+                     bool tray,
+                     QObject *parent = nullptr);
     ~Manager();
 
     bool isConnected() const;
     QString socketPath() const { return m_socketPath; }
+    int cursorX() const { return m_cursorX; }
+    int cursorY() const { return m_cursorY; }
+    bool cursorVisible() const { return m_cursorVisible; }
 
 signals:
     void socketConnected();
     void socketDisconnected();
+    void inputCaptureChanged(bool captured);
 
 private slots:
     void onSocketReadyRead();
@@ -44,6 +54,8 @@ private:
     void showView(int index);
     void updateStatus();
     QString resolvePath(const QString &path) const;
+    void startInputReceiver();
+    void stopInputReceiver();
 
     // State
     QSettings *m_settings;
@@ -51,6 +63,10 @@ private:
     QTimer *m_reconnectTimer;
     int m_disconnect_count = 0;  // throttle disconnect log spam
     bool m_was_connected = false; // track idk_fs fd state transitions
+    InputReceiver *m_inputRx = nullptr;
+    QTimer *m_inputRetryTimer = nullptr;
+    int m_cursorX = -1, m_cursorY = -1;
+    bool m_cursorVisible = false;
 
     // UI
     QWidget *m_window;
@@ -58,6 +74,9 @@ private:
     QWidget *m_container;
     QLabel *m_statusLabel;
     QSystemTrayIcon *m_tray;
+
+    // Window geometry (for tray toggle show/hide)
+    int m_lastX = 0, m_lastY = 0, m_lastW = 800, m_lastH = 600;
 
     // Overlays
     QList<WebView*> m_views;

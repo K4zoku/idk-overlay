@@ -1,6 +1,7 @@
 #include "manager.h"
 #include "webview.h"
 #include "groupconfig.h"
+#include "input_receiver.h"
 
 #include <QDir>
 #include <QApplication>
@@ -13,7 +14,10 @@
 #include "public/idk_fs.h"
 #include "core/log.h"
 
-Manager::Manager(const QString &confFile, bool tray, QObject *parent)
+Manager::Manager(const QString &confFile,
+                 const QString &cliSocketPath,
+                 bool tray,
+                 QObject *parent)
     : QObject(parent)
     , m_settings(new QSettings(
         confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-webview.conf") : confFile,
@@ -26,7 +30,16 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     , m_tray(new QSystemTrayIcon(this))
 {
     (void)tray;
-    m_socketPath = resolvePath(m_settings->value("Socket", "/tmp/idk-overlay").toString());
+
+    /* Priority: CLI > env > config > default */
+    const char *envSocket = getenv("IDK_SOCKET_PATH");
+    if (!cliSocketPath.isEmpty()) {
+        m_socketPath = cliSocketPath;
+    } else if (envSocket && *envSocket) {
+        m_socketPath = QString::fromUtf8(envSocket);
+    } else {
+        m_socketPath = resolvePath(m_settings->value("Socket", "/tmp/idk-overlay").toString());
+    }
 
     /* ── Connection strategy ───────────────────────────────────────────
      * OLD design (commit 525c106 and earlier) used TWO sockets to the
@@ -50,6 +63,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
         if (idk_fs_init(m_socketPath.toUtf8().data(), true) == 0) {
             m_was_connected = true;
             emit socketConnected();
+            startInputReceiver();
         }
     } else {
         /* Try to connect now; if it fails, the reconnect timer will retry.
@@ -60,6 +74,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
             IDK_LOG("webview", "idk_fs connected to %s\n",
                     m_socketPath.toUtf8().data());
             emit socketConnected();
+            startInputReceiver();
         } else {
             IDK_LOG("webview", "idk_fs connect failed, will retry\n");
         }
@@ -74,6 +89,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                 m_disconnect_count = 0;
                 IDK_LOG("webview", "idk_fs connected (fd=%d)\n", fd_now);
                 emit socketConnected();
+                startInputReceiver();
             } else if (!connected_now && m_was_connected) {
                 /* Transition: connected → disconnected.
                  * idk_fs's fd went dead (compositor closed, EPIPE, etc.).
@@ -82,10 +98,12 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                  * "still connecting" branch below handles subsequent retries. */
                 IDK_LOG("webview", "idk_fs disconnected — attempting reconnect\n");
                 emit socketDisconnected();
+                stopInputReceiver();
                 /* Attempt non-blocking reconnect (single attempt, no 3s block) */
                 if (idk_fs_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
                     IDK_LOG("webview", "idk_fs reconnected\n");
                     emit socketConnected();
+                    startInputReceiver();
                     connected_now = true;
                     m_disconnect_count = 0;
                 } else {
@@ -117,6 +135,7 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
                             m_disconnect_count);
                     m_disconnect_count = 0;
                     emit socketConnected();
+                    startInputReceiver();
                     connected_now = true;
                 }
             }
@@ -137,7 +156,8 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     layout->addWidget(m_container);
     m_window->setLayout(layout);
 
-    // Default: hidden (offscreen render only). Toggle with tray click.
+    // Default: offscreen (WA_DontShowOnScreen) so Qt WebEngine renders
+    // but the window is never mapped on the compositor. Toggle with tray.
     m_window->setAttribute(Qt::WA_DontShowOnScreen, true);
     m_window->show();
 
@@ -146,14 +166,12 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
         const auto groups = m_settings->childGroups();
         if (groups.isEmpty()) { return; }
         GroupConfig conf(m_settings->fileName(), groups.first());
-        int x = conf.x();
-        int y = conf.y();
-        int w = conf.width();
-        int h = conf.height();
-        m_window->setGeometry(x, y, w, h);
-        m_window->raise();
-        m_window->activateWindow();
-        qDebug() << "[idk-webview] Resized window to" << w << "x" << h << "at" << x << "," << y;
+        m_lastX = conf.x();
+        m_lastY = conf.y();
+        m_lastW = conf.width();
+        m_lastH = conf.height();
+        m_window->setGeometry(m_lastX, m_lastY, m_lastW, m_lastH);
+        qDebug() << "[idk-webview] Window configured" << m_lastW << "x" << m_lastH << "at" << m_lastX << "," << m_lastY;
     });
 
     m_tray->setIcon(QIcon::fromTheme("image-x-generic"));
@@ -179,11 +197,17 @@ Manager::Manager(const QString &confFile, bool tray, QObject *parent)
     m_tray->setContextMenu(menu);
 
     initWebViews();
+    /* startInputReceiver() may have been called before initWebViews()
+     * (during socket connect in the constructor) — if so, m_webview
+     * was never set on InputReceiver because m_views was empty. */
+    if (m_inputRx && !m_views.isEmpty())
+        m_inputRx->setWebView(m_views.first());
     updateStatus();
 }
 
 Manager::~Manager()
 {
+    stopInputReceiver();
     qDeleteAll(m_views);
     idk_fs_shutdown();
 }
@@ -246,4 +270,75 @@ QString Manager::resolvePath(const QString &path) const
         return path;
     }
     return QDir(QDir::cleanPath(QFileInfo(m_settings->fileName()).path())).absoluteFilePath(path);
+}
+
+void Manager::startInputReceiver()
+{
+    /* Already running — nothing to do */
+    if (m_inputRx && m_inputRx->isConnected()) return;
+
+    if (!m_inputRx) {
+        m_inputRx = new InputReceiver(m_socketPath, this);
+        connect(m_inputRx, &InputReceiver::inputCaptureChanged,
+                this, &Manager::inputCaptureChanged);
+        connect(m_inputRx, &InputReceiver::cursorMoved, this, [this](int x, int y) {
+            m_cursorX = x;
+            m_cursorY = y;
+        });
+        connect(m_inputRx, &InputReceiver::inputCaptureChanged, this, [this](bool c) {
+            m_cursorVisible = c;
+        });
+    }
+
+    /* Always refresh the webview — may be called before initWebViews()
+     * (where m_views is still empty) or from a reconnect timer (where
+     * m_views is already populated). */
+    if (!m_views.isEmpty())
+        m_inputRx->setWebView(m_views.first());
+
+    if (m_inputRx->connectToInput()) {
+        IDK_LOG("webview", "input receiver connected to %s-input\n",
+                m_socketPath.toUtf8().data());
+        return;
+    }
+
+    /* Connection failed — game may not have started yet, or game is not
+     * a wayland client (input hook disabled). Retry every 2s for up to
+     * 30s, then give up silently (no point spamming logs). */
+    if (!m_inputRetryTimer) {
+        m_inputRetryTimer = new QTimer(this);
+        m_inputRetryTimer->setSingleShot(false);
+        int *retries = new int(0);
+        connect(m_inputRetryTimer, &QTimer::timeout, this, [this, retries]() {
+            (*retries)++;
+            if (m_inputRx && m_inputRx->connectToInput()) {
+                IDK_LOG("webview", "input receiver connected after %d retries\n", *retries);
+                m_inputRetryTimer->stop();
+                delete retries;
+                return;
+            }
+            if (*retries >= 15) {
+                /* Game probably isn't a wayland client, or doesn't have the
+                 * input hook installed. Stop retrying — the frame socket
+                 * still works, just no input forwarding. */
+                IDK_LOG("webview", "input receiver giving up after 30s — "
+                        "game may not be a wayland client\n");
+                m_inputRetryTimer->stop();
+                delete retries;
+            }
+        });
+    }
+    if (!m_inputRetryTimer->isActive()) {
+        m_inputRetryTimer->start(2000);
+    }
+}
+
+void Manager::stopInputReceiver()
+{
+    if (m_inputRetryTimer) {
+        m_inputRetryTimer->stop();
+    }
+    if (m_inputRx) {
+        m_inputRx->disconnect();
+    }
 }

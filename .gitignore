@@ -61,3 +61,4 @@ builddir/
 subprojects/*
 !/subprojects/idk-*
 !/subprojects/*.wrap
+*.log

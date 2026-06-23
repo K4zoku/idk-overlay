@@ -414,162 +414,116 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
 }
 
 int idk_compositor_render(void) {
-    /* Try to accept client connection if none yet */
     accept_client();
-
     if (g_client_fd < 0) return -1;
 
-    struct frame_hdr hdr;
-    int dmabuf_fd = -1;
+    /* Drain ALL pending frames — only process the NEWEST one.
+     * Without this, if the webview sends frames faster than the game's
+     * swap rate, frames accumulate in the socket buffer. Each frame
+     * (except the last) would be stale by the time we read it, and
+     * the SHM buffer race causes flickering. */
+    int processed = 0;
 
-    /* Non-blocking poll for new frame */
-    struct pollfd pfd = { .fd = g_client_fd, .events = POLLIN };
-    int poll_ret = poll(&pfd, 1, 0);
-    if (poll_ret <= 0) {
-        /* Log once every ~60 frames (1/sec at 60fps) */
-        static int poll_skip_count = 0;
-        if (++poll_skip_count >= 60) {
-            poll_skip_count = 0;
-            IDK_LOG("comp", "poll: no data (fd=%d, ret=%d)\n",
-                    g_client_fd, poll_ret);
-        }
-        return -1; /* no frame ready */
-    }
-    if (!(pfd.revents & POLLIN)) {
-        IDK_LOG("comp", "poll revents=0x%x (no POLLIN)\n", pfd.revents);
-        return -1;
-    }
+    while (1) {
+        struct pollfd pfd = { .fd = g_client_fd, .events = POLLIN };
+        int poll_ret = poll(&pfd, 1, 0);
+        if (poll_ret <= 0 || !(pfd.revents & POLLIN)) break;
 
-    IDK_LOG("comp", "poll OK — data available\n");
+        struct frame_hdr hdr;
+        int dmabuf_fd = -1;
 
-    /* Receive frame header + fd */
-    char ctrl_buf[CMSG_SPACE(sizeof(int))];
-    char msg_buf[sizeof(struct frame_hdr) + 32];
-    struct iovec iov = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
-    struct msghdr msgh = {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-        .msg_control = ctrl_buf,
-        .msg_controllen = sizeof(ctrl_buf),
-    };
+        char ctrl_buf[CMSG_SPACE(sizeof(int))];
+        char msg_buf[sizeof(struct frame_hdr) + 32];
+        struct iovec iov = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
+        struct msghdr msgh = {
+            .msg_iov = &iov,
+            .msg_iovlen = 1,
+            .msg_control = ctrl_buf,
+            .msg_controllen = sizeof(ctrl_buf),
+        };
 
-    ssize_t n = recvmsg(g_client_fd, &msgh, MSG_DONTWAIT);
-    IDK_LOG("comp", "recvmsg returned %zd (need %zu)\n",
-            n, sizeof(struct frame_hdr));
-    if (n < (ssize_t)sizeof(struct frame_hdr)) {
-        IDK_ERR("comp", "recvmsg too short — skipping\n");
-
-        /* recvmsg() returning exactly 0 means the client closed the socket
-         * (clean EOF). POLLIN keeps firing on a closed socket forever, so
-         * without handling this we end up in an infinite poll→recv(0)→
-         * skip→draw(stale texture)→0x501 loop. Close and reset so
-         * accept_client() can pick up a new connection. */
-        if (n == 0) {
-            fprintf(stderr,
-                "[idk-comp] client disconnected (fd=%d), resetting\n",
-                g_client_fd);
-            close(g_client_fd);
-            g_client_fd = -1;
-            /* Keep g_has_frame and g_tex[g_tex_idx] — the last good frame
-             * can still be drawn until a new client connects. Reset only
-             * if you want a clean slate; leaving it lets the overlay
-             * persist across reconnects. */
-        }
-        /* n < 0 with errno=EAGAIN/EWOULDBLOCK is normal — no frame yet.
-         * n > 0 but < header size is a malformed/partial frame — skip. */
-        return -1;
-    }
-
-    /* Extract dmabuf fd from SCM_RIGHTS */
-    dmabuf_fd = -1;
-    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh); cmsg;
-         cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-            memcpy(&dmabuf_fd, CMSG_DATA(cmsg), sizeof(int));
+        ssize_t n = recvmsg(g_client_fd, &msgh, MSG_DONTWAIT);
+        if (n < (ssize_t)sizeof(struct frame_hdr)) {
+            if (n == 0) {
+                fprintf(stderr,
+                    "[idk-comp] client disconnected (fd=%d), resetting\n",
+                    g_client_fd);
+                close(g_client_fd);
+                g_client_fd = -1;
+            }
             break;
         }
-    }
 
-    if (dmabuf_fd < 0) {
-        IDK_ERR("comp", "no fd in SCM_RIGHTS\n");
-        return -1;
-    }
-
-    memcpy(&hdr, msg_buf, sizeof(hdr));
-
-    IDK_LOG("comp", "frame: %ux%u type=%u fd=%d\n",
-            hdr.width, hdr.height, (hdr.vis_type >> 8) & 0xFF, dmabuf_fd);
-
-    /* Upload to GL texture.
-     *
-     * Two paths selected by frame type in vis_type high byte:
-     *   1. SHM mode (type == 1): fd is a memfd containing raw RGBA8888
-     *      pixel data. Use glTexImage2D to upload.
-     *   2. DMABUF mode (type == 0): fd is a real DMA-BUF. Use
-     *      egl_dmabuf_to_texture via EGL_EXT_image_dma_buf_import.
-     *      If that fails, fall back to SHM (auto-fallback).
-     */
-    GLuint tex = 0;
-    uint8_t frame_type = (hdr.vis_type >> 8) & 0xFF;
-
-    if (frame_type == IDK_FRAME_TYPE_SHM) {
-        /* SHM path: 'reserved' field = pixel byte size per buffer */
-        uint32_t pixel_size = hdr.reserved;
-        if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
-        /* hdr.num_planes encodes the double-buffer index from the Qt client */
-        tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                             pixel_size, hdr.num_planes);
-        if (tex == 0) {
-            IDK_ERR("comp", "SHM texture upload failed\n");
-            return -1;
-        }
-    } else {
-        /* DMABUF path — try EGL import first */
-        tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                     hdr.stride, hdr.format);
-        if (tex == 0) {
-            /* Fallback: maybe this is actually a memfd, not real DMABUF.
-             * Try SHM upload with default pixel size. */
-            uint32_t pixel_size = hdr.width * hdr.height * 4;
-            IDK_LOG("comp", "DMABUF import failed, trying SHM fallback\n");
-            tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                 pixel_size, hdr.num_planes);
-            if (tex == 0) {
-                return -1;
+        for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh); cmsg;
+             cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                memcpy(&dmabuf_fd, CMSG_DATA(cmsg), sizeof(int));
+                break;
             }
         }
-    }
 
-    /* For DMABUF path, double-buffer: replace back texture then swap. */
-    if (frame_type != IDK_FRAME_TYPE_SHM) {
-        int back = 1 - g_tex_idx;
-        if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
-        g_tex[back] = tex;
-        g_tex_idx = back;
-        g_has_frame = true;
-        g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
-        close(dmabuf_fd);
-    }
-    g_frame_w = hdr.width;
-    g_frame_h = hdr.height;
+        if (dmabuf_fd < 0) break;
 
-    IDK_LOG("comp", "texture uploaded: tex[%d]=%u %ux%u pixel_size=%u\n",
-            g_tex_idx, g_tex[g_tex_idx], hdr.width, hdr.height, hdr.reserved);
+        memcpy(&hdr, msg_buf, sizeof(hdr));
 
-    /* Send ACK to client — flow control: client waits for this before
-     * rendering/sending the next frame. This syncs webview frame rate
-     * to the game's swap rate, preventing SHM buffer races. */
-    {
-        char ack = 0;
-        if (write(g_client_fd, &ack, 1) < 0) {
-            IDK_ERR("comp", "ACK write failed: %s\n", strerror(errno));
+        /* If we already processed a frame this call, skip this older one */
+        if (processed > 0) {
+            close(dmabuf_fd);
+            continue;
         }
+
+        GLuint tex = 0;
+        uint8_t frame_type = (hdr.vis_type >> 8) & 0xFF;
+
+        if (frame_type == IDK_FRAME_TYPE_SHM) {
+            uint32_t pixel_size = hdr.reserved;
+            if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
+            tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                 pixel_size, hdr.num_planes);
+            if (tex == 0) break;
+        } else {
+            tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                         hdr.stride, hdr.format);
+            if (tex == 0) {
+                uint32_t pixel_size = hdr.width * hdr.height * 4;
+                IDK_LOG("comp", "DMABUF import failed, trying SHM fallback\n");
+                tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                     pixel_size, hdr.num_planes);
+                if (tex == 0) break;
+            }
+        }
+
+        if (frame_type != IDK_FRAME_TYPE_SHM) {
+            int back = 1 - g_tex_idx;
+            if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
+            g_tex[back] = tex;
+            g_tex_idx = back;
+            g_has_frame = true;
+            g_draw_err_count = 0;
+            close(dmabuf_fd);
+        }
+        g_frame_w = hdr.width;
+        g_frame_h = hdr.height;
+        processed = 1;
     }
 
-    /* Close the dmabuf fd — GL texture keeps a reference */
-    close(dmabuf_fd);
+    if (processed) {
+        /* Send exactly ONE ACK per compositor render call (regardless of
+         * how many frames were drained) — the webview expects one ACK per
+         * frame it sent, but since we only process the newest, we only
+         * need to ACK once. The webview's flow control will handle the
+         * rest (it retries every 16ms until ACK arrives). */
+        char ack = 0;
+        int flags = fcntl(g_client_fd, F_GETFL, 0);
+        if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags | O_NONBLOCK);
+        if (write(g_client_fd, &ack, 1) < 0) {
+            /* EAGAIN = client not reading ACKs — fine, drop it */
+        }
+        if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags);
 
-    return 0;
+        return 0;
+    }
+    return -1;
 }
 
 /**
@@ -642,8 +596,6 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     /* Destroy EGL image — GL texture keeps reference */
     fn_eglDestroyImageKHR(egl_dpy, img);
 
-    IDK_LOG("comp", "Uploaded overlay %dx%d as GL tex %u\n",
-            w, h, tex);
     return tex;
 }
 
@@ -718,13 +670,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     }
     if (fb_w <= 0 || fb_h <= 0) return;
 
-    static int s_render_debug = 0;
-    int dbg = s_render_debug++;
-    if (dbg < 5 || dbg % 120 == 0) {
-        IDK_LOG("comp", "render_overlay: fb=%dx%d prog=%u\n",
-                fb_w, fb_h, g_program);
-    }
-
     /* ── Save GL state (MangoHud-style) ── */
     GLenum last_active_texture; glGetIntegerv(GL_ACTIVE_TEXTURE, (GLint*)&last_active_texture);
     glActiveTexture(GL_TEXTURE0);
@@ -776,11 +721,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
 
     GLint last_draw_buffer = GL_BACK;
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
-    {
-        static int dbg = 0;
-        if (dbg++ < 3)
-            IDK_LOG("comp", "draw_buffer=0x%x\n", last_draw_buffer);
-    }
 
     /* Clear any stale GL errors before our draw */
     while (glGetError() != GL_NO_ERROR) {}
@@ -836,14 +776,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     if (vertex_array_object) {
         glBindVertexArray(vertex_array_object);
                                        GLCHECK("glBindVertexArray");
-    }
-
-    /* Debug: track which buffer we're using */
-    static int s_frame_counter = 0;
-    s_frame_counter++;
-    if (s_frame_counter % 60 == 0) {
-        IDK_LOG("comp", "render: tex[%d]=%u has_frame=%d fb=%dx%d\n",
-                g_tex_idx, g_tex[g_tex_idx], g_has_frame, fb_w, fb_h);
     }
 
     /* On first failure, log texture validity + program status — these are
@@ -1007,13 +939,24 @@ void idk_compositor_shutdown(void) {
     }
 
     /* Remove socket file */
-    unlink(g_sock_path);
-
-    for (int i = 0; i < 2; i++) {
-        if (g_tex[i]) glDeleteTextures(1, &g_tex[i]);
+    if (g_sock_path[0]) {
+        unlink(g_sock_path);
     }
-    if (g_program) glDeleteProgram(g_program);
 
+    /* GL resource cleanup — SKIP ENTIRELY during shutdown.
+     *
+     * During process exit, the game's EGL context is torn down BEFORE our
+     * destructor runs. Calling glDeleteTextures/glDeleteProgram with a dead
+     * context segfaults (the function pointers are non-NULL, but the driver
+     * state is gone). Checking function pointers isn't enough — we'd need
+     * to check if a GL context is current, which requires EGL functions we
+     * don't have resolved here.
+     *
+     * The OS reclaims ALL GPU resources on process exit anyway, so leaking
+     * 2 textures + 1 program is completely harmless. Just zero our pointers
+     * so we don't try to use them after shutdown. */
+    g_program = 0;
+    g_tex[0] = g_tex[1] = 0;
     g_has_frame = false;
     IDK_LOG("comp", "Shut down\n");
 }

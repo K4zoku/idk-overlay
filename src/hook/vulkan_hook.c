@@ -7,6 +7,7 @@
 
 #include "hook/syringe_hook.h"
 #include "hook/vulkan.h"
+#include "hook/overlay.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 #include "shim/elfhacks.h"
@@ -99,21 +100,19 @@ static VkResult call_real_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKH
 static int install_vk_hook(void) {
     load_real_functions();
     if (g_hook_installed) return 0;
-    g_hook_installed = 1;
 
     void *sym = NULL;
-    static const char *vk_libs[] = {"libvulkan.so", "libvulkan.so.1", NULL};
+    /* RTLD_NOLOAD only — detect if the game loaded libvulkan, don't force-load */
+    static const char *vk_libs[] = {"libvulkan.so.1", "libvulkan.so", NULL};
     for (int i = 0; vk_libs[i]; i++) {
         void *h = real_dlopen ? real_dlopen(vk_libs[i], RTLD_NOW | RTLD_NOLOAD) : dlopen(vk_libs[i], RTLD_NOW | RTLD_NOLOAD);
-        if (!h)
-            h = real_dlopen ? real_dlopen(vk_libs[i], RTLD_NOW | RTLD_GLOBAL) : dlopen(vk_libs[i], RTLD_NOW | RTLD_GLOBAL);
         if (!h)
             continue;
         sym = real_dlsym ? real_dlsym(h, "vkQueuePresentKHR") : dlsym(h, "vkQueuePresentKHR");
         if (sym) break;
     }
     if (!sym) {
-        IDK_ERR("vk", "vkQueuePresentKHR not found");
+        IDK_LOG("vk", "libvulkan not loaded or vkQueuePresentKHR not found — will retry\n");
         return -1;
     }
 
@@ -122,6 +121,7 @@ static int install_vk_hook(void) {
                                    (void *)hook_QueuePresentKHR,
                                    (void **)&orig_QueuePresentKHR);
     if (n > 0) {
+        g_hook_installed = 1;
         IDK_LOG("vk", "installed via install_addr");
         return 0;
     }
@@ -130,6 +130,7 @@ static int install_vk_hook(void) {
                              (void *)hook_QueuePresentKHR,
                              (void **)&orig_QueuePresentKHR);
     if (n > 0) {
+        g_hook_installed = 1;
         IDK_LOG("vk", "installed via GOT walk");
         return 0;
     }
@@ -138,11 +139,13 @@ static int install_vk_hook(void) {
                                    (void *)hook_QueuePresentKHR,
                                    (void **)&orig_QueuePresentKHR);
     if (n > 0) {
+        g_hook_installed = 1;
         IDK_LOG("vk", "installed via install_addr (retry)");
         return 0;
     }
 
-    IDK_ERR("vk", "all install methods failed, deferring to first call");
+    IDK_ERR("vk", "all install methods failed — will retry from background thread\n");
+    /* Do NOT set g_hook_installed — allow retry */
     return -1;
 }
 
@@ -151,6 +154,10 @@ static VkResult hook_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPre
         g_retry_done = 1;
         install_vk_hook();
     }
+
+    /* Install wayland input hook on first present — by now libwayland-client
+     * is loaded (if this is a wayland client). Idempotent. */
+    idk_overlay_try_install_wayland_input();
 
     if (orig_QueuePresentKHR && pPresentInfo) {
         for (uint32_t i = 0; i < pPresentInfo->swapchainCount; i++) {

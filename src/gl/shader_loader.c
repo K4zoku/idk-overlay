@@ -75,38 +75,38 @@ static void select_variant(int glsl_version, bool is_gles,
     if (glsl_version <= 120) {
         v->ver_str = is_gles ? "#version 100\n" : "#version 120\n";
         v->vs_body = glsl_overlay_vertex_120;
-        v->vs_size = glsl_overlay_vertex_120_size;
+        v->vs_size = GLSL_SHADER_SIZE(vertex_120);
         v->fs_body = glsl_overlay_fragment_120;
-        v->fs_size = glsl_overlay_fragment_120_size;
+        v->fs_size = GLSL_SHADER_SIZE(fragment_120);
 #ifdef HAS_SPV_120
         v->vs_spirv = spv_vertex_120;
-        v->vs_spirv_size = spv_vertex_120_size;
+        v->vs_spirv_size = SPV_SHADER_SIZE(vertex_120);
         v->fs_spirv = spv_fragment_120;
-        v->fs_spirv_size = spv_fragment_120_size;
+        v->fs_spirv_size = SPV_SHADER_SIZE(fragment_120);
 #endif
     } else if (glsl_version == 300) {
         v->ver_str = "#version 300 es\n";
         v->vs_body = glsl_overlay_vertex_300_es;
-        v->vs_size = glsl_overlay_vertex_300_es_size;
+        v->vs_size = GLSL_SHADER_SIZE(vertex_300_es);
         v->fs_body = glsl_overlay_fragment_300_es;
-        v->fs_size = glsl_overlay_fragment_300_es_size;
+        v->fs_size = GLSL_SHADER_SIZE(fragment_300_es);
 #ifdef HAS_SPV_300_es
         v->vs_spirv = spv_vertex_300_es;
-        v->vs_spirv_size = spv_vertex_300_es_size;
+        v->vs_spirv_size = SPV_SHADER_SIZE(vertex_300_es);
         v->fs_spirv = spv_fragment_300_es;
-        v->fs_spirv_size = spv_fragment_300_es_size;
+        v->fs_spirv_size = SPV_SHADER_SIZE(fragment_300_es);
 #endif
     } else if (glsl_version >= 410) {
         v->ver_str = "#version 410 core\n";
         v->vs_body = glsl_overlay_vertex_410;
-        v->vs_size = glsl_overlay_vertex_410_size;
+        v->vs_size = GLSL_SHADER_SIZE(vertex_410);
         v->fs_body = glsl_overlay_fragment_410;
-        v->fs_size = glsl_overlay_fragment_410_size;
+        v->fs_size = GLSL_SHADER_SIZE(fragment_410);
 #ifdef HAS_SPV_410
         v->vs_spirv = spv_vertex_410;
-        v->vs_spirv_size = spv_vertex_410_size;
+        v->vs_spirv_size = SPV_SHADER_SIZE(vertex_410);
         v->fs_spirv = spv_fragment_410;
-        v->fs_spirv_size = spv_fragment_410_size;
+        v->fs_spirv_size = SPV_SHADER_SIZE(fragment_410);
 #endif
     } else {
         if (glsl_version >= 330)
@@ -116,14 +116,14 @@ static void select_variant(int glsl_version, bool is_gles,
         else
             v->ver_str = "#version 130\n";
         v->vs_body = glsl_overlay_vertex_130;
-        v->vs_size = glsl_overlay_vertex_130_size;
+        v->vs_size = GLSL_SHADER_SIZE(vertex_130);
         v->fs_body = glsl_overlay_fragment_130;
-        v->fs_size = glsl_overlay_fragment_130_size;
+        v->fs_size = GLSL_SHADER_SIZE(fragment_130);
 #ifdef HAS_SPV_130
         v->vs_spirv = spv_vertex_130;
-        v->vs_spirv_size = spv_vertex_130_size;
+        v->vs_spirv_size = SPV_SHADER_SIZE(vertex_130);
         v->fs_spirv = spv_fragment_130;
-        v->fs_spirv_size = spv_fragment_130_size;
+        v->fs_spirv_size = SPV_SHADER_SIZE(fragment_130);
 #endif
     }
 }
@@ -176,6 +176,12 @@ static int try_glsl(unsigned int *out_vs, unsigned int *out_fs,
                     const char *vs_body, size_t vs_size,
                     const char *fs_body, size_t fs_size) {
     int ok;
+
+    if (!idk_fn_glCreateShader || !idk_fn_glShaderSource || !idk_fn_glCompileShader ||
+        !idk_fn_glGetShaderiv) {
+        IDK_ERR("shdr", "try_glsl: critical GL shader functions are NULL — cannot compile\n");
+        return 0;
+    }
 
     const GLchar *vs_src[] = { ver_str, vs_body };
     const GLint  vs_len[]  = { (GLint)strlen(ver_str), (GLint)vs_size };

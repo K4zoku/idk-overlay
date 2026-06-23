@@ -48,6 +48,18 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl);
  */
 void idk_overlay_shutdown(void);
 
+/**
+ * Try to install the Wayland input hook (idk_wayland_input_init).
+ * Idempotent and safe to call from any thread — internally guarded by
+ * a once-flag. The hook only installs if libwayland-client.so.0 is
+ * loaded in the process. Designed to be called from the EGL/GLX/Vulkan
+ * swap hook on first swap (after the graphics hook is confirmed working
+ * and libwayland-client is guaranteed loaded).
+ *
+ * @return 0 on success or already-installed, -1 if wayland not available.
+ */
+int idk_overlay_try_install_wayland_input(void);
+
 #ifdef __cplusplus
 }
 #endif

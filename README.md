@@ -11,6 +11,7 @@ Injects into a target process via [syringe](https://github.com/K4zoku/syringe) (
 - **Live process injection**: inject into already-running games (not just LD_PRELOAD)
 - **.NET support**: injects into osu! lazer via diagnostic IPC — no ptrace, no root, no anti-debug bypass
 - **Qt6 WebEngine webview**: render HTML/CSS/JS overlays
+- **Wayland input hooking**: toggle input capture (default: F8) to redirect keyboard + mouse to the overlay UI
 - **Double-buffered GL textures**: no flickering, no tearing
 - **ACK flow control**: webview frame rate synced to game swap rate
 - **GL state save/restore**: comprehensive, based on MangoHud approach
@@ -99,6 +100,55 @@ IDK_SOCKET=/tmp/idk-overlay-$(pgrep osu!) ./build/src/cli/webview/idk-webview
 | `IDK_VK` | `1` | Enable Vulkan hooks |
 | `IDK_GL` | `1` | Enable OpenGL/EGL hooks |
 | `IDK_DEBUG` | (unset) | Set to `1` to enable debug logging |
+| `IDK_TOGGLE_KEY` | `F8` | Hotkey to toggle input capture (xkb keysym name: `F1`–`F12`, `Scroll_Lock`, `Pause`, etc.) |
+
+## Wayland input hooking
+
+The overlay can capture keyboard and mouse input when toggled by a hotkey (default: **F8**). This lets the overlay UI receive text input, clicks, etc. without the game seeing them.
+
+### How it works
+
+1. `libidk-overlay.so` hooks `wl_proxy_add_listener` (exported by `libwayland-client.so.0`).
+2. When the game registers a `wl_pointer` or `wl_keyboard` listener, the hook substitutes a wrapper vtable that saves the game's listener + user_data.
+3. The wrapper forwards events to the game by default. When the user presses the hotkey, capture mode toggles on.
+4. While captured, the wrapper swallows events from the game and forwards them to the webview via a separate Unix socket (`${IDK_SOCKET}-input`).
+5. Press the hotkey again to release capture; events resume flowing to the game.
+
+### Limitations (v1)
+
+- **Listener substitution only** (not `wl_proxy_add_dispatcher`). Catches SDL, GLFW, and most native games. GTK/Qt-style clients that use dispatchers will not be intercepted — a warning is logged.
+- **Qt WebEngine injection is stubbed**: the `InputReceiver` in the webview connects to the input socket and logs events (set `IDK_DEBUG=1`), but does not yet inject them into the QWebEngineView. This is the next task.
+- **Native Wayland games only**. X11 games (running under XWayland) don't call `wl_proxy_add_listener` — they use X11 APIs. An X11 input hook would be a separate feature.
+- **xkbcommon is optional**. If `libxkbcommon.so.0` isn't available, hotkey detection falls back to raw evdev scancodes (KEY_F8 = 66) and the `keysym` field is 0 in forwarded events. The webview can still decode scancodes itself.
+
+### Input IPC protocol
+
+Separate socket from the frame socket, no `SCM_RIGHTS`. Path: `${IDK_SOCKET}-input` (default: `/tmp/idk-overlay-<pid>-input`).
+
+Each message is 64 bytes:
+
+```
++----------------------+
+| magic    uint32      |  0x49444B49 ("IDKI")
+| type     uint32      |  1=KEY, 2=BUTTON, 3=MOTION, 4=AXIS, 5=STATE
+| time     uint32      |  wayland timestamp (ms)
+| serial   uint32      |  wayland serial
+| keycode  uint32      |  evdev scancode (KEY events)
+| keysym   uint32      |  xkb keysym (KEY events, 0 if xkb unavailable)
+| state    uint32      |  0=release, 1=press (KEY/BUTTON)
+| button   uint32      |  BTN_* code (BUTTON events)
+| x        int32       |  surface-local x in pixels (MOTION)
+| y        int32       |  surface-local y in pixels (MOTION)
+| dx       int32       |  scroll delta (AXIS, axis=1)
+| dy       int32       |  scroll delta (AXIS, axis=0)
+| mods     uint32      |  Ctrl=1, Shift=2, Alt=4, Super=8
+| capture  uint32      |  0=passing through, 1=captured
+| reserved uint32      |  future use
+| checksum uint32      |  CRC32 of all preceding fields
++----------------------+
+```
+
+The webview connects to this socket and reads events with `idk_ipc_recv_input()`. See `include/public/idk_ipc.h` for the wire format and `src/cli/webview/input_receiver.cpp` for an example receiver.
 
 ## Project structure
 
@@ -106,18 +156,19 @@ IDK_SOCKET=/tmp/idk-overlay-$(pgrep osu!) ./build/src/cli/webview/idk-webview
 src/
 ├── core/           Compositor engine (shared)
 ├── gl/             GL/EGL loader + shader loader
-├── hook/           EGL, GLX, Vulkan hooks + overlay init
+├── hook/           EGL, GLX, Vulkan, Wayland input hooks + overlay init
 ├── shim/           elfhacks (MangoHud's ELF symbol resolver)
-├── ipc/            Unix socket SCM_RIGHTS
+├── ipc/            Unix socket SCM_RIGHTS + input event IPC
 ├── render/         idk-render process
 ├── lib/            libidk-framesource (frame sender)
-└── cli/            idk-inject, idk-webview
+└── cli/            idk-inject, idk-webview (incl. InputReceiver)
 
 include/
 ├── public/         Public API headers (idk_fs.h, idk_ipc.h)
 ├── core/           Internal: compositor, log
 ├── gl/             Internal: GL loader, shaders
-├── hook/           Internal: EGL, GLX, Vulkan, overlay
+├── hook/           Internal: EGL, GLX, Vulkan, overlay, wayland_input +
+│                   wayland_input_types.h (vendored protocol structs)
 ├── shim/           Internal: elfhacks
 └── render/         Internal: receive
 ```

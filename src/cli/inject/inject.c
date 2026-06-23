@@ -11,7 +11,6 @@
  *   -h, --help      Show this help
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +74,8 @@ int main(int argc, char **argv) {
             lib_path = argv[i];
         }
     }
+
+    (void)verbose;  /* reserved for future verbose logging */
 
     /* Auto-detect library path */
     char abs_path[PATH_MAX];

@@ -4,9 +4,12 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include "hook/syringe_hook.h"
 #include "hook/egl.h"
+#include "hook/overlay.h"
+#include "hook/wayland_input.h"
 #include "gl/gl_loader.h"
 #include "core/compositor.h"
 #include "core/log.h"
@@ -32,6 +35,7 @@ static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = NULL;
 static int g_hook_installed = 0;
 static int g_retry_done = 0;
 static int g_gl_resources_ready = 0;
+static pthread_mutex_t g_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void *(*real_dlsym)(void *, const char *) = NULL;
 static void *(*real_dlopen)(const char *, int) = NULL;
@@ -87,26 +91,35 @@ static EGLBoolean call_real_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
 }
 
 static int install_egl_hook(void) {
+    pthread_mutex_lock(&g_hook_mutex);
     load_real_functions();
-    if (g_hook_installed) return 0;
-    g_hook_installed = 1;
+    if (g_hook_installed) {
+        pthread_mutex_unlock(&g_hook_mutex);
+        return 0;
+    }
 
     void *egl_handle = NULL;
     void *egl_swap_addr = NULL;
     int n = 0;
 
+    /* Use RTLD_NOLOAD only — we want to detect if the game has already
+     * loaded libEGL, NOT force-load it ourselves. Force-loading in the
+     * constructor was the original crash cause; the background thread in
+     * overlay.c ensures we only call this after libEGL is loaded by the game. */
     if (real_dlopen) {
         egl_handle = real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
         if (!egl_handle)
-            egl_handle = real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_GLOBAL);
-        if (!egl_handle)
-            egl_handle = real_dlopen("libEGL.so", RTLD_NOW | RTLD_GLOBAL);
+            egl_handle = real_dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
     } else {
         egl_handle = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
         if (!egl_handle)
-            egl_handle = dlopen("libEGL.so.1", RTLD_NOW | RTLD_GLOBAL);
-        if (!egl_handle)
-            egl_handle = dlopen("libEGL.so", RTLD_NOW | RTLD_GLOBAL);
+            egl_handle = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+    }
+
+    if (!egl_handle) {
+        EDBG("libEGL not loaded yet — will retry");
+        pthread_mutex_unlock(&g_hook_mutex);
+        return -1;
     }
 
     if (egl_handle) {
@@ -126,7 +139,9 @@ static int install_egl_hook(void) {
                                       (void *)hook_eglSwapBuffers,
                                       (void **)&orig_eglSwapBuffers);
         if (n > 0) {
+            g_hook_installed = 1;
             EDBG("installed via install_addr");
+            pthread_mutex_unlock(&g_hook_mutex);
             return 0;
         }
     }
@@ -135,7 +150,9 @@ static int install_egl_hook(void) {
                              (void *)hook_eglSwapBuffers,
                              (void **)&orig_eglSwapBuffers);
     if (n > 0) {
+        g_hook_installed = 1;
         EDBG("installed via GOT walk");
+        pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
 
@@ -145,12 +162,16 @@ static int install_egl_hook(void) {
                                       (void *)hook_eglSwapBuffers,
                                       (void **)&orig_eglSwapBuffers);
         if (n > 0) {
+            g_hook_installed = 1;
             EDBG("installed via install_addr (retry)");
+            pthread_mutex_unlock(&g_hook_mutex);
             return 0;
         }
     }
 
-    EDBG("all install methods failed, deferring to first call");
+    EDBG("all install methods failed — will retry from background thread");
+    /* Do NOT set g_hook_installed — allow the background thread to retry */
+    pthread_mutex_unlock(&g_hook_mutex);
     return -1;
 }
 
@@ -159,6 +180,17 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         g_retry_done = 1;
         install_egl_hook();
     }
+
+    /* Install wayland input hook on first swap — by now libwayland-client
+     * is guaranteed loaded (if this is a wayland client) and the EGL hook
+     * is in place. Idempotent. */
+    idk_overlay_try_install_wayland_input();
+
+    /* Dispatch sidecar wayland input events (MangoHud-style private queue).
+     * This processes keyboard events on our sidecar wl_keyboard so we can
+     * detect the hotkey even if listener substitution missed (e.g. game
+     * registered listeners before our hook installed). Non-blocking. */
+    idk_wayland_input_sidecar_dispatch();
 
     if (!g_gl_resources_ready) {
         if (idk_compositor_init_gl() == 0) {
@@ -191,8 +223,15 @@ int idk_egl_init(void) {
 
 void idk_egl_shutdown(void) {
     if (!g_hook_installed) return;
-    syringe_hook_remove("eglSwapBuffers");
-    idk_compositor_shutdown();
+
+    /* During process exit, the game's EGL context is already torn down
+     * BEFORE our destructor runs. Calling syringe_hook_remove restores
+     * the original code but can race with the game's exit path. And
+     * idk_compositor_shutdown's GL cleanup (already removed) would crash
+     * with a dead context.
+     *
+     * Safest: just mark as shut down, don't touch hooks or GL. The OS
+     * reclaims everything on process exit. */
     g_hook_installed = 0;
     g_gl_resources_ready = 0;
     g_retry_done = 0;

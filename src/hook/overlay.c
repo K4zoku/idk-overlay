@@ -5,6 +5,9 @@
 #include <errno.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -14,6 +17,7 @@
 #include "hook/vulkan.h"
 #include "hook/egl.h"
 #include "hook/glx.h"
+#include "hook/wayland_input.h"
 #include "core/log.h"
 
 static char g_socket_path[PATH_MAX];
@@ -21,6 +25,8 @@ static int g_ipc_fd = -1;
 static int g_enable_vk = 0;
 static int g_enable_gl = 0;
 static int g_initialized = 0;
+static int g_wl_input_tried = 0;  /* avoid retrying wayland input hook every swap */
+static int g_hooks_installed = 0; /* set by background thread when any hook succeeds */
 
 static FILE *g_dbg = NULL;
 static void dbg_init(void) {
@@ -36,6 +42,106 @@ static void dbg_init(void) {
     IDK_LOG("overlay", fmt "\n", ##__VA_ARGS__); \
 } while(0)
 
+/*
+ * Background thread: poll for GL/EGL/Vulkan libraries and install hooks
+ * when they're loaded by the game.
+ *
+ * This replaces the old "defer to first swap call" approach, which was
+ * broken: the hook functions can only fire if the hook is ALREADY installed
+ * (GOT/PLT patched), so a "first swap retry" that never fires is useless
+ * (chicken-and-egg — hook_eglSwapBuffers is never called because the GOT
+ * still points at the real eglSwapBuffers).
+ *
+ * The background thread starts after the constructor returns (so the linker
+ * is fully ready — avoids the original constructor crash from elfhacks +
+ * code patching before the linker was initialized). It polls every 200ms
+ * for up to 30 seconds, using RTLD_NOLOAD to detect when the game has
+ * loaded libEGL/libVulkan (we do NOT force-load them — the game should
+ * load them itself; force-loading was the original constructor crash cause).
+ */
+static void *hook_install_thread(void *arg) {
+    (void)arg;
+
+    /* Short initial delay — let the constructor fully return and the game's
+     * main() start executing. */
+    usleep(50000);  /* 50ms */
+
+    /* Install wayland input hook FIRST — games (SDL2, GLFW) register
+     * wl_keyboard/wl_pointer listeners during SDL_Init, which happens
+     * BEFORE libEGL is loaded. If we wait for libEGL, we miss the
+     * listener registration and can't intercept input.
+     *
+     * libwayland-client.so.0 is loaded very early (by SDL2 during
+     * display init), so polling for it first catches the registration
+     * window. The EGL/Vulkan hooks are installed separately below. */
+    for (int i = 0; i < 150 && !g_wl_input_tried; i++) {
+        void *h = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
+        if (!h) h = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
+        if (h) {
+            dlclose(h);
+            DBG("libwayland-client detected — installing wayland input hook immediately");
+            idk_overlay_try_install_wayland_input();
+            break;
+        }
+        usleep(10000);  /* 10ms — poll fast to catch early registration */
+    }
+
+    int egl_done = 0;
+    int vk_done = 0;
+
+    for (int i = 0; i < 150; i++) {  /* 150 × 200ms = 30s */
+        if (g_enable_gl && !egl_done) {
+            void *h = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) {
+                dlclose(h);
+                DBG("libEGL detected — installing EGL hook");
+                int r = idk_egl_init();
+                if (r == 0) {
+                    egl_done = 1;
+                    g_hooks_installed = 1;
+                    DBG("EGL hook installed successfully");
+                } else {
+                    DBG("EGL hook install failed, will retry");
+                }
+            }
+        }
+
+        if (g_enable_vk && !vk_done) {
+            void *h = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libvulkan.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) {
+                dlclose(h);
+                DBG("libvulkan detected — installing Vulkan hook");
+                int r = idk_vulkan_init(g_ipc_fd, g_socket_path);
+                if (r == 0) {
+                    vk_done = 1;
+                    g_hooks_installed = 1;
+                    DBG("Vulkan hook installed successfully");
+                } else {
+                    DBG("Vulkan hook install failed, will retry");
+                }
+            }
+        }
+
+        /* If both enabled hooks are done (or the ones that aren't done
+         * have failed too many times), we can stop. */
+        if (egl_done && vk_done) break;
+        if (!g_enable_gl) egl_done = 1;
+        if (!g_enable_vk) vk_done = 1;
+        if (egl_done && vk_done) break;
+
+        usleep(200000);  /* 200ms */
+    }
+
+    if (!g_hooks_installed) {
+        DBG("no graphics hooks installed after 30s — "
+            "game may not use EGL or Vulkan, or libraries not detected");
+    }
+
+    return NULL;
+}
+
 int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     if (g_initialized) return 0;
     g_initialized = 1;
@@ -49,29 +155,40 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
 
     DBG("PID=%d sock=%s vk=%d gl=%d", getpid(), g_socket_path, enable_vk, enable_gl);
 
-    /* Socket connection to idk-render (optional, for frame capture) */
+    /* The GLX path (glx_hook.c) sends frames TO an external idk-render process
+     * via this client socket. The EGL path (egl_hook.c) creates its OWN
+     * listening socket in compositor.c — this g_ipc_fd is NOT used there.
+     *
+     * On startup the idk-render process doesn't exist yet → connect() fails
+     * with ENOENT. This is EXPECTED and not an error for the EGL path.
+     * Only log it as info, not as "IPC connect failed" (which sounds alarming). */
     g_ipc_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_ipc_fd < 0) {
-        DBG("IPC socket failed: %s", strerror(errno));
+        DBG("GLX IPC socket creation failed: %s (EGL path unaffected)", strerror(errno));
         g_ipc_fd = -1;
     } else {
         struct sockaddr_un addr = { .sun_family = AF_UNIX };
         snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_socket_path);
         if (connect(g_ipc_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            DBG("IPC connect failed: %s", strerror(errno));
+            /* ENOENT/ECONNREFUSED is normal at startup — idk-render not running.
+             * GLX path will reconnect when needed; EGL path ignores this fd. */
+            DBG("GLX IPC not connected (idk-render not running) — EGL path unaffected");
             close(g_ipc_fd);
             g_ipc_fd = -1;
         }
     }
 
-    /* Defer hook installation to first swap call.
-     * Installing hooks in the constructor is dangerous:
-     * - elfhacks parses ELF headers before the linker is fully ready
-     * - syringe_hook_install_addr patches code that may not be resolved yet
-     * - GL/EGL/Vulkan libraries may not be loaded yet
-     * The hook functions (hook_eglSwapBuffers, hook_glXSwapBuffers, etc.)
-     * have a retry mechanism that installs on first call when ready. */
-    DBG("hook installation deferred to first swap call");
+    /* Start background thread to install hooks when GL/Vulkan libraries
+     * are loaded by the game. This avoids the constructor crash (elfhacks +
+     * code patching before linker is ready) while ensuring hooks ARE
+     * installed even for games that dlopen libEGL at runtime (SDL, GLFW). */
+    DBG("starting background hook installer thread");
+    pthread_t t;
+    if (pthread_create(&t, NULL, hook_install_thread, NULL) == 0) {
+        pthread_detach(t);
+    } else {
+        DBG("FATAL: pthread_create failed — hooks will not be installed");
+    }
 
     return 0;
 }
@@ -82,11 +199,24 @@ void idk_overlay_shutdown(void) {
         idk_glx_shutdown();
         idk_egl_shutdown();
     }
+    idk_wayland_input_shutdown();
 
     if (g_ipc_fd >= 0) {
         close(g_ipc_fd);
         g_ipc_fd = -1;
     }
+}
+
+int idk_overlay_try_install_wayland_input(void) {
+    if (g_wl_input_tried) return 0;
+    g_wl_input_tried = 1;
+    int r = idk_wayland_input_init();
+    if (r != 0) {
+        DBG("wayland input hook not installed (likely not a wayland client)");
+    } else {
+        DBG("wayland input hook installed");
+    }
+    return r;
 }
 
 /*

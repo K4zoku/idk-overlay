@@ -32,11 +32,6 @@ int main(int argc, char *argv[])
     QString configPath = parser.positionalArguments().value(0);
     QString socketPath = parser.value(socketOption);
 
-    // If socket path provided, set it in environment for idk_client
-    if (!socketPath.isEmpty()) {
-        qputenv("IDK_SOCKET_PATH", socketPath.toUtf8().data());
-    }
-
-    Manager manager(configPath, tray);
+    Manager manager(configPath, socketPath, tray);
     return app.exec();
 }

@@ -229,8 +229,11 @@ int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
     memcpy(CMSG_DATA(cmsg), &data_fd, sizeof(int));
     msgh.msg_controllen = cmsg->cmsg_len;
 
-    ssize_t n = sendmsg(g_sock_fd, &msgh, 0);
+    ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -1;  /* socket buffer full — drop frame */
+        }
         /* If the peer closed the socket (EPIPE / ECONNRESET), shut down
          * our side immediately so idk_fs_get_fd() returns -1. This
          * lets the Manager's QTimer detect the disconnection and reconnect.
@@ -318,8 +321,13 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     memcpy(CMSG_DATA(cmsg), dma_buf_fds, sizeof(int) * frame->nfd);
     msgh.msg_controllen = cmsg->cmsg_len;
 
-    ssize_t n = sendmsg(g_sock_fd, &msgh, 0);
+    ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            /* Socket buffer full — compositor not reading fast enough.
+             * Drop the frame and return -1. Caller will retry. */
+            return -1;
+        }
         /* Same EPIPE handling as idk_fs_send_frame — see comment there. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
             IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
