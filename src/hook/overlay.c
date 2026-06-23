@@ -49,33 +49,29 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
 
     DBG("PID=%d sock=%s vk=%d gl=%d", getpid(), g_socket_path, enable_vk, enable_gl);
 
+    /* Socket connection to idk-render (optional, for frame capture) */
     g_ipc_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_ipc_fd < 0) {
         DBG("IPC socket failed: %s", strerror(errno));
         g_ipc_fd = -1;
+    } else {
+        struct sockaddr_un addr = { .sun_family = AF_UNIX };
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_socket_path);
+        if (connect(g_ipc_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            DBG("IPC connect failed: %s", strerror(errno));
+            close(g_ipc_fd);
+            g_ipc_fd = -1;
+        }
     }
 
-    struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_socket_path);
-
-    if (connect(g_ipc_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        DBG("IPC connect failed: %s", strerror(errno));
-        close(g_ipc_fd);
-        g_ipc_fd = -1;
-    }
-
-    if (enable_vk) {
-        DBG("init Vulkan");
-        idk_vulkan_init(g_ipc_fd >= 0 ? g_ipc_fd : -1, g_socket_path);
-    }
-
-    if (enable_gl) {
-        DBG("init GL/EGL");
-        if (idk_glx_init(g_ipc_fd) != 0)
-            DBG("GLX hook init failed");
-        if (idk_egl_init() != 0)
-            DBG("EGL hook init failed");
-    }
+    /* Defer hook installation to first swap call.
+     * Installing hooks in the constructor is dangerous:
+     * - elfhacks parses ELF headers before the linker is fully ready
+     * - syringe_hook_install_addr patches code that may not be resolved yet
+     * - GL/EGL/Vulkan libraries may not be loaded yet
+     * The hook functions (hook_eglSwapBuffers, hook_glXSwapBuffers, etc.)
+     * have a retry mechanism that installs on first call when ready. */
+    DBG("hook installation deferred to first swap call");
 
     return 0;
 }

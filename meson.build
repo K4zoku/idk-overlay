@@ -16,8 +16,8 @@ cc = meson.get_compiler('c')
 pthread_lib = cc.find_library('pthread', required: true)
 dl_lib = cc.find_library('dl', required: true)
 
-egl_dep = cc.find_library('EGL', required: true)
-vk_dep = cc.find_library('vulkan', required: true)
+egl_dep = cc.find_library('EGL', required: false)
+vk_dep = cc.find_library('vulkan', required: false)
 
 syringe_proj = subproject('syringe')
 syringe_dep = syringe_proj.get_variable('libsyringe_dep')
