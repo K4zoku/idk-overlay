@@ -78,6 +78,9 @@ private:
     // Re-entrance guard for resizeForGame — prevents nested calls via processEvents
     bool m_resizing = false;
 
+    // SHM format flag — true if grabFramebuffer returned premultiplied alpha
+    bool m_framePremultiplied = false;
+
 
 
     // EGL / DMABUF state

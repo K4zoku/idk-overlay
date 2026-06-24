@@ -28,12 +28,16 @@ struct frame_hdr {
     uint32_t width;
     uint32_t height;
     uint32_t stride;       /* DMABUF: stride in bytes, SHM: unused */
-    uint32_t format;       /* DMABUF: DRM fourcc, SHM: unused */
+    uint32_t format;       /* DMABUF: DRM fourcc, SHM: premultiplied flag */
     uint32_t num_planes;   /* SHM: buffer index, DMABUF: number of planes */
     uint32_t reserved;     /* SHM: pixel byte size, DMABUF: unused */
     uint32_t vis_type;     /* visibility (low byte) + frame type (high byte) */
     uint32_t checksum;
 };
+
+/* SHM format flags (stored in hdr.format for SHM frames) */
+#define IDK_SHM_FORMATStraight     0  /* RGBA8888 (non-premultiplied) */
+#define IDK_SHM_FORMAT_PREMULTIPLIED 1  /* RGBA8888_Premultiplied */
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
@@ -114,6 +118,7 @@ static int    g_tex_w[2] = {0, 0};
 static int    g_tex_h[2] = {0, 0};
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static bool g_has_frame = false;
+static bool g_frame_premultiplied = false;  /* current frame's alpha mode */
 
 /* Draw error counter — reset on new frame upload, invalidate tex at 5 */
 static int g_draw_err_count = 0;
@@ -260,7 +265,8 @@ static int accept_client(void) {
 
 /* SHM → GL texture upload via glTex(Sub)Image2D */
 static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
-                              uint32_t pixel_size, uint32_t buffer_idx) {
+                              uint32_t pixel_size, uint32_t buffer_idx,
+                              int premultiplied) {
     if (!idk_fn_glTexImage2D) {
         IDK_ERR("comp", "glTexImage2D not resolved\n");
         return 0;
@@ -329,6 +335,11 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         if (idk_fn_glPixelStorei) {
             idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         }
+        /* Use GL_RGBA8 for straight, GL_RGBA8 for premultiplied too —
+         * the difference is in the blend mode at render time, not the
+         * internal format. The data layout is identical (4 bytes RGBA).
+         * Premultiplied flag is stored for the render pass to set
+         * the correct blend equation. */
         idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                             (GLsizei)w, (GLsizei)h, 0,
                             GL_RGBA, GL_UNSIGNED_BYTE, buf);
@@ -355,6 +366,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
 
     g_tex_idx = back;
     g_has_frame = true;
+    g_frame_premultiplied = (premultiplied != 0);
     g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
 
     close(shm_fd);
@@ -423,7 +435,8 @@ int idk_compositor_render(void) {
             uint32_t pixel_size = hdr.reserved;
             if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
             tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                 pixel_size, hdr.num_planes);
+                                 pixel_size, hdr.num_planes,
+                                 hdr.format == IDK_SHM_FORMAT_PREMULTIPLIED);
             if (tex == 0) break;
             g_frame_w = hdr.width;
             g_frame_h = hdr.height;
@@ -707,7 +720,14 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
 
     glEnable(GL_BLEND);                GLCHECK("glEnable(GL_BLEND)");
     glBlendEquation(GL_FUNC_ADD);      GLCHECK("glBlendEquation");
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    /* Blend mode depends on frame format:
+     * - Straight alpha: src=GL_SRC_ALPHA, dst=GL_ONE_MINUS_SRC_ALPHA
+     * - Premultiplied:  src=GL_ONE, dst=GL_ONE_MINUS_SRC_ALPHA (faster, no multiply in shader) */
+    if (g_frame_premultiplied) {
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
                                        GLCHECK("glBlendFuncSeparate");
     glDisable(GL_CULL_FACE);           GLCHECK("glDisable(GL_CULL_FACE)");
     glDisable(GL_DEPTH_TEST);          GLCHECK("glDisable(GL_DEPTH_TEST)");

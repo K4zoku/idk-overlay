@@ -239,9 +239,17 @@ void WebView::doRenderAndSend()
 
     if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
         QImage fb = qw->grabFramebuffer();
-        QImage rgba = fb.convertToFormat(QImage::Format_RGBA8888);
-        rgba = rgba.flipped(Qt::Vertical);  /* flip Y: QImage top-left → GL bottom-left */
-        memcpy(shm, rgba.constBits(), PIXELS_SIZE(m_renderW, m_renderH));
+        QImage &img = fb;  // use directly, no conversion
+
+        int bytesPerRow = img.bytesPerLine();
+        int targetBpr = m_renderW * 4;  // tightly packed RGBA
+        int bpr = qMin(bytesPerRow, targetBpr);
+        for (int y = 0; y < m_renderH; y++) {
+            const uchar *srcRow = img.constScanLine(m_renderH - 1 - y);
+            uchar *dstRow = shm + y * targetBpr;
+            memcpy(dstRow, srcRow, bpr);
+        }
+        m_framePremultiplied = true;
     }
 
     idk_fs_frame_t frame;
@@ -252,6 +260,7 @@ void WebView::doRenderAndSend()
     frame.visible = 1;
     frame.nfd     = 1;
     frame.type    = IDK_FRAME_TYPE_SHM;
+    frame.format  = m_framePremultiplied ? 1 : 0;  /* premultiplied flag for compositor */
 
     static int s_consecutive_failures = 0;
 
@@ -552,8 +561,8 @@ bool WebView::ensureDmaBufSharedCtx()
     };
     m_eglCtx = eglCreateContext(m_eglDpy, m_eglConfig, qtEglCtx, ctx_attribs);
     if (m_eglCtx == EGL_NO_CONTEXT) {
-        IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed\n");
-        m_useDmaBuf = false;
+        EGLint err = eglGetError();
+        IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed (eglError=0x%x)\n", err);
         return false;
     }
 
