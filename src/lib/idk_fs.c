@@ -38,8 +38,8 @@ static void build_frame_hdr(const idk_fs_frame_t *frame,
     uint32_t *fields = (uint32_t *)hdr;
     fields[0] = frame->width;
     fields[1] = frame->height;
-    fields[2] = frame->x;            /* stride → X position */
-    fields[3] = frame->y;            /* format → Y position */
+    fields[2] = frame->stride;       /* DMABUF: stride in bytes, SHM: 0 */
+    fields[3] = frame->format;       /* DMABUF: DRM fourcc, SHM: 0 */
     fields[4] = (uint32_t)frame->id; /* num_planes → overlay ID */
     fields[5] = frame->width * frame->height * 4; /* pid → pixel byte size */
     fields[6] = (uint32_t)frame->visible          /* reserved → visibility (low byte) */
@@ -202,8 +202,8 @@ int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
     }
 
     IDK_LOG("fs",
-            "Frame sent: %dx%d@(%d,%d) id=%d visible=%d fd=%d\n",
-            frame->width, frame->height, frame->x, frame->y,
+            "Frame sent: %dx%d stride=%u fourcc=0x%x id=%d visible=%d fd=%d\n",
+            frame->width, frame->height, frame->stride, frame->format,
             frame->id, frame->visible, data_fd);
     return 0;
 }

@@ -26,10 +26,10 @@
 struct frame_hdr {
     uint32_t width;
     uint32_t height;
-    uint32_t stride;       /* actually X position */
-    uint32_t format;       /* actually Y position */
-    uint32_t num_planes;   /* actually overlay ID */
-    uint32_t reserved;     /* actually pixel byte size (SHM) */
+    uint32_t stride;       /* DMABUF: stride in bytes, SHM: unused */
+    uint32_t format;       /* DMABUF: DRM fourcc, SHM: unused */
+    uint32_t num_planes;   /* SHM: buffer index, DMABUF: number of planes */
+    uint32_t reserved;     /* SHM: pixel byte size, DMABUF: unused */
     uint32_t vis_type;     /* visibility (low byte) + frame type (high byte) */
     uint32_t checksum;
 };
@@ -51,21 +51,27 @@ typedef intptr_t EGLNativeDisplayType;
 #define EGL_WIDTH           0x3057
 #define EGL_HEIGHT          0x3056
 #define EGL_LINUX_DMA_BUF_EXT          0x3270
-#define EGL_DRM_BUFFER_FORMAT_MESA     0x31DD
-#define EGL_DRM_BUFFER_STRIDE_MESA     0x31DE
+#define EGL_LINUX_DRM_FOURCC_EXT       0x3271
+#define EGL_DMA_BUF_PLANE0_FD_EXT      0x3272
+#define EGL_DMA_BUF_PLANE0_OFFSET_EXT  0x3273
+#define EGL_DMA_BUF_PLANE0_PITCH_EXT   0x3274
 
 typedef EGLDisplay (*PFN_eglGetDisplay_fn)(EGLNativeDisplayType);
+typedef EGLDisplay (*PFN_eglGetCurrentDisplay_fn)(void);
 typedef EGLint (*PFN_eglGetError_fn)(void);
+typedef void* (*PFN_eglGetProcAddress_fn)(const char*);
 typedef EGLImageKHR (*PFN_eglCreateImageKHR_fn)(EGLDisplay dpy, EGLContext ctx,
                                                  EGLenum target,
                                                  void *buffer,
                                                  const EGLint *attrs);
 typedef EGLBoolean (*PFN_eglDestroyImageKHR_fn)(EGLDisplay dpy, EGLImageKHR image);
 
-static PFN_eglGetDisplay_fn       fn_eglGetDisplay       = NULL;
-static PFN_eglGetError_fn         fn_eglGetError         = NULL;
-static PFN_eglCreateImageKHR_fn   fn_eglCreateImageKHR   = NULL;
-static PFN_eglDestroyImageKHR_fn  fn_eglDestroyImageKHR  = NULL;
+static PFN_eglGetDisplay_fn          fn_eglGetDisplay          = NULL;
+static PFN_eglGetCurrentDisplay_fn   fn_eglGetCurrentDisplay   = NULL;
+static PFN_eglGetError_fn            fn_eglGetError            = NULL;
+static PFN_eglGetProcAddress_fn      fn_eglGetProcAddress      = NULL;
+static PFN_eglCreateImageKHR_fn      fn_eglCreateImageKHR      = NULL;
+static PFN_eglDestroyImageKHR_fn     fn_eglDestroyImageKHR     = NULL;
 
 static void resolve_egl_functions(void) {
     if (fn_eglGetDisplay) return;
@@ -76,10 +82,24 @@ static void resolve_egl_functions(void) {
         IDK_ERR("comp", "dlopen libEGL failed: %s\n", dlerror());
         return;
     }
-    fn_eglGetDisplay       = (PFN_eglGetDisplay_fn)     dlsym(lib, "eglGetDisplay");
-    fn_eglGetError         = (PFN_eglGetError_fn)       dlsym(lib, "eglGetError");
-    fn_eglCreateImageKHR   = (PFN_eglCreateImageKHR_fn) dlsym(lib, "eglCreateImageKHR");
-    fn_eglDestroyImageKHR  = (PFN_eglDestroyImageKHR_fn)dlsym(lib, "eglDestroyImageKHR");
+    fn_eglGetDisplay        = (PFN_eglGetDisplay_fn)         dlsym(lib, "eglGetDisplay");
+    fn_eglGetCurrentDisplay = (PFN_eglGetCurrentDisplay_fn)  dlsym(lib, "eglGetCurrentDisplay");
+    fn_eglGetError          = (PFN_eglGetError_fn)           dlsym(lib, "eglGetError");
+    fn_eglGetProcAddress    = (PFN_eglGetProcAddress_fn)     dlsym(lib, "eglGetProcAddress");
+
+    /* eglCreateImageKHR / eglDestroyImageKHR are extension functions —
+     * must use eglGetProcAddress, they may not be exported from libEGL.so */
+    if (fn_eglGetProcAddress) {
+        fn_eglCreateImageKHR  = (PFN_eglCreateImageKHR_fn)fn_eglGetProcAddress("eglCreateImageKHR");
+        fn_eglDestroyImageKHR = (PFN_eglDestroyImageKHR_fn)fn_eglGetProcAddress("eglDestroyImageKHR");
+    }
+
+    /* Fallback: try direct dlsym for drivers that do export these symbols */
+    if (!fn_eglCreateImageKHR)
+        fn_eglCreateImageKHR  = (PFN_eglCreateImageKHR_fn) dlsym(lib, "eglCreateImageKHR");
+    if (!fn_eglDestroyImageKHR)
+        fn_eglDestroyImageKHR = (PFN_eglDestroyImageKHR_fn)dlsym(lib, "eglDestroyImageKHR");
+
     IDK_LOG("comp", "EGL functions: eglGetDisplay=%p eglCreateImageKHR=%p\n",
             (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
 }
@@ -109,6 +129,10 @@ static uint32_t g_frame_h = 0;
 typedef void* GLeglImage;
 typedef void (*PFN_glEGLImageTargetTexture2DOES_fn)(GLenum target, GLeglImage image);
 static PFN_glEGLImageTargetTexture2DOES_fn fn_glEGLImageTargetTexture2DOES = NULL;
+
+/* GL_EXT_EGL_image_storage */
+typedef void (*PFN_glEGLImageTargetTexStorageEXT_fn)(GLenum target, GLeglImage image, const GLint* attrib_list);
+static PFN_glEGLImageTargetTexStorageEXT_fn fn_glEGLImageTargetTexStorageEXT = NULL;
 
 /* Forward declaration */
 static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
@@ -371,38 +395,38 @@ int idk_compositor_render(void) {
             tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                  pixel_size, hdr.num_planes);
             if (tex == 0) break;
+            g_frame_w = hdr.width;
+            g_frame_h = hdr.height;
+            processed = 1;
         } else {
             tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                          hdr.stride, hdr.format);
             if (tex == 0) {
-                uint32_t pixel_size = hdr.width * hdr.height * 4;
-                IDK_LOG("comp", "DMABUF import failed, trying SHM fallback\n");
-                tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                     pixel_size, hdr.num_planes);
-                if (tex == 0) break;
+                IDK_LOG("comp", "DMABUF import failed, telling client to use SHM\n");
+                close(dmabuf_fd);
+                /* Still send ACK=1 to notify webview → SHM fallback */
+                processed = -1;
+            } else {
+                int back = 1 - g_tex_idx;
+                if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
+                g_tex[back] = tex;
+                g_tex_idx = back;
+                g_has_frame = true;
+                g_draw_err_count = 0;
+                close(dmabuf_fd);
+                g_frame_w = hdr.width;
+                g_frame_h = hdr.height;
+                processed = 1;
             }
         }
-
-        if (frame_type != IDK_FRAME_TYPE_SHM) {
-            int back = 1 - g_tex_idx;
-            if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
-            g_tex[back] = tex;
-            g_tex_idx = back;
-            g_has_frame = true;
-            g_draw_err_count = 0;
-            close(dmabuf_fd);
-        }
-        g_frame_w = hdr.width;
-        g_frame_h = hdr.height;
-        processed = 1;
     }
 
     if (processed) {
-        char ack = 0;
+        char ack = (processed < 0) ? 1 : 0;
         int flags = fcntl(g_client_fd, F_GETFL, 0);
         if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags | O_NONBLOCK);
-        if (write(g_client_fd, &ack, 1) < 0) {
-        }
+        ssize_t _w = write(g_client_fd, &ack, 1);
+        (void)_w;
         if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags);
 
         return 0;
@@ -421,25 +445,24 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     }
 
     EGLDisplay egl_dpy = EGL_NO_DISPLAY;
-    if (fn_eglGetDisplay) {
-        egl_dpy = fn_eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        if (egl_dpy == EGL_NO_DISPLAY) {
-            egl_dpy = fn_eglGetDisplay((EGLNativeDisplayType)0);
-        }
+    if (fn_eglGetCurrentDisplay) {
+        egl_dpy = fn_eglGetCurrentDisplay();
     }
-    if (egl_dpy == EGL_NO_DISPLAY) return 0;
+    if (egl_dpy == EGL_NO_DISPLAY) {
+        IDK_ERR("comp", "no current EGL display\n");
+        return 0;
+    }
 
-    uint32_t drm_fmt = 0x34324742; /* default: BGRA8888 */
-    if (format == 0x34325258) {
-        drm_fmt = 0x34325258; /* XR24 = XRGB8888 */
-    }
+    uint32_t drm_fmt = format;
+    if (drm_fmt == 0) drm_fmt = 0x34324742; /* fallback: BGRA8888 */
 
     EGLint attrs[] = {
         EGL_WIDTH, (EGLint)w,
         EGL_HEIGHT, (EGLint)h,
-        EGL_LINUX_DMA_BUF_EXT, dmabuf_fd,
-        EGL_DRM_BUFFER_FORMAT_MESA, drm_fmt,
-        EGL_DRM_BUFFER_STRIDE_MESA, (EGLint)stride,
+        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)drm_fmt,
+        EGL_DMA_BUF_PLANE0_FD_EXT, dmabuf_fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)stride,
         EGL_NONE
     };
 
@@ -455,8 +478,63 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
+
+    /* Resolve glEGLImageTargetTexture2DOES — try dlsym from multiple libs
+     * then eglGetProcAddress. On GLVND, eglGetProcAddress may return a
+     * GLES-only stub that rejects GL_TEXTURE_2D; try libOpenGL.so for
+     * the desktop GL dispatch. */
+    if (!fn_glEGLImageTargetTexture2DOES) {
+        void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
+        if (lib) {
+            fn_glEGLImageTargetTexture2DOES =
+                (PFN_glEGLImageTargetTexture2DOES_fn)dlsym(lib, "glEGLImageTargetTexture2DOES");
+            IDK_LOG("comp", "glEGLImageTargetTexture2DOES dlsym=%p (libOpenGL)\n",
+                    (void*)fn_glEGLImageTargetTexture2DOES);
+        }
+    }
+    if (!fn_glEGLImageTargetTexture2DOES && fn_eglGetProcAddress) {
+        fn_glEGLImageTargetTexture2DOES = (PFN_glEGLImageTargetTexture2DOES_fn)
+            fn_eglGetProcAddress("glEGLImageTargetTexture2DOES");
+        IDK_LOG("comp", "glEGLImageTargetTexture2DOES via eglGetProcAddress = %p\n",
+                (void*)fn_glEGLImageTargetTexture2DOES);
+    }
+
+    GLboolean ok = GL_FALSE;
+    GLenum err = GL_NO_ERROR;
     if (fn_glEGLImageTargetTexture2DOES) {
         fn_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImage)img);
+        ok = GL_TRUE;
+        err = glGetError();
+    }
+    if (err == GL_INVALID_ENUM) {
+        IDK_LOG("comp", "glEGLImageTargetTexture2DOES rejected GL_TEXTURE_2D, trying glEGLImageTargetTexStorageEXT\n");
+        /* Resolve glEGLImageTargetTexStorageEXT (GL_EXT_EGL_image_storage) */
+        if (!fn_glEGLImageTargetTexStorageEXT) {
+            void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
+            if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
+            if (lib) {
+                fn_glEGLImageTargetTexStorageEXT =
+                    (PFN_glEGLImageTargetTexStorageEXT_fn)dlsym(lib, "glEGLImageTargetTexStorageEXT");
+            }
+            if (!fn_glEGLImageTargetTexStorageEXT && fn_eglGetProcAddress) {
+                fn_glEGLImageTargetTexStorageEXT =
+                    (PFN_glEGLImageTargetTexStorageEXT_fn)fn_eglGetProcAddress("glEGLImageTargetTexStorageEXT");
+            }
+        }
+        if (fn_glEGLImageTargetTexStorageEXT) {
+            fn_glEGLImageTargetTexStorageEXT(GL_TEXTURE_2D, (GLeglImage)img, NULL);
+            err = glGetError();
+        }
+    }
+    if (err != GL_NO_ERROR) {
+        IDK_ERR("comp", "EGL image import failed: 0x%04X\n", err);
+    }
+
+    if (!ok || err != GL_NO_ERROR) {
+        glDeleteTextures(1, &tex);
+        fn_eglDestroyImageKHR(egl_dpy, img);
+        return 0;
     }
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -762,13 +840,15 @@ int idk_compositor_init_gl(void) {
 
     void *libgl = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
     if (!libgl) libgl = dlopen("libGL.so.1", RTLD_NOW);
+    if (!libgl) libgl = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
+    if (!libgl) libgl = dlopen("libOpenGL.so.0", RTLD_NOW);
     if (!libgl) libgl = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_NOLOAD);
     if (!libgl) libgl = dlopen("libGLESv2.so.2", RTLD_NOW);
     if (!libgl) libgl = dlopen("libGL.so", RTLD_NOW);
     if (libgl) {
         fn_glEGLImageTargetTexture2DOES =
             (PFN_glEGLImageTargetTexture2DOES_fn)dlsym(libgl, "glEGLImageTargetTexture2DOES");
-        IDK_LOG("comp", "glEGLImageTargetTexture2DOES = %p\n",
+        IDK_LOG("comp", "glEGLImageTargetTexture2DOES dlsym=%p (libgl)\n",
                 (void *)fn_glEGLImageTargetTexture2DOES);
     }
     g_program = idk_shader_loader_init(&g_gl_version, &g_is_gles);

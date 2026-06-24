@@ -52,8 +52,8 @@ extern "C" {
 typedef struct idk_fs_frame {
     uint32_t width;       /* Frame width in pixels */
     uint32_t height;      /* Frame height in pixels */
-    uint32_t x;           /* Overlay X position on screen */
-    uint32_t y;           /* Overlay Y position on screen */
+    uint32_t stride;      /* Stride in bytes (for DMABUF) or 0 (for SHM) */
+    uint32_t format;      /* DRM fourcc (for DMABUF) or 0 (for SHM) */
     uint8_t  id;          /* Overlay ID (1-based, for client bookkeeping) */
     uint8_t  visible;     /* Visibility flag */
     uint8_t  nfd;         /* Number of file descriptors to send */

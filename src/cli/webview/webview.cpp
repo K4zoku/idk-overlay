@@ -32,6 +32,8 @@
 
 
 
+
+
 #define PIXELS_SIZE(w, h)  ((w) * (h) * 4)
 
 WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget *parent)
@@ -66,6 +68,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
                 });
                 return;
             }
+            initDmaBuf();
             initMemory();
             focusProxy()->installEventFilter(this);
 
@@ -77,6 +80,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         });
     } else {
         // Already connected, initialize immediately
+        initDmaBuf();
         initMemory();
         focusProxy()->installEventFilter(this);
 
@@ -99,7 +103,14 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
 
 WebView::~WebView()
 {
-    RhiTextureExtractor::cleanup();  // Clean up any EGL resources
+    RhiTextureExtractor::cleanup();
+
+    if (m_eglCtx != EGL_NO_CONTEXT) {
+        eglDestroyContext(m_eglDpy, m_eglCtx);
+    }
+    if (m_eglSurf != EGL_NO_SURFACE) {
+        eglDestroySurface(m_eglDpy, m_eglSurf);
+    }
 
     if (m_memory) {
         munmap(m_memory, m_memsize);
@@ -151,6 +162,10 @@ void WebView::doRenderAndSend()
                 char ack;
                 if (read(ack_fd, &ack, 1) > 0) {
                     m_pending = false;
+                    if (ack == 1) {
+                        IDK_LOG("client-qt", "compositor rejected DMABUF, falling back to SHM\n");
+                        m_dmaBufFailed = true;
+                    }
                 }
             }
         }
@@ -179,12 +194,111 @@ void WebView::doRenderAndSend()
     memset(&frame, 0, sizeof(frame));
     frame.width   = static_cast<uint32_t>(m_conf.width());
     frame.height  = static_cast<uint32_t>(m_conf.height());
-    frame.x       = static_cast<uint32_t>(m_conf.x());
-    frame.y       = static_cast<uint32_t>(m_conf.y());
     frame.id      = buffer;
     frame.visible = static_cast<uint8_t>(1);
     frame.nfd     = 1;
     frame.type    = IDK_FRAME_TYPE_SHM;
+
+    /* ── Try DMABUF export if available ── */
+    if (m_useDmaBuf && !m_dmaBufFailed && m_eglCtx != EGL_NO_CONTEXT) {
+        GLuint exportTex = 0;
+        int exportFds[4] = {-1, -1, -1, -1};
+        EGLint exportStrides[4] = {0};
+        EGLint exportOffsets[4] = {0};
+        int exportNfd = 0, exportFourcc = 0;
+        bool dmabufOk = false;
+
+        EGLDisplay savedDpy = eglGetCurrentDisplay();
+        EGLContext savedCtx = eglGetCurrentContext();
+        EGLSurface savedRead = eglGetCurrentSurface(EGL_READ);
+        EGLSurface savedDraw = eglGetCurrentSurface(EGL_DRAW);
+
+        if (eglMakeCurrent(m_eglDpy, m_eglSurf, m_eglSurf, m_eglCtx)) {
+            glGenTextures(1, &exportTex);
+            glBindTexture(GL_TEXTURE_2D, exportTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                         (GLsizei)m_conf.width(), (GLsizei)m_conf.height(), 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, memory);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            EGLImageKHR eglImg = eglCreateImage(
+                m_eglDpy, m_eglCtx, EGL_GL_TEXTURE_2D,
+                reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(exportTex)),
+                nullptr);
+
+            if (eglImg) {
+                auto queryFn = reinterpret_cast<PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC>(
+                    eglGetProcAddress("eglExportDMABUFImageQueryMESA"));
+                auto exportFn = reinterpret_cast<PFNEGLEXPORTDMABUFIMAGEMESAPROC>(
+                    eglGetProcAddress("eglExportDMABUFImageMESA"));
+
+                if (queryFn && exportFn) {
+                    EGLuint64KHR modifier = 0;
+                    if (queryFn(m_eglDpy, eglImg, &exportFourcc, &exportNfd, &modifier)) {
+                        if (exportFn(m_eglDpy, eglImg, exportFds, exportStrides, exportOffsets)) {
+                            dmabufOk = true;
+                        } else {
+                            IDK_LOG("client-qt", "dmabuf export failed (0x%x)\n", eglGetError());
+                        }
+                    } else {
+                        IDK_LOG("client-qt", "dmabuf query failed (0x%x)\n", eglGetError());
+                    }
+                } else {
+                    IDK_LOG("client-qt", "dmabuf functions not found\n");
+                }
+                eglDestroyImage(m_eglDpy, eglImg);
+            } else {
+                IDK_LOG("client-qt", "eglCreateImage failed (0x%x)\n", eglGetError());
+            }
+
+            if (!dmabufOk) {
+                glDeleteTextures(1, &exportTex);
+                exportTex = 0;
+            }
+        }
+
+        if (savedDpy != EGL_NO_DISPLAY) {
+            eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+        }
+
+        if (dmabufOk && exportNfd > 0) {
+            frame.type  = IDK_FRAME_TYPE_DMABUF;
+            frame.stride = static_cast<uint32_t>(exportStrides[0]);
+            frame.format = static_cast<uint32_t>(exportFourcc);
+            frame.nfd    = static_cast<uint8_t>(exportNfd);
+
+            int rc = idk_fs_send_dma_buf(exportFds, &frame);
+
+            for (int i = 0; i < exportNfd; i++) {
+                if (exportFds[i] >= 0) ::close(exportFds[i]);
+            }
+            glDeleteTextures(1, &exportTex);
+
+            if (rc == 0) {
+                IDK_LOG("client-qt", "frame sent OK (%dx%d type=DMABUF "
+                        "fourcc=0x%x stride=%d nfd=%d)\n",
+                        frame.width, frame.height, exportFourcc,
+                        exportStrides[0], exportNfd);
+                m_pending = true;
+                m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+                m_dmaBufFailed = false;
+                emit frameSent();
+                return;
+            }
+        }
+
+        /* DMABUF failed — fall through to SHM */
+        m_dmaBufFailed = true;
+        IDK_LOG("client-qt", "dmabuf failed, falling back to SHM\n");
+    }
+
+    /* ── SHM fallback ── */
+    frame.type = IDK_FRAME_TYPE_SHM;
+    frame.stride = 0;
+    frame.format = 0;
+    frame.nfd    = 1;
 
     static int s_consecutive_failures = 0;
 
@@ -209,7 +323,6 @@ void WebView::doRenderAndSend()
     IDK_LOG("client-qt", "frame sent OK (%dx%d type=SHM fd=%d)\n",
             frame.width, frame.height, m_memfd);
     emit frameSent();
-
 
     m_pending = true;
     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
@@ -279,7 +392,76 @@ void WebView::initMemory()
 
 void WebView::initDmaBuf()
 {
-    Q_UNUSED(this);
+    m_eglDpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (m_eglDpy == EGL_NO_DISPLAY) {
+        IDK_LOG("client-qt", "initDmaBuf: eglGetDisplay failed, dmabuf disabled\n");
+        m_useDmaBuf = false;
+        return;
+    }
+
+    EGLint major, minor;
+    if (!eglInitialize(m_eglDpy, &major, &minor)) {
+        IDK_LOG("client-qt", "initDmaBuf: eglInitialize failed, dmabuf disabled\n");
+        m_eglDpy = EGL_NO_DISPLAY;
+        m_useDmaBuf = false;
+        return;
+    }
+
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+        IDK_LOG("client-qt", "initDmaBuf: eglBindAPI failed, dmabuf disabled\n");
+        eglTerminate(m_eglDpy);
+        m_eglDpy = EGL_NO_DISPLAY;
+        m_useDmaBuf = false;
+        return;
+    }
+
+    static const EGLint config_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE
+    };
+    EGLConfig config;
+    EGLint ncfg;
+    if (!eglChooseConfig(m_eglDpy, config_attribs, &config, 1, &ncfg) || ncfg == 0) {
+        IDK_LOG("client-qt", "initDmaBuf: eglChooseConfig failed, dmabuf disabled\n");
+        eglTerminate(m_eglDpy);
+        m_eglDpy = EGL_NO_DISPLAY;
+        m_useDmaBuf = false;
+        return;
+    }
+
+    static const EGLint pbuf_attribs[] = {
+        EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE
+    };
+    m_eglSurf = eglCreatePbufferSurface(m_eglDpy, config, pbuf_attribs);
+    if (m_eglSurf == EGL_NO_SURFACE) {
+        IDK_LOG("client-qt", "initDmaBuf: eglCreatePbufferSurface failed, dmabuf disabled\n");
+        eglTerminate(m_eglDpy);
+        m_eglDpy = EGL_NO_DISPLAY;
+        m_useDmaBuf = false;
+        return;
+    }
+
+    static const EGLint ctx_attribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+    m_eglCtx = eglCreateContext(m_eglDpy, config, EGL_NO_CONTEXT, ctx_attribs);
+    if (m_eglCtx == EGL_NO_CONTEXT) {
+        IDK_LOG("client-qt", "initDmaBuf: eglCreateContext failed, dmabuf disabled\n");
+        eglDestroySurface(m_eglDpy, m_eglSurf);
+        m_eglSurf = EGL_NO_SURFACE;
+        eglTerminate(m_eglDpy);
+        m_eglDpy = EGL_NO_DISPLAY;
+        m_useDmaBuf = false;
+        return;
+    }
+
+    IDK_LOG("client-qt", "initDmaBuf: EGL context ready for dmabuf export\n");
 }
 
 void WebView::sendCreateImage()

@@ -17,6 +17,7 @@ pthread_lib = cc.find_library('pthread', required: true)
 dl_lib = cc.find_library('dl', required: true)
 
 egl_dep = cc.find_library('EGL', required: false)
+gl_dep = cc.find_library('OpenGL', required: false)
 vk_dep = cc.find_library('vulkan', required: false)
 
 syringe_proj = subproject('syringe')

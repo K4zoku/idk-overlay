@@ -2,6 +2,10 @@
 
 #include <QWebEngineView>
 
+#define EGL_NO_X11
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+
 #include "groupconfig.h"
 #include "manager.h"
 #include "rhi_texture_extractor.h"
@@ -51,15 +55,12 @@ private:
     bool m_pending = false;             // true if frame sent but no ACK yet
     int m_sendTime = 0;                 // timestamp of last send (ms, from QElapsedTimer)
 
-    // DMA-BUF state (Qt6 RHI)
+    // EGL state for DMA-BUF export
     bool m_useDmaBuf = true;
-    unsigned int m_fbo = 0;
-    quint64 m_format = 0;
-    int m_nfd = 0;
-    unsigned long m_modifier = 0;
-    int m_strides[4] = {};
-    int m_offsets[4] = {};
-    int m_dmabufs[4] = {};
+    bool m_dmaBufFailed = false;
+    EGLDisplay m_eglDpy = EGL_NO_DISPLAY;
+    EGLContext m_eglCtx = EGL_NO_CONTEXT;
+    EGLSurface m_eglSurf = EGL_NO_SURFACE;
 
     // Event filter for paint events (SHM mode)
     bool eventFilter(QObject *obj, QEvent *event) override;

@@ -26,7 +26,7 @@ if qt6_dep.found()
     idk_webview_exe = executable(
         'idk-webview',
         webview_files + idk_webview_moc,
-        dependencies: [qt6_dep, egl_dep, idk_fs_dep],
+        dependencies: [qt6_dep, egl_dep, gl_dep, idk_fs_dep],
         install: true,
     )
 endif
