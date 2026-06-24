@@ -533,6 +533,9 @@ bool WebView::ensureDmaBufSharedCtx()
         return true;
 
     EGLContext qtEglCtx = EGL_NO_CONTEXT;
+    EGLDisplay qtEglDpy = EGL_NO_DISPLAY;
+    EGLConfig qtEglConfig = nullptr;
+
     if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
         if (auto *window = qw->quickWindow()) {
             auto *rif = window->rendererInterface();
@@ -541,8 +544,10 @@ bool WebView::ensureDmaBufSharedCtx()
                     rif->getResource(window, QSGRendererInterface::OpenGLContextResource));
                 if (qtCtx) {
                     auto *eglIface = qtCtx->nativeInterface<QNativeInterface::QEGLContext>();
-                    if (eglIface)
+                    if (eglIface) {
                         qtEglCtx = eglIface->nativeContext();
+                        qtEglDpy = eglIface->display();
+                    }
                 }
             }
         }
@@ -550,6 +555,32 @@ bool WebView::ensureDmaBufSharedCtx()
 
     if (qtEglCtx == EGL_NO_CONTEXT)
         return false;
+
+    /* Query Qt's EGL config — we MUST use the same config to share contexts.
+     * EGL_BAD_MATCH (0x3006) happens when our config doesn't match Qt's. */
+    EGLint qtConfigId = 0;
+    if (qtEglDpy != EGL_NO_DISPLAY) {
+        eglQueryContext(qtEglDpy, qtEglCtx, EGL_CONFIG_ID, &qtConfigId);
+        if (qtConfigId > 0) {
+            EGLint cfg_attribs[] = { EGL_CONFIG_ID, qtConfigId, EGL_NONE };
+            EGLint ncfg = 0;
+            eglChooseConfig(qtEglDpy, cfg_attribs, &qtEglConfig, 1, &ncfg);
+            if (ncfg > 0 && qtEglConfig) {
+                /* Use Qt's display and config instead of ours */
+                m_eglDpy = qtEglDpy;
+                m_eglConfig = qtEglConfig;
+                /* Recreate pbuffer surface with Qt's config */
+                if (m_eglSurf != EGL_NO_SURFACE) {
+                    eglDestroySurface(m_eglDpy, m_eglSurf);
+                    m_eglSurf = EGL_NO_SURFACE;
+                }
+                static const EGLint pbuf_attribs[] = {
+                    EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE
+                };
+                m_eglSurf = eglCreatePbufferSurface(m_eglDpy, m_eglConfig, pbuf_attribs);
+            }
+        }
+    }
 
     /* Destroy old unshared context, create one shared with Qt */
     if (m_eglCtx != EGL_NO_CONTEXT)
@@ -562,12 +593,18 @@ bool WebView::ensureDmaBufSharedCtx()
     m_eglCtx = eglCreateContext(m_eglDpy, m_eglConfig, qtEglCtx, ctx_attribs);
     if (m_eglCtx == EGL_NO_CONTEXT) {
         EGLint err = eglGetError();
-        IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed (eglError=0x%x)\n", err);
+        static bool s_logged = false;
+        if (!s_logged) {
+            s_logged = true;
+            IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed (eglError=0x%x) — "
+                    "DMABUF disabled, using SHM fallback\n", err);
+        }
+        m_useDmaBuf = false;
         return false;
     }
 
     m_needSharedCtx = false;
-    IDK_LOG("webview-qt", "DMABUF context now shared with Qt\n");
+    IDK_LOG("webview-qt", "DMABUF context now shared with Qt (config_id=%d)\n", qtConfigId);
     return true;
 }
 
