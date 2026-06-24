@@ -1,20 +1,29 @@
 #pragma once
 
 #include <QWebEngineView>
+#include <QTimer>
 
 #define EGL_NO_X11
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
+class QSGRendererInterface;
+class QQuickWindow;
+
+#ifdef IDK_HAVE_VULKAN
+#include <vulkan/vulkan.h>
+#endif
+
 #include "groupconfig.h"
 #include "manager.h"
-#include "rhi_texture_extractor.h"
 
 /**
  * WebView — renders web content and sends frames to idk-overlay.
  *
- * Adapted from imgoverlay's WebView. Uses QWebEngineView to render web content,
- * then extracts DMA-BUF from Qt6 RHI and sends via idk_fs API.
+ * Two render paths:
+ *   1. Zero-copy DMABUF — exports Qt Quick's native GL texture as DMABUF fd
+ *      (requires EGL context sharing with Qt + Mesa/EXT export extensions).
+ *   2. SHM fallback — grabFramebuffer() → memcpy → send memfd.
  */
 class WebView : public QWebEngineView
 {
@@ -36,37 +45,71 @@ private slots:
     void sendCreateImage();
 
 private:
-    void initShm();
     void initMemory();
-    void doRenderAndSend();  // Render webview to SHM + send frame (called via QTimer)
+    void doRenderAndSend();
+    bool tryExportDMABuf();             // dispatcher — detects backend
+    bool tryExportDMABufOpenGL();
+    bool tryExportDMABufVulkan();
+    bool ensureDmaBufSharedCtx();
 
     void resizeForGame(int w, int h);
+    void initVulkan(QSGRendererInterface *rif, QQuickWindow *window);
 
-    uint8_t m_id;                       // Overlay ID
-    GroupConfig m_conf;                 // Overlay configuration
-    Manager *m_manager;                 // Parent manager (socket IPC)
-    int m_renderW = 0;                  // Effective render width (game size or config)
-    int m_renderH = 0;                  // Effective render height
+    uint8_t m_id;
+    GroupConfig m_conf;
+    Manager *m_manager;
+    int m_renderW = 0;
+    int m_renderH = 0;
 
-    // SHM state
-    int m_memfd = -1;                   // memfd for pixel data
+    // SHM state (fallback path)
+    int m_memfd = -1;
     size_t m_memsize = 0;
     void *m_memory = nullptr;
-    uint8_t m_buffer = 0;               // Double-buffer index
+    uint8_t m_buffer = 0;
     bool m_waitReply = false;
 
     // ACK flow control
-    bool m_pending = false;             // true if frame sent but no ACK yet
-    int m_sendTime = 0;                 // timestamp of last send (ms, from QElapsedTimer)
+    bool m_pending = false;
+    int m_sendTime = 0;
 
-    // EGL state for DMA-BUF export
+    // Resize transition guard — skip frame send after resize until paint event
+    bool m_resizePending = false;
+
+    // Re-entrance guard for resizeForGame — prevents nested calls via processEvents
+    bool m_resizing = false;
+
+
+
+    // EGL / DMABUF state
     bool m_useDmaBuf = true;
     bool m_dmaBufFailed = false;
+    bool m_needSharedCtx = true;
     EGLDisplay m_eglDpy = EGL_NO_DISPLAY;
+    EGLConfig  m_eglConfig = nullptr;
     EGLContext m_eglCtx = EGL_NO_CONTEXT;
     EGLSurface m_eglSurf = EGL_NO_SURFACE;
+    bool       m_dmabufResolved = false;
+    void     (*m_queryFn)(void);       // eglExportDMABUFImageQueryMESA/EXT (MESA-ext signature)
+    void     (*m_exportFn)(void);      // eglExportDMABUFImageMESA/EXT
 
-    // Event filter for paint events (SHM mode)
+    // Vulkan DMABUF export state
+#ifdef IDK_HAVE_VULKAN
+    struct {
+        VkDevice       device = VK_NULL_HANDLE;
+        VkPhysicalDevice physDev = VK_NULL_HANDLE;
+        VkInstance     instance = VK_NULL_HANDLE;
+        VkQueue        queue = VK_NULL_HANDLE;
+        uint32_t       queueFamily = 0;
+        VkCommandPool  cmdPool = VK_NULL_HANDLE;
+        bool           resolved = false;
+    } m_vk;
+    PFN_vkGetMemoryFdKHR m_vkGetMemoryFdKHR = nullptr;
+#endif
+
+    // Heartbeat timer to poll ACKs when Chromium stops generating paint events
+    QTimer *m_heartbeat = nullptr;
+
+    // Event filter for paint events
     bool eventFilter(QObject *obj, QEvent *event) override;
 };
 

@@ -2,21 +2,21 @@
 #include "manager.h"
 
 #include <QPaintEvent>
+#include <QApplication>
 #include <QVBoxLayout>
 #include <QDialog>
 #include <QMenu>
 #include <QDateTime>
 
 #include <QQuickWidget>
+#include <QQuickItem>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QWebEngineSettings>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
-#include <QOpenGLFramebufferObject>
 
-#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
-#include <QQuickRenderTarget>
-
-#endif
+#include <QtGui/private/qrhi_p.h>
 
 #define EGL_NO_X11
 #include <EGL/egl.h>
@@ -59,7 +59,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         connect(m_manager, &Manager::socketConnected, this, [this]() {
             /* Guard against double-init on reconnect — skip if already init'd */
             if (m_memory) {
-                IDK_LOG("client-qt", "Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
+                IDK_LOG("webview-qt", "Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
 
                 if (auto *fp = focusProxy()) {
                     fp->update();
@@ -93,6 +93,12 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         if (auto *fp = focusProxy()) fp->update();
     }
 
+    /* Heartbeat timer — keeps ACK polling alive when Chromium
+       stops generating paint events (e.g. after resize). */
+    m_heartbeat = new QTimer(this);
+    m_heartbeat->setTimerType(Qt::CoarseTimer);
+    connect(m_heartbeat, &QTimer::timeout, this, [this]() { doRenderAndSend(); });
+
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
         if (!ok || m_conf.url().isEmpty()) {
             return;
@@ -105,13 +111,14 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
 
 WebView::~WebView()
 {
-    RhiTextureExtractor::cleanup();
-
     if (m_eglCtx != EGL_NO_CONTEXT) {
         eglDestroyContext(m_eglDpy, m_eglCtx);
     }
     if (m_eglSurf != EGL_NO_SURFACE) {
         eglDestroySurface(m_eglDpy, m_eglSurf);
+    }
+    if (m_eglDpy != EGL_NO_DISPLAY) {
+        eglTerminate(m_eglDpy);
     }
 
     if (m_memory) {
@@ -137,6 +144,13 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
             return QWebEngineView::eventFilter(obj, event);
         }
 
+        /* Clear resize guard — Chromium has rendered a frame at the new size */
+        m_resizePending = false;
+
+        /* Start heartbeat to keep polling even if Chromium stops
+           generating paint events (e.g. after a resize). */
+        if (m_heartbeat && !m_heartbeat->isActive())
+            m_heartbeat->start(50);
 
         QTimer::singleShot(0, this, [this]() {
             doRenderAndSend();
@@ -170,20 +184,21 @@ void WebView::doRenderAndSend()
                 if (read(ack_fd, &ack_msg, sizeof(ack_msg)) > 0) {
                     m_pending = false;
                     if (ack_msg.ack == 1) {
-                        IDK_LOG("client-qt", "compositor rejected DMABUF, falling back to SHM\n");
+                        IDK_LOG("webview-qt", "compositor rejected DMABUF, falling back to SHM\n");
                         m_dmaBufFailed = true;
                     }
                     if (ack_msg.w > 0 && ack_msg.h > 0) {
-                        IDK_LOG("client-qt", "ACK received with game size: %dx%d\n",
+                        IDK_LOG("webview-qt", "ACK received with game size: %dx%d\n",
                                 ack_msg.w, ack_msg.h);
                         resizeForGame(ack_msg.w, ack_msg.h);
+                        m_resizePending = true;
                     }
                 }
             }
         }
         int now = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
         if (m_pending && (now - m_sendTime) > 100) {
-            IDK_LOG("client-qt", "ACK timeout (%dms) — force-unlock pending\n",
+            IDK_LOG("webview-qt", "ACK timeout (%dms) — force-unlock pending\n",
                     now - m_sendTime);
             m_pending = false;
         }
@@ -193,124 +208,46 @@ void WebView::doRenderAndSend()
         }
     }
 
+    /* After ACK with resize: skip frame send until Chromium
+       produces a new frame at the new size (next Paint event). */
+    if (m_resizePending) {
+        /* heartbeat keeps polling; paint event clears the flag */
+        return;
+    }
+
+    /* ── Try zero-copy DMABUF export (backend auto-detected) ── */
+    if (m_useDmaBuf && !m_dmaBufFailed) {
+        if (tryExportDMABuf())
+            return;     // sent zero-copy, pending
+        /* tryExportDMABuf() sets m_dmaBufFailed for permanent failures only;
+           transient failures (e.g. Qt context not ready) retry next cycle. */
+    }
+
+    /* ── SHM fallback: grabFramebuffer → memcpy → send ── */
+    if (!m_memory) {
+        QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
+        return;
+    }
 
     uint8_t buffer = m_buffer;
     m_buffer = (m_buffer + 1) % 2;
-    uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_renderW, m_renderH) * buffer);
-    QImage img(memory, m_renderW, m_renderH, QImage::Format_RGBA8888);
-    img.fill(Qt::transparent);
-    render(&img);
+    uchar *shm = (uchar*)m_memory + (PIXELS_SIZE(m_renderW, m_renderH) * buffer);
 
+    if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
+        QImage fb = qw->grabFramebuffer();
+        QImage rgba = fb.convertToFormat(QImage::Format_RGBA8888);
+        rgba = rgba.flipped(Qt::Vertical);  /* flip Y: QImage top-left → GL bottom-left */
+        memcpy(shm, rgba.constBits(), PIXELS_SIZE(m_renderW, m_renderH));
+    }
 
     idk_fs_frame_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.width   = static_cast<uint32_t>(m_renderW);
     frame.height  = static_cast<uint32_t>(m_renderH);
     frame.id      = buffer;
-    frame.visible = static_cast<uint8_t>(1);
+    frame.visible = 1;
     frame.nfd     = 1;
     frame.type    = IDK_FRAME_TYPE_SHM;
-
-    /* ── Try DMABUF export if available ── */
-    if (m_useDmaBuf && !m_dmaBufFailed && m_eglCtx != EGL_NO_CONTEXT) {
-        GLuint exportTex = 0;
-        int exportFds[4] = {-1, -1, -1, -1};
-        EGLint exportStrides[4] = {0};
-        EGLint exportOffsets[4] = {0};
-        int exportNfd = 0, exportFourcc = 0;
-        bool dmabufOk = false;
-
-        EGLDisplay savedDpy = eglGetCurrentDisplay();
-        EGLContext savedCtx = eglGetCurrentContext();
-        EGLSurface savedRead = eglGetCurrentSurface(EGL_READ);
-        EGLSurface savedDraw = eglGetCurrentSurface(EGL_DRAW);
-
-        if (eglMakeCurrent(m_eglDpy, m_eglSurf, m_eglSurf, m_eglCtx)) {
-            glGenTextures(1, &exportTex);
-            glBindTexture(GL_TEXTURE_2D, exportTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                         (GLsizei)m_conf.width(), (GLsizei)m_conf.height(), 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, memory);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glBindTexture(GL_TEXTURE_2D, 0);
-
-            EGLImageKHR eglImg = eglCreateImage(
-                m_eglDpy, m_eglCtx, EGL_GL_TEXTURE_2D,
-                reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(exportTex)),
-                nullptr);
-
-            if (eglImg) {
-                auto queryFn = reinterpret_cast<PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC>(
-                    eglGetProcAddress("eglExportDMABUFImageQueryMESA"));
-                auto exportFn = reinterpret_cast<PFNEGLEXPORTDMABUFIMAGEMESAPROC>(
-                    eglGetProcAddress("eglExportDMABUFImageMESA"));
-
-                if (queryFn && exportFn) {
-                    EGLuint64KHR modifier = 0;
-                    if (queryFn(m_eglDpy, eglImg, &exportFourcc, &exportNfd, &modifier)) {
-                        if (exportFn(m_eglDpy, eglImg, exportFds, exportStrides, exportOffsets)) {
-                            dmabufOk = true;
-                        } else {
-                            IDK_LOG("client-qt", "dmabuf export failed (0x%x)\n", eglGetError());
-                        }
-                    } else {
-                        IDK_LOG("client-qt", "dmabuf query failed (0x%x)\n", eglGetError());
-                    }
-                } else {
-                    IDK_LOG("client-qt", "dmabuf functions not found\n");
-                }
-                eglDestroyImage(m_eglDpy, eglImg);
-            } else {
-                IDK_LOG("client-qt", "eglCreateImage failed (0x%x)\n", eglGetError());
-            }
-
-            if (!dmabufOk) {
-                glDeleteTextures(1, &exportTex);
-                exportTex = 0;
-            }
-        }
-
-        if (savedDpy != EGL_NO_DISPLAY) {
-            eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
-        }
-
-        if (dmabufOk && exportNfd > 0) {
-            frame.type  = IDK_FRAME_TYPE_DMABUF;
-            frame.stride = static_cast<uint32_t>(exportStrides[0]);
-            frame.format = static_cast<uint32_t>(exportFourcc);
-            frame.nfd    = static_cast<uint8_t>(exportNfd);
-
-            int rc = idk_fs_send_dma_buf(exportFds, &frame);
-
-            for (int i = 0; i < exportNfd; i++) {
-                if (exportFds[i] >= 0) ::close(exportFds[i]);
-            }
-            glDeleteTextures(1, &exportTex);
-
-            if (rc == 0) {
-                IDK_LOG("client-qt", "frame sent OK (%dx%d type=DMABUF "
-                        "fourcc=0x%x stride=%d nfd=%d)\n",
-                        frame.width, frame.height, exportFourcc,
-                        exportStrides[0], exportNfd);
-                m_pending = true;
-                m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
-                m_dmaBufFailed = false;
-                emit frameSent();
-                return;
-            }
-        }
-
-        /* DMABUF failed — fall through to SHM */
-        m_dmaBufFailed = true;
-        IDK_LOG("client-qt", "dmabuf failed, falling back to SHM\n");
-    }
-
-    /* ── SHM fallback ── */
-    frame.type = IDK_FRAME_TYPE_SHM;
-    frame.stride = 0;
-    frame.format = 0;
-    frame.nfd    = 1;
 
     static int s_consecutive_failures = 0;
 
@@ -322,7 +259,7 @@ void WebView::doRenderAndSend()
                      s_consecutive_failures, strerror(errno));
         }
         if (s_consecutive_failures > 300) {
-            IDK_LOG("client-qt", "Too many consecutive send failures — "
+            IDK_LOG("webview-qt", "Too many consecutive send failures — "
                     "forcing disconnect\n");
             idk_fs_shutdown();
             s_consecutive_failures = 0;
@@ -332,26 +269,68 @@ void WebView::doRenderAndSend()
     }
     s_consecutive_failures = 0;
 
-    IDK_LOG("client-qt", "frame sent OK (%dx%d type=SHM fd=%d)\n",
+    IDK_LOG("webview-qt", "frame sent OK (%dx%d type=SHM fd=%d)\n",
             frame.width, frame.height, m_memfd);
     emit frameSent();
 
     m_pending = true;
     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+
+    /* Keep heartbeat alive while waiting for ACK */
+    if (m_heartbeat && !m_heartbeat->isActive())
+        m_heartbeat->start(50);
 }
 
 void WebView::resizeForGame(int w, int h)
 {
     if (w == m_renderW && h == m_renderH) return;
+    if (m_resizing) {
+        IDK_LOG("webview-qt", "game resize: %dx%d (re-entered, skipped)\n", w, h);
+        return;
+    }
+    m_resizing = true;
 
-    IDK_LOG("client-qt", "game resize: %dx%d -> %dx%d\n",
+    IDK_LOG("webview-qt", "game resize: %dx%d -> %dx%d\n",
             m_renderW, m_renderH, w, h);
 
     setMinimumSize(w, h);
     setMaximumSize(w, h);
     resize(w, h);
 
-    /* Re-allocate SHM memory for new size */
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    /* Toggle the RenderWidgetHostViewQtDelegateItem (QQuickItem) visibility
+       to trigger notifyHidden() → notifyShown() on RenderWidgetHostViewQt.
+       This is the actual mechanism that:
+       - Evicts the old frame and detaches the DelegatedFrameHost (notifyHidden)
+       - Re-attaches the DelegatedFrameHost and requests a new frame from the
+         renderer at the current viewport size (notifyShown)
+       page()->setVisible() only toggles WebContents visibility which does NOT
+       trigger the delegate item's ItemVisibleHasChanged event, so it doesn't
+       actually re-attach the DelegatedFrameHost. */
+    if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
+        if (QQuickItem *root = qw->rootObject()) {
+            for (auto *child : root->childItems()) {
+                child->setVisible(false);
+                child->setVisible(true);
+            }
+        }
+    }
+
+    /* Reuse existing SHM if current allocation is large enough */
+    size_t needed = PIXELS_SIZE(w, h) * 2;
+    if (m_memsize >= needed) {
+        m_renderW = w;
+        m_renderH = h;
+        m_buffer = 0;
+        m_pending = false;
+        m_dmaBufFailed = false;
+        if (m_heartbeat) m_heartbeat->start(50);
+        if (auto *fp = focusProxy()) fp->update();
+        m_resizing = false;
+        return;
+    }
+
     if (m_memory) {
         munmap(m_memory, m_memsize);
         m_memory = nullptr;
@@ -367,7 +346,14 @@ void WebView::resizeForGame(int w, int h)
 
     initMemory();
     m_pending = false;
-    QTimer::singleShot(0, this, [this]() { doRenderAndSend(); });
+    m_dmaBufFailed = false;
+
+    /* Restart heartbeat to poll ACKs/resume frame delivery after resize */
+    if (m_heartbeat) m_heartbeat->start(50);
+
+    if (auto *fp = focusProxy()) fp->update();
+
+    m_resizing = false;
 }
 
 void WebView::contextMenuEvent(QContextMenuEvent *event)
@@ -436,21 +422,21 @@ void WebView::initDmaBuf()
 {
     m_eglDpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (m_eglDpy == EGL_NO_DISPLAY) {
-        IDK_LOG("client-qt", "initDmaBuf: eglGetDisplay failed, dmabuf disabled\n");
+        IDK_LOG("webview-qt", "initDmaBuf: eglGetDisplay failed\n");
         m_useDmaBuf = false;
         return;
     }
 
     EGLint major, minor;
     if (!eglInitialize(m_eglDpy, &major, &minor)) {
-        IDK_LOG("client-qt", "initDmaBuf: eglInitialize failed, dmabuf disabled\n");
+        IDK_LOG("webview-qt", "initDmaBuf: eglInitialize failed\n");
         m_eglDpy = EGL_NO_DISPLAY;
         m_useDmaBuf = false;
         return;
     }
 
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-        IDK_LOG("client-qt", "initDmaBuf: eglBindAPI failed, dmabuf disabled\n");
+        IDK_LOG("webview-qt", "initDmaBuf: eglBindAPI failed\n");
         eglTerminate(m_eglDpy);
         m_eglDpy = EGL_NO_DISPLAY;
         m_useDmaBuf = false;
@@ -469,32 +455,35 @@ void WebView::initDmaBuf()
     EGLConfig config;
     EGLint ncfg;
     if (!eglChooseConfig(m_eglDpy, config_attribs, &config, 1, &ncfg) || ncfg == 0) {
-        IDK_LOG("client-qt", "initDmaBuf: eglChooseConfig failed, dmabuf disabled\n");
+        IDK_LOG("webview-qt", "initDmaBuf: eglChooseConfig failed\n");
         eglTerminate(m_eglDpy);
         m_eglDpy = EGL_NO_DISPLAY;
         m_useDmaBuf = false;
         return;
     }
+    m_eglConfig = config;
 
     static const EGLint pbuf_attribs[] = {
         EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE
     };
     m_eglSurf = eglCreatePbufferSurface(m_eglDpy, config, pbuf_attribs);
     if (m_eglSurf == EGL_NO_SURFACE) {
-        IDK_LOG("client-qt", "initDmaBuf: eglCreatePbufferSurface failed, dmabuf disabled\n");
+        IDK_LOG("webview-qt", "initDmaBuf: eglCreatePbufferSurface failed\n");
         eglTerminate(m_eglDpy);
         m_eglDpy = EGL_NO_DISPLAY;
         m_useDmaBuf = false;
         return;
     }
 
+    /* Create our EGL context. Start unshared; will share with Qt lazily
+       when its OpenGL context becomes available. */
     static const EGLint ctx_attribs[] = {
         EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
     };
     m_eglCtx = eglCreateContext(m_eglDpy, config, EGL_NO_CONTEXT, ctx_attribs);
     if (m_eglCtx == EGL_NO_CONTEXT) {
-        IDK_LOG("client-qt", "initDmaBuf: eglCreateContext failed, dmabuf disabled\n");
+        IDK_LOG("webview-qt", "initDmaBuf: eglCreateContext failed\n");
         eglDestroySurface(m_eglDpy, m_eglSurf);
         m_eglSurf = EGL_NO_SURFACE;
         eglTerminate(m_eglDpy);
@@ -502,13 +491,481 @@ void WebView::initDmaBuf()
         m_useDmaBuf = false;
         return;
     }
+    m_needSharedCtx = true;
 
-    IDK_LOG("client-qt", "initDmaBuf: EGL context ready for dmabuf export\n");
+    /* Opportunistically share with Qt's context now (may not be ready yet) */
+    ensureDmaBufSharedCtx();
+
+    /* Resolve DMABUF export entry points — try MESA then EXT */
+    m_queryFn  = eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+    m_exportFn = eglGetProcAddress("eglExportDMABUFImageMESA");
+    if (!m_queryFn || !m_exportFn) {
+        m_queryFn  = eglGetProcAddress("eglExportDMABUFImageQueryEXT");
+        m_exportFn = eglGetProcAddress("eglExportDMABUFImageEXT");
+    }
+    m_dmabufResolved = (m_queryFn && m_exportFn);
+
+    if (!m_needSharedCtx && m_dmabufResolved)
+        IDK_LOG("webview-qt", "Zero-copy DMABUF ready (shared ctx)\n");
+    else
+        IDK_LOG("webview-qt", "DMABUF deferred (%s%s)\n",
+                m_needSharedCtx ? "no Qt ctx yet" : "",
+                !m_dmabufResolved ? "no export funcs" : "");
+}
+
+/* ── Lazily create EGL context shared with Qt's Quick window OpenGL context ── */
+bool WebView::ensureDmaBufSharedCtx()
+{
+    if (!m_needSharedCtx)
+        return true;
+
+    EGLContext qtEglCtx = EGL_NO_CONTEXT;
+    if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
+        if (auto *window = qw->quickWindow()) {
+            auto *rif = window->rendererInterface();
+            if (rif) {
+                auto *qtCtx = static_cast<QOpenGLContext *>(
+                    rif->getResource(window, QSGRendererInterface::OpenGLContextResource));
+                if (qtCtx) {
+                    auto *eglIface = qtCtx->nativeInterface<QNativeInterface::QEGLContext>();
+                    if (eglIface)
+                        qtEglCtx = eglIface->nativeContext();
+                }
+            }
+        }
+    }
+
+    if (qtEglCtx == EGL_NO_CONTEXT)
+        return false;
+
+    /* Destroy old unshared context, create one shared with Qt */
+    if (m_eglCtx != EGL_NO_CONTEXT)
+        eglDestroyContext(m_eglDpy, m_eglCtx);
+
+    static const EGLint ctx_attribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+    m_eglCtx = eglCreateContext(m_eglDpy, m_eglConfig, qtEglCtx, ctx_attribs);
+    if (m_eglCtx == EGL_NO_CONTEXT) {
+        IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed\n");
+        m_useDmaBuf = false;
+        return false;
+    }
+
+    m_needSharedCtx = false;
+    IDK_LOG("webview-qt", "DMABUF context now shared with Qt\n");
+    return true;
+}
+
+// ── DMABUF dispatcher — detects RHI backend and dispatches ──
+bool WebView::tryExportDMABuf()
+{
+    QQuickWidget *qw = qobject_cast<QQuickWidget *>(focusProxy());
+    if (!qw) return false;
+    QQuickWindow *window = qw->quickWindow();
+    if (!window) return false;
+    auto *rif = window->rendererInterface();
+    if (!rif) return false;
+
+    auto api = rif->graphicsApi();
+    switch (api) {
+    case QSGRendererInterface::OpenGL:
+        return tryExportDMABufOpenGL();
+#ifdef IDK_HAVE_VULKAN
+    case QSGRendererInterface::Vulkan:
+        return tryExportDMABufVulkan();
+#endif
+    default:
+        m_dmaBufFailed = true;
+        return false;
+    }
+}
+
+// ── OpenGL DMABUF export ──
+bool WebView::tryExportDMABufOpenGL()
+{
+    /* Lazy shared-context init — Qt's GL context may not be ready at init time */
+    if (m_needSharedCtx && !ensureDmaBufSharedCtx())
+        return false;
+
+    QQuickWidget *qw = qobject_cast<QQuickWidget *>(focusProxy());
+    if (!qw) return false;
+    QQuickWindow *window = qw->quickWindow();
+    if (!window) return false;
+
+    auto *rif = window->rendererInterface();
+    if (!rif) return false;
+
+    /* Get the redirect render target → its color attachment texture */
+    auto *rhiRt = reinterpret_cast<QRhiTextureRenderTarget *>(
+        rif->getResource(window, QSGRendererInterface::RhiRedirectRenderTarget));
+    if (!rhiRt) {
+        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: RhiRedirectRenderTarget null\n");
+        m_dmaBufFailed = true;
+        return false;
+    }
+
+    auto desc = rhiRt->description();
+    if (desc.colorAttachmentCount() == 0) return false;
+    const QRhiColorAttachment *ca = desc.colorAttachmentAt(0);
+    if (!ca || !ca->texture()) return false;
+
+    QRhiTexture::NativeTexture native = ca->texture()->nativeTexture();
+    GLuint texId = static_cast<GLuint>(native.object);
+    if (!texId) return false;
+
+    /* Save & restore the caller's EGL context */
+    EGLDisplay savedDpy = eglGetCurrentDisplay();
+    EGLContext savedCtx = eglGetCurrentContext();
+    EGLSurface savedRead = eglGetCurrentSurface(EGL_READ);
+    EGLSurface savedDraw = eglGetCurrentSurface(EGL_DRAW);
+
+    bool ok = false;
+
+    /* Make our shared context current; the texture belongs to Qt's context
+       but is accessible through our shared context's namespace. */
+    if (eglMakeCurrent(m_eglDpy, m_eglSurf, m_eglSurf, m_eglCtx)) {
+        glBindTexture(GL_TEXTURE_2D, texId);
+
+        EGLImageKHR eglImg = eglCreateImage(
+            m_eglDpy, m_eglCtx, EGL_GL_TEXTURE_2D,
+            reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(texId)),
+            nullptr);
+
+        if (eglImg) {
+            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage OK\n");
+            EGLint fourcc = 0, nfd = 0;
+            EGLuint64KHR modifier = 0;
+            int fds[4] = {-1, -1, -1, -1};
+            EGLint strides[4] = {0};
+            EGLint offsets[4] = {0};
+
+            auto qFn = reinterpret_cast<EGLBoolean (EGLAPIENTRY *)(EGLDisplay, EGLImageKHR, EGLint *, EGLint *, EGLuint64KHR *)>(m_queryFn);
+            auto eFn = reinterpret_cast<EGLBoolean (EGLAPIENTRY *)(EGLDisplay, EGLImageKHR, EGLint *, EGLint *, EGLint *)>(m_exportFn);
+
+            if (qFn && eFn &&
+                qFn(m_eglDpy, eglImg, &fourcc, &nfd, &modifier) &&
+                eFn(m_eglDpy, eglImg, fds, strides, offsets))
+            {
+                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query OK (fourcc=0x%x nfd=%d)\n", fourcc, nfd);
+                idk_fs_frame_t frame;
+                memset(&frame, 0, sizeof(frame));
+                frame.width   = static_cast<uint32_t>(m_renderW);
+                frame.height  = static_cast<uint32_t>(m_renderH);
+                frame.id      = m_buffer;
+                frame.visible = 1;
+                frame.nfd     = static_cast<uint8_t>(nfd);
+                frame.type    = IDK_FRAME_TYPE_DMABUF;
+                frame.stride  = static_cast<uint32_t>(strides[0]);
+                frame.format  = static_cast<uint32_t>(fourcc);
+
+                int rc = idk_fs_send_dma_buf(fds, &frame);
+                for (int i = 0; i < nfd && i < 4; i++)
+                    if (fds[i] >= 0) ::close(fds[i]);
+
+                if (rc == 0) {
+                    m_buffer = (m_buffer + 1) % 2;
+                    m_pending = true;
+                    m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+                    emit frameSent();
+                    ok = true;
+                } else {
+                    IDK_LOG("webview-qt", "tryExportDMABufOpenGL: idk_fs_send_dma_buf failed rc=%d\n", rc);
+                }
+            } else {
+                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query/export call failed\n");
+            }
+            eglDestroyImage(m_eglDpy, eglImg);
+        } else {
+            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage failed\n");
+        }
+    }
+
+    if (savedDpy != EGL_NO_DISPLAY)
+        eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+
+    return ok;
+}
+
+// ── Vulkan DMABUF export — staged buffer copy ──
+bool WebView::tryExportDMABufVulkan()
+{
+#ifdef IDK_HAVE_VULKAN
+    if (!m_vk.resolved) {
+        QQuickWindow *window = qobject_cast<QQuickWidget *>(focusProxy())->quickWindow();
+        auto *rif = window->rendererInterface();
+        initVulkan(rif, window);
+        if (!m_vk.resolved) return false;
+    }
+
+    QQuickWidget *qw = qobject_cast<QQuickWidget *>(focusProxy());
+    if (!qw) return false;
+    QQuickWindow *window = qw->quickWindow();
+    if (!window) return false;
+    auto *rif = window->rendererInterface();
+    if (!rif) return false;
+
+    auto *rhiRt = reinterpret_cast<QRhiTextureRenderTarget *>(
+        rif->getResource(window, QSGRendererInterface::RhiRedirectRenderTarget));
+    if (!rhiRt) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: RhiRedirectRenderTarget null\n");
+        return false;
+    }
+
+    auto desc = rhiRt->description();
+    if (desc.colorAttachmentCount() == 0) return false;
+    const QRhiColorAttachment *ca = desc.colorAttachmentAt(0);
+    if (!ca || !ca->texture()) return false;
+
+    QRhiTexture::NativeTexture native = ca->texture()->nativeTexture();
+    VkImage image = reinterpret_cast<VkImage>(static_cast<uintptr_t>(native.object));
+    VkImageLayout currentLayout = static_cast<VkImageLayout>(native.layout);
+    if (!image) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: native VkImage is null\n");
+        return false;
+    }
+
+    VkDevice dev = m_vk.device;
+    QSize texSize = ca->texture()->pixelSize();
+    uint32_t w = static_cast<uint32_t>(texSize.width());
+    uint32_t h = static_cast<uint32_t>(texSize.height());
+    VkDeviceSize bufSize = w * h * 4;
+
+    // Create staging buffer with exportable DMABUF memory
+    VkBufferCreateInfo bufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bufInfo.size = bufSize;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    if (vkCreateBuffer(dev, &bufInfo, nullptr, &buffer) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkCreateBuffer failed\n");
+        return false;
+    }
+
+    VkMemoryRequirements memReqs;
+    vkGetBufferMemoryRequirements(dev, buffer, &memReqs);
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(m_vk.physDev, &memProps);
+
+    uint32_t memTypeIdx = UINT32_MAX;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if (!(memReqs.memoryTypeBits & (1u << i))) continue;
+        if (!(memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            continue;
+        memTypeIdx = i;
+        break;
+    }
+    if (memTypeIdx == UINT32_MAX) {
+        vkDestroyBuffer(dev, buffer, nullptr);
+        return false;
+    }
+
+    VkExportMemoryAllocateInfo exportInfo = { VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO };
+    exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    allocInfo.pNext = &exportInfo;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = memTypeIdx;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (vkAllocateMemory(dev, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkAllocateMemory failed (size=%llu)\n",
+                (unsigned long long)bufSize);
+        vkDestroyBuffer(dev, buffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(dev, buffer, memory, 0);
+
+    // One-shot command buffer
+    VkCommandBufferAllocateInfo cmdAI = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cmdAI.commandPool = m_vk.cmdPool;
+    cmdAI.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAI.commandBufferCount = 1;
+
+    VkCommandBuffer cmdBuf = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(dev, &cmdAI, &cmdBuf) != VK_SUCCESS) {
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmdBuf, &beginInfo);
+
+    // Transition image: current → TRANSFER_SRC_OPTIMAL
+    VkImageMemoryBarrier toTransfer = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    toTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toTransfer.oldLayout = currentLayout;
+    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toTransfer.image = image;
+    toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransfer.subresourceRange.levelCount = 1;
+    toTransfer.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+    // Copy VkImage → VkBuffer
+    VkBufferImageCopy copyRegion = {};
+    copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.imageSubresource.layerCount = 1;
+    copyRegion.imageExtent.width = w;
+    copyRegion.imageExtent.height = h;
+    copyRegion.imageExtent.depth = 1;
+
+    vkCmdCopyImageToBuffer(cmdBuf, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copyRegion);
+
+    // Transition back to original layout
+    VkImageMemoryBarrier back = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    back.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    back.newLayout = currentLayout;
+    back.image = image;
+    back.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    back.subresourceRange.levelCount = 1;
+    back.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &back);
+
+    vkEndCommandBuffer(cmdBuf);
+
+    // Submit and wait
+    VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkFence fence = VK_NULL_HANDLE;
+    if (vkCreateFence(dev, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(dev, m_vk.cmdPool, 1, &cmdBuf);
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
+
+    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuf;
+
+    if (vkQueueSubmit(m_vk.queue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkQueueSubmit failed\n");
+        vkDestroyFence(dev, fence, nullptr);
+        vkFreeCommandBuffers(dev, m_vk.cmdPool, 1, &cmdBuf);
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
+
+    vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(dev, fence, nullptr);
+    vkFreeCommandBuffers(dev, m_vk.cmdPool, 1, &cmdBuf);
+
+    // Export DMABUF fd
+    if (!m_vkGetMemoryFdKHR) {
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
+
+    VkMemoryGetFdInfoKHR fdInfo = { VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
+    fdInfo.memory = memory;
+    fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    int dmabufFd = -1;
+    if (m_vkGetMemoryFdKHR(dev, &fdInfo, &dmabufFd) != VK_SUCCESS || dmabufFd < 0) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkGetMemoryFdKHR failed\n");
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
+
+    // Send via existing frame protocol
+    idk_fs_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.width   = w;
+    frame.height  = h;
+    frame.id      = m_buffer;
+    frame.visible = 1;
+    frame.nfd     = 1;
+    frame.type    = IDK_FRAME_TYPE_DMABUF;
+    frame.stride  = w * 4;
+    frame.format  = 0x34324742; // DRM_FORMAT_BGRA8888 (Qt default for Vulkan)
+
+    int fds[4] = {dmabufFd, -1, -1, -1};
+    int rc = idk_fs_send_dma_buf(fds, &frame);
+    close(dmabufFd);
+
+    vkDestroyBuffer(dev, buffer, nullptr);
+    vkFreeMemory(dev, memory, nullptr);
+
+    if (rc == 0) {
+        m_buffer = (m_buffer + 1) % 2;
+        m_pending = true;
+        m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+        emit frameSent();
+        return true;
+    }
+#endif
+    return false;
+}
+
+// ── Lazy Vulkan resource initialization ──
+void WebView::initVulkan(QSGRendererInterface *rif, QQuickWindow *window)
+{
+    (void)rif; (void)window;
+#ifdef IDK_HAVE_VULKAN
+    if (m_vk.resolved) return;
+
+    m_vk.instance = static_cast<VkInstance>(
+        rif->getResource(window, QSGRendererInterface::VulkanInstanceResource));
+    m_vk.physDev = static_cast<VkPhysicalDevice>(
+        rif->getResource(window, QSGRendererInterface::PhysicalDeviceResource));
+    m_vk.device = static_cast<VkDevice>(
+        rif->getResource(window, QSGRendererInterface::DeviceResource));
+    m_vk.queue = static_cast<VkQueue>(
+        rif->getResource(window, QSGRendererInterface::CommandQueueResource));
+
+    if (auto *qf = static_cast<uint32_t *>(
+            rif->getResource(window, QSGRendererInterface::GraphicsQueueFamilyIndexResource)))
+        m_vk.queueFamily = *qf;
+
+    if (!m_vk.device || !m_vk.physDev || !m_vk.queue) {
+        IDK_LOG("webview-qt", "Vulkan init: device/physDev/queue not available\n");
+        return;
+    }
+
+    // Resolve vkGetMemoryFdKHR via device extension
+    m_vkGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
+        vkGetDeviceProcAddr(m_vk.device, "vkGetMemoryFdKHR"));
+    if (!m_vkGetMemoryFdKHR) {
+        IDK_LOG("webview-qt", "Vulkan init: vkGetMemoryFdKHR not found\n");
+        return;
+    }
+
+    VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    poolInfo.queueFamilyIndex = m_vk.queueFamily;
+    if (vkCreateCommandPool(m_vk.device, &poolInfo, nullptr, &m_vk.cmdPool) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "Vulkan init: vkCreateCommandPool failed\n");
+        return;
+    }
+
+    m_vk.resolved = true;
+    IDK_LOG("webview-qt", "Vulkan DMABUF ready (dev=%p)\n", (void *)m_vk.device);
+#endif
 }
 
 void WebView::sendCreateImage()
 {
-    IDK_LOG("client-qt", "Overlay %u ready: %dx%d@(%d,%d)\n",
+    IDK_LOG("webview-qt", "Overlay %u ready: %dx%d@(%d,%d)\n",
             m_id, m_conf.width(), m_conf.height(), m_conf.x(), m_conf.y());
 }
 

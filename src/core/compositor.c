@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "gl/gl_loader.h"        /* GL types + function pointer redirects */
 #include "gl/shader_loader.h"    /* shader compile + SPIR-V fallback */
@@ -109,6 +110,8 @@ static GLuint g_program = 0;
 
 /* Double-buffered textures */
 static GLuint g_tex[2] = {0, 0};
+static int    g_tex_w[2] = {0, 0};
+static int    g_tex_h[2] = {0, 0};
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static bool g_has_frame = false;
 
@@ -130,6 +133,7 @@ static uint32_t g_frame_h = 0;
 static int g_game_w = 0;
 static int g_game_h = 0;
 static bool g_size_pending = false;
+static struct timespec g_last_frame_ts = {0};
 
 void idk_compositor_notify_resize(int w, int h) {
     if (w < 1 || h < 1) return;
@@ -311,6 +315,14 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &last_unpack_align);
 
     int back = 1 - g_tex_idx;
+
+    /* If dimensions changed, delete old texture and reallocate via glTexImage2D */
+    bool size_changed = (GLsizei)w != g_tex_w[back] || (GLsizei)h != g_tex_h[back];
+    if (size_changed && g_tex[back] != 0) {
+        glDeleteTextures(1, &g_tex[back]);
+        g_tex[back] = 0;
+    }
+
     if (g_tex[back] == 0) {
         glGenTextures(1, &g_tex[back]);
         glBindTexture(GL_TEXTURE_2D, g_tex[back]);
@@ -324,6 +336,8 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        g_tex_w[back] = (GLsizei)w;
+        g_tex_h[back] = (GLsizei)h;
     } else {
         glBindTexture(GL_TEXTURE_2D, g_tex[back]);
         if (idk_fn_glPixelStorei) {
@@ -414,6 +428,7 @@ int idk_compositor_render(void) {
             g_frame_w = hdr.width;
             g_frame_h = hdr.height;
             processed = 1;
+            clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
             tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                          hdr.stride, hdr.format);
@@ -433,6 +448,7 @@ int idk_compositor_render(void) {
                 g_frame_w = hdr.width;
                 g_frame_h = hdr.height;
                 processed = 1;
+                clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
             }
         }
     }
@@ -601,6 +617,19 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                 return;
             }
             IDK_LOG("comp", "shader re-init OK, new g_program=%u\n", g_program);
+        }
+    }
+
+    /* Global stale frame timeout — clear overlay if no frame for 1s
+       (handles webview crash, driver crash, resize hang, etc.) */
+    if (g_has_frame) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (now.tv_sec - g_last_frame_ts.tv_sec)
+                       + (now.tv_nsec - g_last_frame_ts.tv_nsec) / 1e9;
+        if (elapsed > 1.0) {
+            IDK_LOG("comp", "stale frame cleared (%.0fms since last frame)\n", elapsed * 1000);
+            g_has_frame = false;
         }
     }
 

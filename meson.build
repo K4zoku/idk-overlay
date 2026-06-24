@@ -36,6 +36,10 @@ fs_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2']
 inc = include_directories('include')
 
 vk_found = cc.has_function('vkCreateInstance', prefix: '#include <vulkan/vulkan.h>')
+if vk_found
+    add_project_arguments('-DIDK_HAVE_VULKAN', language: 'c')
+    add_project_arguments('-DIDK_HAVE_VULKAN', language: 'cpp')
+endif
 
 # ── Subprojects ────────────────────────────────────────────────────────
 
