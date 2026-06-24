@@ -40,12 +40,13 @@
 
 #define PIXELS_SIZE(w, h)  ((w) * (h) * 4)
 
-WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget *parent)
+WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noDmaBuf, QWidget *parent)
     : QWebEngineView(parent)
     , m_id(id)
     , m_conf(conf)
     , m_manager(manager)
 {
+    if (noDmaBuf) m_useDmaBuf = false;
     setPage(new WebPage);
     settings()->setAttribute(QWebEngineSettings::PlaybackRequiresUserGesture, false);
     m_renderW = m_conf.width();

@@ -31,6 +31,7 @@ public:
     explicit Manager(const QString &confFile,
                      const QString &socketPath,
                      bool tray,
+                     bool noDmaBuf = false,
                      QObject *parent = nullptr);
     ~Manager();
 
@@ -60,6 +61,7 @@ private:
     QTimer *m_reconnectTimer;
     int m_disconnect_count = 0;  // throttle disconnect log spam
     bool m_was_connected = false; // track idk_fs fd state transitions
+    bool m_noDmaBuf = false;     // force SHM mode
     InputReceiver *m_inputRx = nullptr;
     QTimer *m_inputRetryTimer = nullptr;
 

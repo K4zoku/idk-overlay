@@ -30,7 +30,7 @@ class WebView : public QWebEngineView
     Q_OBJECT
 
 public:
-    WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget *parent = nullptr);
+    WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noDmaBuf = false, QWidget *parent = nullptr);
     ~WebView();
 
 signals:

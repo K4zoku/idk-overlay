@@ -456,6 +456,8 @@ int idk_compositor_render(void) {
                 g_tex[back] = tex;
                 g_tex_idx = back;
                 g_has_frame = true;
+                /* DMABUF from Qt RHI is always premultiplied alpha */
+                g_frame_premultiplied = true;
                 g_draw_err_count = 0;
                 close(dmabuf_fd);
                 g_frame_w = hdr.width;

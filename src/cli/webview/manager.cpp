@@ -17,8 +17,10 @@
 Manager::Manager(const QString &confFile,
                  const QString &cliSocketPath,
                  bool tray,
+                 bool noDmaBuf,
                  QObject *parent)
     : QObject(parent)
+    , m_noDmaBuf(noDmaBuf)
     , m_settings(new QSettings(
         confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-webview.conf") : confFile,
         QSettings::IniFormat, this))
@@ -205,7 +207,7 @@ void Manager::initWebViews()
             qWarning() << "Invalid config" << group;
             continue;
         }
-        WebView *view = new WebView(i++, conf, this);
+        WebView *view = new WebView(i++, conf, this, m_noDmaBuf);
         view->setParent(m_container);
         view->show();
         m_views.append(view);
