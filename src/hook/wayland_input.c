@@ -992,6 +992,8 @@ static struct wl_proxy *g_intercepted_proxies[MAX_INTERCEPTED];
 static int g_intercepted_count = 0;
 static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static __thread int g_in_dispatch = 0;
+
 static int is_already_intercepted(struct wl_proxy *proxy) {
     for (int i = 0; i < g_intercepted_count; i++) {
         if (g_intercepted_proxies[i] == proxy) return 1;
@@ -1008,6 +1010,10 @@ static void mark_intercepted(struct wl_proxy *proxy) {
 static void scan_and_intercept_input_proxies(struct wl_display *display) {
     if (!real_wl_proxy_get_class || !real_wl_proxy_get_version) return;
 
+    if (g_in_dispatch) {
+        return;
+    }
+
     pthread_mutex_lock(&g_scan_mutex);
 
     struct wl_proxy *display_proxy = (struct wl_proxy *)display;
@@ -1021,9 +1027,16 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
     struct wl_list *item = head->next;
 
     int found = 0;
-    while (item != head && found < MAX_INTERCEPTED) {
+    unsigned int iterations = 0;
+    while (item != head && iterations < (MAX_INTERCEPTED * 4) && found < MAX_INTERCEPTED) {
+        iterations++;
         struct wl_proxy *proxy = (struct wl_proxy *)((char *)item - WL_PROXY_QUEUE_LINK_OFFSET);
-        item = item->next;
+        struct wl_list *next = item->next;
+        if (next == NULL || next == head || next == item) {
+            WERR("proxy list corrupted at iteration %u, aborting scan", iterations);
+            break;
+        }
+        item = next;
 
         const char *cls = real_wl_proxy_get_class(proxy);
         if (!cls) continue;
@@ -1640,13 +1653,17 @@ static int hook_wl_display_dispatch_queue_pending(struct wl_display *display,
 
     scan_and_intercept_input_proxies(display);
 
+    g_in_dispatch = 1;
+    int ret;
     if (orig_wl_display_dispatch_queue_pending) {
-        return orig_wl_display_dispatch_queue_pending(display, queue);
+        ret = orig_wl_display_dispatch_queue_pending(display, queue);
+    } else if (real_wl_display_dispatch_queue_pending) {
+        ret = real_wl_display_dispatch_queue_pending(display, queue);
+    } else {
+        ret = -1;
     }
-    if (real_wl_display_dispatch_queue_pending) {
-        return real_wl_display_dispatch_queue_pending(display, queue);
-    }
-    return -1;
+    g_in_dispatch = 0;
+    return ret;
 }
 
 /* Track game cursor state via set_cursor interception */
