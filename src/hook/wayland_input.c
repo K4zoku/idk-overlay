@@ -1467,7 +1467,7 @@ static void sidecar_seat_capabilities(void *d, struct wl_seat *seat, uint32_t ca
 }
 
 static void sidecar_seat_name(void *d, struct wl_seat *seat, const char *name) {
-    (void)d; (void)seat;
+    (void)d; (void)seat; (void)name;
 
 }
 

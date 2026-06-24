@@ -35,10 +35,20 @@ fs_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2']
 
 inc = include_directories('include')
 
-vk_found = cc.has_function('vkCreateInstance', prefix: '#include <vulkan/vulkan.h>')
-if vk_found
-    add_project_arguments('-DIDK_HAVE_VULKAN', language: 'c')
-    add_project_arguments('-DIDK_HAVE_VULKAN', language: 'cpp')
+vk_header_found = cc.has_header('vulkan/vulkan.h')
+if vk_header_found
+    vk_test = cc.links(
+        '''
+        #include <vulkan/vulkan.h>
+        int main(void) { VkInstance inst; vkCreateInstance(NULL, NULL, &inst); return 0; }
+        ''',
+        name: 'vkCreateInstance',
+        dependencies: [vk_dep],
+    )
+    if vk_test
+        add_project_arguments('-DIDK_HAVE_VULKAN', language: 'c')
+        add_project_arguments('-DIDK_HAVE_VULKAN', language: 'cpp')
+    endif
 endif
 
 # ── Subprojects ────────────────────────────────────────────────────────

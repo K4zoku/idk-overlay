@@ -16,7 +16,11 @@
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 
-#include <QtGui/private/qrhi_p.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+#pragma GCC diagnostic ignored "-Wsfinae-incomplete"
+#include <QtGui/private/qrhi_p.h>  // Private header for RHI access
+#pragma GCC diagnostic pop
 
 #define EGL_NO_X11
 #include <EGL/egl.h>
