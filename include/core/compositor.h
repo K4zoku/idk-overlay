@@ -49,6 +49,12 @@ int idk_compositor_render(void);
 void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h);
 
 /**
+ * Notify compositor of a game surface resize.
+ * Thread-safe: stores new size in globals, sent with next ACK.
+ */
+void idk_compositor_notify_resize(int w, int h);
+
+/**
  * Check if the compositor is initialized (listening socket open).
  */
 int idk_compositor_has_overlay(void);

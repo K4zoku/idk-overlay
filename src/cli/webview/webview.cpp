@@ -44,6 +44,8 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
 {
     setPage(new WebPage);
     settings()->setAttribute(QWebEngineSettings::PlaybackRequiresUserGesture, false);
+    m_renderW = m_conf.width();
+    m_renderH = m_conf.height();
 
     page()->setBackgroundColor(Qt::transparent);
     setAttribute(Qt::WA_TranslucentBackground, true);
@@ -159,12 +161,22 @@ void WebView::doRenderAndSend()
         if (ack_fd >= 0) {
             struct pollfd pfd = { .fd = ack_fd, .events = POLLIN, .revents = 0 };
             if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
-                char ack;
-                if (read(ack_fd, &ack, 1) > 0) {
+                struct {
+                    uint8_t ack;
+                    int32_t w;
+                    int32_t h;
+                } ack_msg;
+                memset(&ack_msg, 0, sizeof(ack_msg));
+                if (read(ack_fd, &ack_msg, sizeof(ack_msg)) > 0) {
                     m_pending = false;
-                    if (ack == 1) {
+                    if (ack_msg.ack == 1) {
                         IDK_LOG("client-qt", "compositor rejected DMABUF, falling back to SHM\n");
                         m_dmaBufFailed = true;
+                    }
+                    if (ack_msg.w > 0 && ack_msg.h > 0) {
+                        IDK_LOG("client-qt", "ACK received with game size: %dx%d\n",
+                                ack_msg.w, ack_msg.h);
+                        resizeForGame(ack_msg.w, ack_msg.h);
                     }
                 }
             }
@@ -184,16 +196,16 @@ void WebView::doRenderAndSend()
 
     uint8_t buffer = m_buffer;
     m_buffer = (m_buffer + 1) % 2;
-    uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_conf.width(), m_conf.height()) * buffer);
-    QImage img(memory, m_conf.width(), m_conf.height(), QImage::Format_RGBA8888);
+    uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_renderW, m_renderH) * buffer);
+    QImage img(memory, m_renderW, m_renderH, QImage::Format_RGBA8888);
     img.fill(Qt::transparent);
     render(&img);
 
 
     idk_fs_frame_t frame;
     memset(&frame, 0, sizeof(frame));
-    frame.width   = static_cast<uint32_t>(m_conf.width());
-    frame.height  = static_cast<uint32_t>(m_conf.height());
+    frame.width   = static_cast<uint32_t>(m_renderW);
+    frame.height  = static_cast<uint32_t>(m_renderH);
     frame.id      = buffer;
     frame.visible = static_cast<uint8_t>(1);
     frame.nfd     = 1;
@@ -328,6 +340,36 @@ void WebView::doRenderAndSend()
     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
 }
 
+void WebView::resizeForGame(int w, int h)
+{
+    if (w == m_renderW && h == m_renderH) return;
+
+    IDK_LOG("client-qt", "game resize: %dx%d -> %dx%d\n",
+            m_renderW, m_renderH, w, h);
+
+    setMinimumSize(w, h);
+    setMaximumSize(w, h);
+    resize(w, h);
+
+    /* Re-allocate SHM memory for new size */
+    if (m_memory) {
+        munmap(m_memory, m_memsize);
+        m_memory = nullptr;
+    }
+    if (m_memfd >= 0) {
+        ::close(m_memfd);
+        m_memfd = -1;
+    }
+
+    m_renderW = w;
+    m_renderH = h;
+    m_buffer = 0;
+
+    initMemory();
+    m_pending = false;
+    QTimer::singleShot(0, this, [this]() { doRenderAndSend(); });
+}
+
 void WebView::contextMenuEvent(QContextMenuEvent *event)
 {
     QMenu menu;
@@ -363,7 +405,7 @@ QWebEngineView *WebView::createWindow(QWebEnginePage::WebWindowType type)
 
 void WebView::initMemory()
 {
-    m_memsize = PIXELS_SIZE(m_conf.width(), m_conf.height()) * 2;
+    m_memsize = PIXELS_SIZE(m_renderW, m_renderH) * 2;
 
     m_memfd = memfd_create("idk-webview", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (m_memfd < 0) {

@@ -40,9 +40,13 @@ private:
     void initMemory();
     void doRenderAndSend();  // Render webview to SHM + send frame (called via QTimer)
 
+    void resizeForGame(int w, int h);
+
     uint8_t m_id;                       // Overlay ID
     GroupConfig m_conf;                 // Overlay configuration
     Manager *m_manager;                 // Parent manager (socket IPC)
+    int m_renderW = 0;                  // Effective render width (game size or config)
+    int m_renderH = 0;                  // Effective render height
 
     // SHM state
     int m_memfd = -1;                   // memfd for pixel data

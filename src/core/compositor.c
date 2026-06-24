@@ -126,6 +126,22 @@ static int g_dmabuf_fd = -1;
 static uint32_t g_frame_w = 0;
 static uint32_t g_frame_h = 0;
 
+/* Game surface size, updated by wl_egl/vk createSwapchain hooks */
+static int g_game_w = 0;
+static int g_game_h = 0;
+static bool g_size_pending = false;
+
+void idk_compositor_notify_resize(int w, int h) {
+    if (w < 1 || h < 1) return;
+    if (w != g_game_w || h != g_game_h) {
+        IDK_LOG("comp", "game surface resize: %dx%d -> %dx%d\n",
+                g_game_w, g_game_h, w, h);
+        g_game_w = w;
+        g_game_h = h;
+        g_size_pending = true;
+    }
+}
+
 typedef void* GLeglImage;
 typedef void (*PFN_glEGLImageTargetTexture2DOES_fn)(GLenum target, GLeglImage image);
 static PFN_glEGLImageTargetTexture2DOES_fn fn_glEGLImageTargetTexture2DOES = NULL;
@@ -422,10 +438,24 @@ int idk_compositor_render(void) {
     }
 
     if (processed) {
-        char ack = (processed < 0) ? 1 : 0;
+        struct {
+            uint8_t ack;
+            int32_t w;
+            int32_t h;
+        } ack_msg = {0};
+
+        ack_msg.ack = (processed < 0) ? 1 : 0;
+        if (g_size_pending && processed > 0) {
+            IDK_LOG("comp", "sending game size in ACK: %dx%d\n",
+                    g_game_w, g_game_h);
+            ack_msg.w = g_game_w;
+            ack_msg.h = g_game_h;
+            g_size_pending = false;
+        }
+
         int flags = fcntl(g_client_fd, F_GETFL, 0);
         if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags | O_NONBLOCK);
-        ssize_t _w = write(g_client_fd, &ack, 1);
+        ssize_t _w = write(g_client_fd, &ack_msg, sizeof(ack_msg));
         (void)_w;
         if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags);
 
