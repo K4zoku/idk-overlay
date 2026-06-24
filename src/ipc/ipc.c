@@ -1,7 +1,3 @@
-/*
- * ipc.c — Unix domain socket IPC with SCM_RIGHTS for dmabuf fd passing
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,7 +118,6 @@ int idk_ipc_recv_frame(int socket_fd, void *info, size_t info_len,
     if (poll(&pfd, 1, 2000) <= 0) {
         return -1;
     }
-    /* Data available or peer closed — try to read either way */
     if (!(pfd.revents & (POLLIN | POLLHUP))) {
         return -1;
     }
@@ -156,8 +151,6 @@ int idk_ipc_recv_frame(int socket_fd, void *info, size_t info_len,
     return 0;
 }
 
-/* ── Input events ───────────────────────────────────────────────────────── */
-
 int idk_ipc_send_input(int socket_fd, const idk_ipc_input_event_t *ev) {
     if (socket_fd < 0 || !ev) {
         errno = EINVAL;
@@ -169,15 +162,9 @@ int idk_ipc_send_input(int socket_fd, const idk_ipc_input_event_t *ev) {
     out.checksum = 0;
     out.checksum = crc32_simple(&out, sizeof(out) - sizeof(uint32_t));
 
-    /* MSG_DONTWAIT: never block the game's input dispatch thread.
-     * If the kernel buffer is full (webview not draining fast enough),
-     * we drop the event rather than stall the game. */
     ssize_t n = send(socket_fd, &out, sizeof(out),
                      MSG_NOSIGNAL | MSG_DONTWAIT);
     if (n < 0) {
-        /* EAGAIN/EWOULDBLOCK: drop silently — caller already decided to
-         * swallow the event from the game, so the user just lost one
-         * input event. Better than blocking. */
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return -1;
         }
@@ -196,25 +183,19 @@ int idk_ipc_recv_input(int socket_fd, idk_ipc_input_event_t *ev, int flags) {
         return -1;
     }
 
-    /* Read exactly sizeof(*ev) bytes — partial reads would desync the
-     * stream. Loop on EINTR. */
     size_t total = 0;
     while (total < sizeof(*ev)) {
         ssize_t n = recv(socket_fd, (char *)ev + total,
                          sizeof(*ev) - total, flags);
         if (n < 0) {
             if (errno == EINTR) continue;
-            return -1;  /* EAGAIN, ECONNRESET, etc. */
+            return -1;
         }
         if (n == 0) {
-            /* Peer closed */
             errno = ECONNRESET;
             return -1;
         }
         total += (size_t)n;
-        /* Only the first recv() honors MSG_DONTWAIT; subsequent reads
-         * block until the full message arrives. This is intentional —
-         * once we've started reading a message we must finish it. */
         flags = 0;
     }
 

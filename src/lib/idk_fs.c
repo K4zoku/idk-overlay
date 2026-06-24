@@ -1,23 +1,4 @@
-/*
- * idk_fs.c — Client library for sending overlay frames to idk-overlay socket
- *
- * Adapted from imgoverlay client. Bridges the imgoverlay message protocol
- * (create/update/destroy images via MSG_CREATE_IMAGE, MSG_UPDATE_IMAGE,
- * MSG_UPDATE_IMAGE_CONTENTS) into idk-overlay's wire format:
- *
- *   32-byte header + 1 fd via SCM_RIGHTS
- *
- * The imgoverlay protocol sends metadata and file descriptors separately
- * (msg_struct + writeFds), while idk-overlay sends them atomically in
- * one sendmsg() call. This module translates between the two.
- *
- * Wire mapping:
- *   imgoverlay msg_create_image.x  → idk header.stride  (overlay X)
- *   imgoverlay msg_create_image.y  → idk header.format  (overlay Y)
- *   imgoverlay msg_create_image.id → idk header.num_planes (overlay ID)
- *   imgoverlay msg_create_image.memsize → idk header.pid (pixel byte size)
- *   new field                      → idk header.reserved (visibility)
- */
+/* idk_fs.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,12 +14,10 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* ── Internal state ───────────────────────────────────────────────────── */
+/* ── Internal state ── */
 
 static int g_sock_fd = -1;
 static char g_sock_path[IDK_IPC_SOCKNAME_MAX];
-
-/* ── CRC32 ─────────────────────────────────────────────────────────────── */
 
 static uint32_t crc32_simple(const void *data, size_t len) {
     const uint8_t *p = (const uint8_t *)data;
@@ -52,35 +31,23 @@ static uint32_t crc32_simple(const void *data, size_t len) {
     return ~crc;
 }
 
-/* ── Frame header builder ─────────────────────────────────────────────── */
-
-/**
- * Build an idk-overlay frame header from an idk_fs_frame.
- *
- * Maps imgoverlay-style position/visibility info into the idk wire format.
- */
 static void build_frame_hdr(const idk_fs_frame_t *frame,
                             uint8_t *hdr, size_t hdr_size) {
     if (hdr_size < sizeof(uint32_t) * 8) return;
 
     uint32_t *fields = (uint32_t *)hdr;
-    fields[0] = frame->width;        /* width  */
-    fields[1] = frame->height;       /* height */
+    fields[0] = frame->width;
+    fields[1] = frame->height;
     fields[2] = frame->x;            /* stride → X position */
     fields[3] = frame->y;            /* format → Y position */
     fields[4] = (uint32_t)frame->id; /* num_planes → overlay ID */
     fields[5] = frame->width * frame->height * 4; /* pid → pixel byte size */
     fields[6] = (uint32_t)frame->visible          /* reserved → visibility (low byte) */
               | ((uint32_t)frame->type << 8);     /*            frame type (high byte) */
-    /* fields[7] = checksum — set by send_frame */
 }
 
-/* ── SHM helpers ──────────────────────────────────────────────────────── */
+/* SHM helpers */
 
-/**
- * Create an anonymous SHM segment, copy data into it, and return the fd.
- * The caller must munmap and close the fd when done.
- */
 static int copy_to_shm(const void *src, size_t size) {
     char shm_name[64];
     snprintf(shm_name, sizeof(shm_name), "/idk-framesource-%d", (int)getpid());
@@ -111,8 +78,6 @@ static int copy_to_shm(const void *src, size_t size) {
 
     return fd;
 }
-
-/* ── Public API ───────────────────────────────────────────────────────── */
 
 int idk_fs_init(const char *sockpath, int reuse_fd) {
     return idk_fs_init2(sockpath, reuse_fd, 30);
@@ -145,11 +110,6 @@ int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
         struct sockaddr_un addr = { .sun_family = AF_UNIX };
         memcpy(addr.sun_path, sockpath, len + 1);
 
-        /* Retry connect() a few times — server may not be ready yet.
-         * This handles the case where client-qt starts before the game
-         * (and before the compositor socket is created).
-         * retries=0 → single attempt (non-blocking, for use in event loops).
-         * retries=30 → ~3s total (legacy, blocks the caller). */
         int connect_ret = -1;
         for (int i = 0; i <= retries; i++) {
             connect_ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
@@ -160,12 +120,10 @@ int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
                 close(fd);
                 return -1;
             }
-            if (i < retries) usleep(100000); /* 100ms between retries */
+            if (i < retries) usleep(100000);
         }
 
         if (connect_ret < 0) {
-            /* Don't log on ECONNREFUSED/ENOENT when retries=0 — expected
-             * case when called from a timer poll. Caller handles -1. */
             if (retries > 0 || (errno != ECONNREFUSED && errno != ENOENT)) {
                 IDK_ERR("fs",
                         "connect(%s) failed after %d retries: %s\n",
@@ -209,7 +167,6 @@ int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
     uint8_t hdr[32] = { 0 };
     build_frame_hdr(frame, hdr, sizeof(hdr));
 
-    /* Calculate checksum on first 7 fields (exclude checksum field) */
     uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t));
     ((uint32_t *)hdr)[7] = checksum;
 
@@ -232,13 +189,8 @@ int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
     ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1;  /* socket buffer full — drop frame */
+            return -1;
         }
-        /* If the peer closed the socket (EPIPE / ECONNRESET), shut down
-         * our side immediately so idk_fs_get_fd() returns -1. This
-         * lets the Manager's QTimer detect the disconnection and reconnect.
-         * Without this, sendmsg keeps failing every frame with EPIPE,
-         * spamming the log — "Broken pipe" × hundreds of times per second. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
             IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
                     errno, strerror(errno));
@@ -272,22 +224,11 @@ int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
     int rc = idk_fs_send_frame(shm_fd, frame);
     close(shm_fd);
 
-    /*
-     * Wait a brief moment for the receiver to read the frame before closing.
-     * This ensures the fd transfer completes atomically — the peer must call
-     * recvmsg with SCM_RIGHTS before we close, otherwise the fd is lost.
-     */
-    usleep(50000); /* 50ms */
+    usleep(50000);
 
     return rc;
 }
 
-/* ── DMA-BUF sender (for GPU-rendered content) ────────────────────────── */
-
-/**
- * Send a DMA-BUF fd directly (no SHM copy).
- * Supports multi-plane DMA-BUF via frame->nfd.
- */
 int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     if (g_sock_fd < 0) {
         errno = ENOTCONN;
@@ -304,7 +245,6 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t));
     ((uint32_t *)hdr)[7] = checksum;
 
-    /* Prepare I/O vector and control buffer for multiple fds */
     struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(hdr) };
     char ctrl_buf[CMSG_SPACE(sizeof(int) * 4)] = { 0 };
     struct msghdr msgh = {
@@ -324,11 +264,8 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            /* Socket buffer full — compositor not reading fast enough.
-             * Drop the frame and return -1. Caller will retry. */
             return -1;
         }
-        /* Same EPIPE handling as idk_fs_send_frame — see comment there. */
         if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
             IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
                     errno, strerror(errno));
@@ -339,10 +276,6 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    // fprintf(stderr,
-    //         "[idk-framesource] DMA-BUF sent: %dx%d@(%d,%d) id=%d visible=%d nfd=%d fd0=%d\n",
-    //         frame->width, frame->height, frame->x, frame->y,
-    //         frame->id, frame->visible, frame->nfd, dma_buf_fds[0]);
     return 0;
 }
 

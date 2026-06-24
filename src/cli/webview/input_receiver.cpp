@@ -153,10 +153,8 @@ void InputReceiver::onReadyRead()
     }
 }
 
-/* ── JS helper templates ──────────────────────────────────────────────── */
+/* JS helper templates */
 
-/* Shared preamble: clear stale target, find a writable element, focus it.
- * Sets window.__idk_el for the body IIFE that follows. */
 static const char *JS_PREAMBLE = R"(
 window.__idk_el=null;
 (function(){
@@ -180,14 +178,11 @@ var el=window.__idk_el;
 if(!el)return;
 )";
 
-/* Suffix: close the body IIFE and catch */
 static const char *JS_SUFFIX = R"(
 }catch(e){console.error('idk:exec '+e.message);}
 })();
 )";
 
-/* Insert a single character at cursor position.
- * Uses InputEvent (not Event) so React/Vue intercept it. */
 static const char *JS_INSERT_CHAR = R"(
 var start=el.selectionStart,end=el.selectionEnd;
 el.value=el.value.substring(0,start)+'%1'+el.value.substring(end);
@@ -195,7 +190,6 @@ el.setSelectionRange(start+1,start+1);
 el.dispatchEvent(new InputEvent('input',{inputType:'insertText',bubbles:true,cancelable:true}));
 )";
 
-/* Backspace: delete character before cursor */
 static const char *JS_BACKSPACE = R"(
 if(el.isContentEditable){document.execCommand('deleteContentBackward');return;}
 var start=el.selectionStart,end=el.selectionEnd;
@@ -207,7 +201,6 @@ if(start>0||end>0){
 }
 )";
 
-/* Delete: delete character after cursor */
 static const char *JS_DELETE = R"(
 if(el.isContentEditable){document.execCommand('deleteContentForward');return;}
 var start=el.selectionStart,end=el.selectionEnd;
@@ -219,7 +212,6 @@ if(start<el.value.length||end<el.value.length){
 }
 )";
 
-/* Enter on input/textarea */
 static const char *JS_ENTER = R"(
 if(el.tagName==='INPUT'||el.tagName==='TEXTAREA'){
   el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
@@ -232,15 +224,12 @@ if(el.tagName==='INPUT'||el.tagName==='TEXTAREA'){
 }
 )";
 
-/* Generic KeyboardEvent dispatch (Escape, Tab, arrows, F-keys, Space)
- * Uses document.activeElement (no preamble needed — works on any page). */
 static const char *JS_KEY_EVENT_FMT = R"(
 var el=document.activeElement||document.body;
 el.dispatchEvent(new KeyboardEvent('keydown',{key:'%1',bubbles:true,cancelable:true}));
 el.dispatchEvent(new KeyboardEvent('keyup',{key:'%1',bubbles:true,cancelable:true}));
 )";
 
-/* Insert space character */
 static const char *JS_INSERT_SPACE = R"(
 var start=el.selectionStart,end=el.selectionEnd;
 el.value=el.value.substring(0,start)+' '+el.value.substring(end);
@@ -248,7 +237,6 @@ el.setSelectionRange(start+1,start+1);
 el.dispatchEvent(new InputEvent('input',{inputType:'insertText',bubbles:true,cancelable:true,data:' '}));
 )";
 
-/* Mouse move — standalone, no preamble needed */
 static const char *JS_MOUSE_MOVE = R"(
 (function(){
 try{
@@ -258,7 +246,6 @@ el.dispatchEvent(new MouseEvent('mousemove',{clientX:%1,clientY:%2,bubbles:true,
 })();
 )";
 
-/* Mouse down/up — standalone, no preamble needed */
 static const char *JS_MOUSE_DOWN = R"(
 (function(){
 try{
@@ -277,7 +264,6 @@ el.dispatchEvent(new MouseEvent('mouseup',{clientX:%1,clientY:%2,button:%3,bubbl
 })();
 )";
 
-/* Scroll via scrollBy — standalone, no preamble needed. */
 static const char *JS_SCROLL = R"(
 (function(){
 try{
@@ -289,7 +275,6 @@ el.scrollBy(%3,%4);
 })();
 )";
 
-/* ── key name map for JS dispatch ──────────────────────────────────────── */
 struct KeyName { quint32 ks; const char *name; };
 static const KeyName KEY_NAMES[] = {
     { 0xff08, "Backspace" },
@@ -329,22 +314,18 @@ static void runJs(QWebEnginePage *page, QWebEngineView *view, const QString &js)
             if (m.contains("error"))
                 qWarning("[idk-js] %s", m["error"].toString().toUtf8().data());
         }
-        /* JS has executed — capture result in next render. */
         if (view) {
             if (auto *fp = view->focusProxy())
                 fp->update();
         }
     });
-    /* Best-effort immediate paint for low-latency feedback.
-     * May capture stale state (JS hasn't executed yet), but the
-     * callback above guarantees a correct frame follows shortly. */
     if (view) {
         if (auto *fp = view->focusProxy())
             fp->update();
     }
 }
 
-/* ── Keyboard injection via runJavaScript ──────────────────────────────── */
+/* Keyboard injection */
 void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
 {
     if (!m_webview) return;
@@ -354,7 +335,6 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
     QWebEnginePage *page = m_webview->page();
     if (!page) return;
 
-    /* Printable ASCII — insert character at cursor */
     if (ev.keysym >= 0x20 && ev.keysym < 0x7f) {
         QString c = QChar(ev.keysym);
         if (c == QLatin1Char('\'')) c = QStringLiteral("\\'");
@@ -363,41 +343,32 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
         if (c == QLatin1Char('\r')) c = QStringLiteral("\\r");
         QString js = QString(JS_PREAMBLE) + QString(JS_INSERT_CHAR).arg(c) + JS_SUFFIX;
         runJs(page, m_webview, js);
-        IDK_LOG("input-rx", "JS INSERT CHAR: '%c'\n", (char)ev.keysym);
         return;
     }
 
-    /* Special keys with dedicated handlers */
     if (ev.keysym == 0xff08) { /* Backspace */
         runJs(page, m_webview, QString(JS_PREAMBLE) + JS_BACKSPACE + JS_SUFFIX);
-        IDK_LOG("input-rx", "JS BACKSPACE\n");
         return;
     }
     if (ev.keysym == 0xffff) { /* Delete */
         runJs(page, m_webview, QString(JS_PREAMBLE) + JS_DELETE + JS_SUFFIX);
-        IDK_LOG("input-rx", "JS DELETE\n");
         return;
     }
     if (ev.keysym == 0xff0d) { /* Enter */
         runJs(page, m_webview, QString(JS_PREAMBLE) + JS_ENTER + JS_SUFFIX);
-        IDK_LOG("input-rx", "JS ENTER\n");
         return;
     }
     if (ev.keysym == 0x0020) { /* Space */
         runJs(page, m_webview, QString(JS_PREAMBLE) + JS_INSERT_SPACE + JS_SUFFIX);
-        IDK_LOG("input-rx", "JS INSERT SPACE\n");
         return;
     }
 
-    /* All other keys — dispatch keydown/keyup */
     const char *keyName = keysymToKeyName(ev.keysym);
     if (!keyName) return;
     QString js = QString(JS_PREAMBLE) + QString(JS_KEY_EVENT_FMT).arg(keyName) + JS_SUFFIX;
     runJs(page, m_webview, js);
-    IDK_LOG("input-rx", "JS DISPATCH KEY: %s\n", keyName);
 }
 
-/* ── Mouse injection via runJavaScript ─────────────────────────────────── */
 void InputReceiver::injectMouseEvent(const InputEvent &ev)
 {
     if (!m_webview) return;
@@ -426,14 +397,9 @@ void InputReceiver::injectMouseEvent(const InputEvent &ev)
         QString js = QString(tmpl).arg(m_mouseX).arg(m_mouseY).arg(btn);
         runJs(page, m_webview, js);
 
-        const char *btn_name = btn == 0 ? "left" : btn == 2 ? "right" : "middle";
-        IDK_LOG("input-rx", "JS MOUSE %s (%s) at %d,%d\n",
-                (ev.state == 1) ? "DOWN" : "UP", btn_name, m_mouseX, m_mouseY);
         break;
     }
     case IDK_INPUT_AXIS: {
-        IDK_LOG("input-rx", "AXIS: dx=%d dy=%d at %d,%d\n",
-                ev.dx, ev.dy, m_mouseX, m_mouseY);
         QString js = QString(JS_SCROLL)
             .arg(m_mouseX).arg(m_mouseY)
             .arg(ev.dx * 20).arg(-ev.dy * 20);

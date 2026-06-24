@@ -1,42 +1,4 @@
-/*
- * wayland_input.c — Wayland input hooking for overlay input capture
- *
- * Hooks wl_proxy_add_listener (and wl_proxy_add_dispatcher) to intercept
- * the game's wl_pointer / wl_keyboard listener registration. A wrapper
- * vtable is installed in its place; the wrapper forwards events to the
- * game by default, and swallows them (forwarding to the webview via IPC
- * instead) when "input capture" mode is toggled on.
- *
- * Capture is toggled by a hotkey (default: F8, configurable via
- * IDK_TOGGLE_KEY env var, parsed as an xkb keysym name like "F8",
- * "Scroll_Lock", "XF86AudioMute", etc.).
- *
- * See research/wayland-input-hooking.md for the full technique rationale.
- *
- * ─────────────────────────────────────────────────────────────────────────
- *  WHY LISTENER SUBSTITUTION (not sidecar)
- * ─────────────────────────────────────────────────────────────────────────
- * MangoHud's wayland_keybinds.cpp creates a private event queue + binds its
- * own wl_seat + wl_keyboard to receive a DUPLICATE copy of every key event.
- * That works for passive keybind listening but CANNOT swallow events — the
- * game still sees them. For an interactive overlay that must redirect input
- * to a webview when toggled, we MUST intercept the game's own listener.
- *
- * wl_proxy_add_listener is the only registration path (the per-interface
- * wl_*_add_listener helpers are static inline wrappers around it). A listener
- * can only be set ONCE per proxy, so we substitute at registration time.
- *
- * ─────────────────────────────────────────────────────────────────────────
- *  THREADING
- * ─────────────────────────────────────────────────────────────────────────
- * All Wayland listener callbacks fire on whatever thread calls
- * wl_display_dispatch_*() — typically the game's main thread. Our wrapper
- * callbacks run there too, so they can safely touch game data touched on
- * that thread. They MUST NOT block (the game's input loop would stall).
- *
- * The accept thread is the only other thread we spawn; it just blocks on
- * accept() and updates g_client_fd under a mutex.
- */
+/* wayland_input.c */
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -63,13 +25,10 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* Forward declarations for wayland object types not in wayland_input_types.h */
 struct wl_compositor;
 struct wl_shm;
 struct wl_buffer;
 struct wl_shm_pool;
-
-/* ── libwayland-client function pointers (resolved via dlopen) ──────────── */
 
 typedef int   (*wl_proxy_add_listener_fn)(struct wl_proxy *,
                                           void (**)(void), void *);
@@ -87,19 +46,6 @@ static wl_proxy_add_dispatcher_fn  real_wl_proxy_add_dispatcher  = NULL;
 static wl_proxy_get_class_fn       real_wl_proxy_get_class       = NULL;
 static wl_proxy_get_listener_fn    real_wl_proxy_get_listener    = NULL;
 
-/* Sidecar (MangoHud-style) function pointers — used when listener
- * substitution misses (e.g. game already registered listeners before
- * our hook installed). The sidecar creates a private event queue, binds
- * its own wl_seat + wl_keyboard, and receives DUPLICATE key events.
- * It cannot swallow events, but it CAN detect the hotkey to toggle
- * capture mode.
- *
- * NOTE: wl_display_get_registry, wl_registry_bind, wl_registry_destroy,
- * wl_seat_get_keyboard, wl_keyboard_destroy, wl_seat_destroy are all
- * STATIC INLINE in wayland-client-protocol.h — they are NOT exported
- * symbols. We must implement them manually using wl_proxy_marshal_flags
- * and wl_proxy_marshal_constructor_versioned (which ARE exported). */
-
 /* wl_interface struct layout (from wayland-util.h) */
 struct wl_interface {
     const char *name;
@@ -110,8 +56,7 @@ struct wl_interface {
     const void *events;   /* const struct wl_message * */
 };
 
-/* wl_argument union (from wayland-util.h) — needed to intercept
- * wl_proxy_marshal_array_flags for cursor state tracking. */
+/* wl_argument union (from wayland-util.h) */
 union wl_argument {
     int32_t i;
     uint32_t u;
@@ -159,14 +104,13 @@ static wl_proxy_marshal_constructor_versioned_fn real_wl_proxy_marshal_construct
 static wl_proxy_marshal_flags_fn           real_wl_proxy_marshal_flags = NULL;
 static wl_proxy_marshal_array_flags_fn     real_wl_proxy_marshal_array_flags = NULL;
 
-/* Interface structs — resolved via dlsym (exported as global variables) */
+
 static const struct wl_interface *g_wl_seat_interface = NULL;
 static const struct wl_interface *g_wl_keyboard_interface = NULL;
 static const struct wl_interface *g_wl_registry_interface = NULL;
 static const struct wl_interface *g_wl_pointer_interface = NULL;
 
-/* wp_cursor_shape_device_v1 interface — crafted manually since it's not
- * exported by libwayland-client (staging protocol, not core wayland). */
+/* Crafted manually — not in libwayland-client */
 static const struct wl_message g_device_requests[] = {
     { "destroy", "", NULL },
     { "set_shape", "uu", NULL },
@@ -175,7 +119,7 @@ static const struct wl_interface g_wp_cursor_shape_device_v1_interface = {
     "wp_cursor_shape_device_v1", 2, 2, g_device_requests, 0, NULL,
 };
 
-/* wp_cursor_shape_manager_v1 interface — minimal for our marshal use. */
+
 static const struct wl_interface *g_manager_get_pointer_types[] = {
     &g_wp_cursor_shape_device_v1_interface,
     NULL,
@@ -188,7 +132,6 @@ static const struct wl_interface g_wp_cursor_shape_manager_v1_interface = {
     "wp_cursor_shape_manager_v1", 2, 2, g_manager_requests, 0, NULL,
 };
 
-/* Wayland protocol opcodes */
 #define WL_DISPLAY_GET_REGISTRY 1
 #define WL_REGISTRY_BIND 0
 #define WL_SEAT_GET_POINTER 0
@@ -196,15 +139,12 @@ static const struct wl_interface g_wp_cursor_shape_manager_v1_interface = {
 #define WP_CURSOR_SHAPE_DEVICE_SET_SHAPE 1
 #define WL_POINTER_SET_CURSOR 0
 
-/* wp_cursor_shape_device_v1 shape values (from cursor-shape-v1.xml) */
 #define WP_CURSOR_SHAPE_DEFAULT   1
 #define WP_CURSOR_SHAPE_CROSSHAIR 8
 
-/* wl_proxy marshal flag for destructor requests */
 #define WL_MARSHAL_FLAG_DESTROY 1
 
-/* Manual implementation of static-inline wayland functions using
- * wl_proxy_marshal_flags / wl_proxy_marshal_constructor_versioned */
+/* Manual implementation of static-inline wayland functions */
 static struct wl_registry *my_wl_display_get_registry(struct wl_display *display) {
     if (!real_wl_proxy_marshal_constructor_versioned || !g_wl_registry_interface)
         return NULL;
@@ -217,17 +157,6 @@ static void *my_wl_registry_bind(struct wl_registry *registry, uint32_t name,
                                   const struct wl_interface *interface, uint32_t version) {
     if (!real_wl_proxy_marshal_constructor_versioned || !interface)
         return NULL;
-    /* wl_registry::bind has signature "usun" (from wayland-scanner):
-     *   u = name (uint32)
-     *   s = interface_name (string)  ← from interface->name
-     *   u = version (uint32)
-     *   n = new_id (object pointer)  ← interface struct
-     *
-     * wl_argument_from_va_list reads args in signature order, so variadic
-     * args must be: name, interface->name, version, interface
-     *
-     * NOTE: version comes BEFORE interface in the variadic list!
-     * (Previous attempts had wrong order → "invalid version" errors) */
     return real_wl_proxy_marshal_constructor_versioned(
         (struct wl_proxy *)registry, WL_REGISTRY_BIND,
         interface, version,
@@ -278,8 +207,7 @@ static void my_wp_cursor_shape_device_set_shape(struct wl_proxy *device,
         NULL, 2, 0, serial, shape);
 }
 
-/* Hide/show cursor via wl_pointer.set_cursor — used to restore the game's
- * cursor state (hidden or visible) when capture turns OFF. */
+/* Hide/show cursor — restore pre-capture state */
 static void my_wl_pointer_set_cursor(struct wl_proxy *p, uint32_t serial,
     void *surface, int32_t hx, int32_t hy) {
     if (!real_wl_proxy_marshal_flags) return;
@@ -288,7 +216,7 @@ static void my_wl_pointer_set_cursor(struct wl_proxy *p, uint32_t serial,
         serial, surface, hx, hy);
 }
 
-/* Sidecar state */
+
 static struct wl_display *g_sidecar_display = NULL;
 static struct wl_event_queue *g_sidecar_queue = NULL;
 static struct wl_seat *g_sidecar_seat = NULL;
@@ -297,31 +225,20 @@ static struct wl_pointer *g_sidecar_pointer = NULL;
 static struct wl_proxy *g_sidecar_cursor_shape_manager = NULL;
 static int g_sidecar_initialized = 0;
 
-/* Cursor shape device — created lazily for the game's wl_pointer proxy */
+/* Cursor shape device */
 static struct wl_proxy *g_cursor_shape_device = NULL;
 static struct wl_proxy *g_shape_device_pointer_proxy = NULL;
 
-/* Sidecar pointer enter state — fresh serial/surface from compositor,
- * used for set_shape and synthetic enter when we missed the game's
- * initial enter event. */
+/* Fresh serial/surface from compositor for set_shape */
 static uint32_t g_sidecar_pointer_enter_serial = 0;
 static void *g_sidecar_surface = NULL;
 static wl_fixed_t g_sidecar_sx = 0;
 static wl_fixed_t g_sidecar_sy = 0;
 
-/* Game cursor state — tracked by intercepting wl_pointer.set_cursor calls
- * via wl_proxy_marshal_array_flags hook. When the game calls set_cursor
- * with surface=NULL, the cursor is hidden. We restore this state when
- * capture turns OFF.
- *
- * g_pre_capture_cursor_hidden saves the snapshot taken when capture turns
- * ON, so we can restore the EXACT pre-capture state on OFF — ignoring any
- * set_cursor calls the game makes during capture (e.g. on forwarded
- * enter events) or during the re-sync motion. */
+/* Game's cursor hidden state — tracked via marshal hook */
 static int g_game_cursor_hidden = 0;
 static int g_pre_capture_cursor_hidden = 0;
 
-/* ── libxkbcommon function pointers (resolved via dlopen) ───────────────── */
 
 struct xkb_context;
 struct xkb_keymap;
@@ -359,7 +276,7 @@ static xkb_state_mod_index_is_active_fn fn_xkb_state_mod_index_is_active = NULL;
 static xkb_keymap_mod_get_index_fn    fn_xkb_keymap_mod_get_index    = NULL;
 static xkb_keysym_from_name_fn        fn_xkb_keysym_from_name        = NULL;
 
-/* xkbcommon constants (we don't want to include the header) */
+
 #define IDK_XKB_CONTEXT_NO_FLAGS         0
 #define IDK_XKB_KEYMAP_FORMAT_TEXT_V1    1
 #define IDK_XKB_KEYMAP_COMPILE_NO_FLAGS  0
@@ -371,7 +288,6 @@ static xkb_keysym_from_name_fn        fn_xkb_keysym_from_name        = NULL;
 #define IDK_XKB_STATE_MODS_EFFECTIVE     (1 << 3)
 #define IDK_XKB_KEYSYM_NO_FLAGS          0
 
-/* ── Globals ────────────────────────────────────────────────────────────── */
 
 static void *g_wl_handle  = NULL;
 static void *g_xkb_handle = NULL;
@@ -379,56 +295,49 @@ static struct xkb_context *g_xkb_ctx = NULL;
 
 static int g_hook_installed = 0;
 static int g_input_listen_fd = -1;
-static int g_client_fd = -1;          /* accepted webview connection */
+static int g_client_fd = -1;
 static pthread_t g_accept_thread;
 static int g_accept_thread_started = 0;
 static pthread_mutex_t g_client_fd_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Capture state — toggled by hotkey */
 static volatile int g_captured = 0;
-static int g_hotkey_pressed = 0;  /* shared hotkey guard */
-static uint32_t g_hotkey_keysym = 0;  /* default set in init: XKB_KEY_F8 */
-static uint32_t g_hotkey_scancode = 0; /* fallback: KEY_F8 (66) when no xkb */
+static int g_hotkey_pressed = 0;
+static uint32_t g_hotkey_keysym = 0;
+static uint32_t g_hotkey_scancode = 0;
 
-/* xkb state per-process (most games have one keyboard; multi-seat
- * keyboards share the same keymap so this is fine) */
+
 static struct xkb_keymap *g_xkb_keymap = NULL;
 static struct xkb_state  *g_xkb_state  = NULL;
 
-/* Cached mod indices (Control/Shift/Alt/Super) — looked up once on keymap */
+
 static uint32_t g_mod_idx_ctrl  = UINT32_MAX;  /* invalid until keymap arrives */
 static uint32_t g_mod_idx_shift = UINT32_MAX;
 static uint32_t g_mod_idx_alt   = UINT32_MAX;
 static uint32_t g_mod_idx_super = UINT32_MAX;
 
-/* Current modifier bitmask (IDK_MOD_*) — updated on every modifiers event */
+
 static uint32_t g_mods = 0;
 
-/* Last known surface-local cursor position (from pointer enter/motion) */
+
 static int32_t g_cursor_x = 0;
 static int32_t g_cursor_y = 0;
 
-/* Hardware cursor management — used to restore game cursor on capture OFF */
+
 static uint32_t g_last_enter_serial = 0;
 static uint32_t g_last_pointer_serial = 0;  /* latest serial from any pointer event */
 static struct wl_surface *g_last_enter_surface = NULL;
 static struct wl_proxy *g_game_pointer_proxy = NULL;
-static int g_pointer_in_surface = 0;  /* is pointer currently inside game's surface? */
-
-/* ── Logging ────────────────────────────────────────────────────────────── */
+static int g_pointer_in_surface = 0;
 
 #define WLOG(fmt, ...) IDK_LOG("wl-input", fmt "\n", ##__VA_ARGS__)
 #define WERR(fmt, ...) IDK_ERR("wl-input", fmt "\n", ##__VA_ARGS__)
 
-/* Wayland fixed-point helpers (not provided by vendored types) */
 #define WL_INT_TO_FIXED(i) ((wl_fixed_t)((i) * 256))
-
-/* ── Symbol resolution ──────────────────────────────────────────────────── */
 
 static int resolve_wayland_symbols(void) {
     if (g_wl_handle) return 0;
 
-    /* RTLD_NOLOAD: don't load if not already loaded — game must use wayland */
     g_wl_handle = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
     if (!g_wl_handle)
         g_wl_handle = dlopen("libwayland-client.so.0", RTLD_NOW);
@@ -453,12 +362,6 @@ static int resolve_wayland_symbols(void) {
         return -1;
     }
 
-    /* Resolve sidecar symbols (MangoHud-style private event queue).
-     * NOTE: wl_display_get_registry, wl_registry_bind, wl_registry_destroy,
-     * wl_seat_get_keyboard, wl_keyboard_destroy, wl_seat_destroy are
-     * static inline in wayland-client-protocol.h — NOT exported. We
-     * resolve the underlying wl_proxy_marshal_* functions instead and
-     * implement them manually (see my_wl_* functions above). */
     real_wl_display_create_queue = (wl_display_create_queue_fn)
         dlsym(g_wl_handle, "wl_display_create_queue");
     real_wl_proxy_create_wrapper = (wl_proxy_create_wrapper_fn)
@@ -484,7 +387,6 @@ static int resolve_wayland_symbols(void) {
     real_wl_proxy_marshal_array_flags = (wl_proxy_marshal_array_flags_fn)
         dlsym(g_wl_handle, "wl_proxy_marshal_array_flags");
 
-    /* Resolve interface structs — exported as global variables */
     g_wl_seat_interface = (const struct wl_interface *)
         dlsym(g_wl_handle, "wl_seat_interface");
     g_wl_keyboard_interface = (const struct wl_interface *)
@@ -503,8 +405,6 @@ static int resolve_wayland_symbols(void) {
 static int resolve_xkbcommon_symbols(void) {
     if (g_xkb_handle) return 0;
 
-    /* xkbcommon is optional — without it, hotkey detection falls back to
-     * raw scancodes and keysym=0 in forwarded events. */
     g_xkb_handle = dlopen("libxkbcommon.so.0", RTLD_NOW | RTLD_NOLOAD);
     if (!g_xkb_handle)
         g_xkb_handle = dlopen("libxkbcommon.so.0", RTLD_NOW);
@@ -545,8 +445,6 @@ static int resolve_xkbcommon_symbols(void) {
     return 0;
 }
 
-/* ── Input IPC socket (server side) ─────────────────────────────────────── */
-
 static void *accept_thread_main(void *arg) {
     (void)arg;
     int listen_fd = g_input_listen_fd;
@@ -554,11 +452,11 @@ static void *accept_thread_main(void *arg) {
         int fd = accept(listen_fd, NULL, NULL);
         if (fd < 0) {
             if (errno == EINTR) continue;
-            break;  /* listen socket closed */
+            break;
         }
         pthread_mutex_lock(&g_client_fd_lock);
         if (g_client_fd >= 0) {
-            close(g_client_fd);  /* replace old connection */
+            close(g_client_fd);
         }
         g_client_fd = fd;
         pthread_mutex_unlock(&g_client_fd_lock);
@@ -568,8 +466,6 @@ static void *accept_thread_main(void *arg) {
 }
 
 static int init_input_socket(void) {
-    /* Derive input socket path from IDK_SOCKET or PID.
-     * Pattern: ${IDK_SOCKET}-input  OR  /tmp/idk-overlay-<pid>-input */
     char path[128];
     const char *base = getenv("IDK_SOCKET");
     if (base && base[0]) {
@@ -578,7 +474,6 @@ static int init_input_socket(void) {
         snprintf(path, sizeof(path), "/tmp/idk-overlay-%d-input", (int)getpid());
     }
 
-    /* Clean up any stale socket */
     unlink(path);
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -615,14 +510,13 @@ static int init_input_socket(void) {
     return 0;
 }
 
-/* Send an event to the connected webview (if any). Non-blocking. */
 static void send_event_to_webview(const idk_ipc_input_event_t *ev) {
     pthread_mutex_lock(&g_client_fd_lock);
     int fd = g_client_fd;
     pthread_mutex_unlock(&g_client_fd_lock);
     if (fd < 0) {
         WLOG("send_event_to_webview: DROPPED (no webview connected, fd=-1)");
-        return;  /* no webview connected — silently drop */
+        return;
     }
     int rc = idk_ipc_send_input(fd, ev);
     if (rc != 0) {
@@ -638,8 +532,6 @@ static void send_capture_state(uint32_t capture) {
     send_event_to_webview(&ev);
 }
 
-/* ── Per-proxy saved state ──────────────────────────────────────────────── */
-
 struct ptr_state {
     const struct wl_pointer_listener *game;
     void *game_data;
@@ -650,10 +542,9 @@ struct kb_state {
     void *game_data;
 };
 
-/* Forward declarations for cursor functions defined later */
 static void sidecar_ensure_cursor_shape_device(struct wl_pointer *p);
 
-/* ── Capture state ──────────────────────────────────────────────────────── */
+
 
 int idk_wayland_input_is_captured(void) {
     return g_captured;
@@ -674,7 +565,6 @@ void idk_wayland_input_set_capture(int enable) {
                        : g_last_pointer_serial;
 
         if (new_state) {
-            /* Capture ON: save pre-capture cursor state, set crosshair */
             g_pre_capture_cursor_hidden = g_game_cursor_hidden;
             if (g_cursor_shape_device && serial) {
                 WLOG("set_capture(ON): serial=%u shape=crosshair device=%p "
@@ -686,9 +576,6 @@ void idk_wayland_input_set_capture(int enable) {
                     g_cursor_shape_device, serial, WP_CURSOR_SHAPE_CROSSHAIR);
             }
         } else {
-            /* Capture OFF: fire synthetic motion so game re-syncs cursor
-             * position, then restore pre-capture cursor state (ignoring
-             * whatever set_cursor the game did during the re-sync). */
             if (g_pointer_in_surface && g_game_pointer_proxy) {
                 void **data_ptr = (void **)((char *)g_game_pointer_proxy + 48);
                 struct ptr_state *st = (struct ptr_state *)*data_ptr;
@@ -721,8 +608,6 @@ void idk_wayland_input_set_capture(int enable) {
     WLOG("input capture %s", new_state ? "ENABLED" : "DISABLED");
     send_capture_state((uint32_t)new_state);
 }
-
-/* ── Forward declarations of wrapper vtables ────────────────────────────── */
 
 static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                        struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy);
@@ -771,7 +656,7 @@ static const struct wl_keyboard_listener g_kb_wrapper = {
     .repeat_info  = wkb_repeat_info,
 };
 
-/* ── Pointer wrapper callbacks ──────────────────────────────────────────── */
+
 
 static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                        struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy) {
@@ -779,25 +664,15 @@ static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
     g_cursor_x = WL_FIXED_TO_INT(sx);
     g_cursor_y = WL_FIXED_TO_INT(sy);
 
-    /* Save state for cursor management — used to restore game cursor
-     * when capture turns off while pointer is still on the surface. */
     g_last_enter_serial = serial;
     g_last_pointer_serial = serial;
     g_last_enter_surface = s;
     g_game_pointer_proxy = (struct wl_proxy *)p;
     g_pointer_in_surface = 1;
 
-    /* Always create cursor shape device on enter (even when not captured)
-     * so it's ready when capture is toggled — set_shape needs the device
-     * to exist BEFORE the toggle, otherwise the first set_shape after
-     * get_pointer may be ignored by some compositors. */
     sidecar_ensure_cursor_shape_device(p);
-    WLOG("wptr_enter: serial=%u device=%p captured=%d",
-         serial, (void *)g_cursor_shape_device, g_captured);
 
     if (g_captured) {
-        /* Forward enter to game FIRST so it always has correct pointer
-         * focus state. Then override cursor shape. */
         if (st->game && st->game->enter)
             st->game->enter(st->game_data, p, serial, s, sx, sy);
         if (g_cursor_shape_device) {
@@ -816,9 +691,6 @@ static void wptr_leave(void *d, struct wl_pointer *p, uint32_t serial,
                        struct wl_surface *s) {
     struct ptr_state *st = (struct ptr_state *)d;
     g_pointer_in_surface = 0;
-    /* Always forward leave to game so it knows it lost pointer focus.
-     * Without this, alt-tab back can leave the game frozen because the
-     * enter/leave sequence is broken. */
     if (st->game && st->game->leave)
         st->game->leave(st->game_data, p, serial, s);
 }
@@ -830,10 +702,6 @@ static void wptr_motion(void *d, struct wl_pointer *p, uint32_t time,
     g_cursor_y = WL_FIXED_TO_INT(sy);
 
     if (g_captured) {
-        /* Re-apply crosshair on every motion during capture — overrides any
-         * set_shape calls the game may have made (SDL3's own cursor shape
-         * device, game render-loop cursor changes, etc.). The last set_shape
-         * on the pointer wins, so this ensures crosshair stays visible. */
         if (g_cursor_shape_device && g_last_enter_serial)
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
@@ -856,13 +724,9 @@ static void wptr_button(void *d, struct wl_pointer *p, uint32_t serial,
                         uint32_t time, uint32_t button, uint32_t state) {
     struct ptr_state *st = (struct ptr_state *)d;
     g_last_pointer_serial = serial;
-    /* Button events only arrive when pointer is inside the surface.
-     * If we missed the initial enter (hook installed after game received
-     * it), this is our best signal that pointer IS in surface. */
     if (!g_pointer_in_surface) {
         g_pointer_in_surface = 1;
         g_game_pointer_proxy = (struct wl_proxy *)p;
-        WLOG("wptr_button: inferred in_surface=1 (missed enter), serial=%u", serial);
     }
     if (g_captured) {
         if (g_cursor_shape_device && g_last_enter_serial)
@@ -897,7 +761,6 @@ static void wptr_axis(void *d, struct wl_pointer *p, uint32_t time,
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_AXIS;
         ev.time   = time;
-        /* axis 0 = vertical (dy), axis 1 = horizontal (dx) */
         if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
             ev.dy = WL_FIXED_TO_INT(value);
         else
@@ -915,7 +778,7 @@ static void wptr_axis(void *d, struct wl_pointer *p, uint32_t time,
 
 static void wptr_frame(void *d, struct wl_pointer *p) {
     struct ptr_state *st = (struct ptr_state *)d;
-    if (g_captured) return;  /* swallow frame event too */
+    if (g_captured) return;
     if (st->game && st->game->frame)
         st->game->frame(st->game_data, p);
 }
@@ -941,14 +804,11 @@ static void wptr_axis_discrete(void *d, struct wl_pointer *p, uint32_t axis, int
         st->game->axis_discrete(st->game_data, p, axis, disc);
 }
 
-/* ── Keyboard wrapper callbacks ─────────────────────────────────────────── */
+
 
 static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd, uint32_t sz) {
     struct kb_state *st = (struct kb_state *)d;
 
-    /* The wayland spec says the client MUST close the fd after consuming it.
-     * We need our own copy to build an xkb keymap, so dup() BEFORE forwarding
-     * to the game (the game will close the original per spec). */
     int dup_fd = -1;
     if (fmt == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 && g_xkb_handle && g_xkb_ctx) {
         dup_fd = dup(fd);
@@ -957,19 +817,15 @@ static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd
         }
     }
 
-    /* Always forward keymap to game first — it needs it for its own input
-     * handling (and it owns the fd per spec). The game closes the fd. */
     if (st->game && st->game->keymap) {
         st->game->keymap(st->game_data, kb, fmt, fd, sz);
     }
 
-    /* Build our own xkb keymap + state from the dup'd fd */
     if (dup_fd >= 0 && fmt == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
         void *map = mmap(NULL, sz, PROT_READ, MAP_PRIVATE, dup_fd, 0);
         if (map == MAP_FAILED) {
             WLOG("keymap mmap failed: %s", strerror(errno));
         } else {
-            /* Free old keymap/state if compositor re-sends keymap */
             if (g_xkb_state && fn_xkb_state_unref) {
                 fn_xkb_state_unref(g_xkb_state);
                 g_xkb_state = NULL;
@@ -986,9 +842,6 @@ static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd
             if (g_xkb_keymap) {
                 g_xkb_state = fn_xkb_state_new(g_xkb_keymap);
                 if (g_xkb_state) {
-                    /* Cache mod indices for IDK_MOD_* translation.
-                     * XKB mod names: Control, Shift, Mod1 (Alt), Mod4 (Super).
-                     * Mod indices come from the keymap; we look them up once. */
                     if (fn_xkb_keymap_mod_get_index) {
                         g_mod_idx_ctrl  = fn_xkb_keymap_mod_get_index(g_xkb_keymap, "Control");
                         g_mod_idx_shift = fn_xkb_keymap_mod_get_index(g_xkb_keymap, "Shift");
@@ -1013,9 +866,6 @@ static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd
 static void wkb_enter(void *d, struct wl_keyboard *kb, uint32_t serial,
                       struct wl_surface *s, struct wl_array *keys) {
     struct kb_state *st = (struct kb_state *)d;
-    /* Always forward enter/leave to the game so it never loses
-     * Wayland keyboard focus state. Without this, the game may stop
-     * receiving keyboard events after capture is toggled off. */
     if (st->game && st->game->enter)
         st->game->enter(st->game_data, kb, serial, s, keys);
 }
@@ -1028,9 +878,6 @@ static void wkb_leave(void *d, struct wl_keyboard *kb, uint32_t serial,
 }
 
 static uint32_t decode_keysym(uint32_t key) {
-    /* Translate evdev scancode → xkb keysym. Key is the raw value from
-     * the wayland key event (evdev scancode, no +8 offset). xkb expects
-     * evdev scancode + 8. */
     if (g_xkb_state && fn_xkb_state_key_get_one_sym) {
         return fn_xkb_state_key_get_one_sym(g_xkb_state, key + 8);
     }
@@ -1038,7 +885,6 @@ static uint32_t decode_keysym(uint32_t key) {
 }
 
 static int is_hotkey(uint32_t key, uint32_t keysym) {
-    /* Try keysym first (requires xkb), fall back to raw scancode. */
     if (g_hotkey_keysym && keysym == g_hotkey_keysym) return 1;
     if (g_hotkey_scancode && key == g_hotkey_scancode) return 1;
     return 0;
@@ -1048,35 +894,17 @@ static void wkb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
                     uint32_t time, uint32_t key, uint32_t state) {
     struct kb_state *st = (struct kb_state *)d;
 
-    /* Filter out synthetic release events (key=0, state=0) — sent by
-     * some compositors on keyboard leave/focus change. Would spam IPC. */
     if (key == 0 && state == 0) return;
 
     uint32_t keysym = decode_keysym(key);
 
-    /* Diagnostic: log every key event (first 20 only, to avoid spam).
-     * This confirms whether the keyboard hook is actually intercepting
-     * events. If you DON'T see these logs when pressing keys, osu is NOT
-     * using native Wayland (it's on XWayland) and needs an X11 input hook. */
-    static int s_key_log_count = 0;
-    if (s_key_log_count < 20) {
-        s_key_log_count++;
-        WLOG("wkb_key: keycode=%u keysym=0x%x state=%u (event %d)",
-             key, keysym, state, s_key_log_count);
-    }
-
-    /* Update xkb state (needed for correct keysym resolution on later keys
-     * AND for modifier tracking). */
+    /* Update xkb state for keysym resolution + modifier tracking */
     if (g_xkb_state && fn_xkb_state_update_key) {
         fn_xkb_state_update_key(g_xkb_state, key + 8,
                                 state ? IDK_XKB_KEY_DOWN : IDK_XKB_KEY_UP);
     }
 
     if (is_hotkey(key, keysym)) {
-        /* Shared hotkey guard — prevents double-toggle when both wkb_key
-         * (listener substitution) and sidecar_kb_key fire for the same
-         * physical key press. Only the FIRST callback to see the press
-         * toggles capture. */
         if (state == WL_KEYBOARD_KEY_STATE_PRESSED && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
             WLOG("hotkey detected (key=%u keysym=0x%x) — toggling capture", key, keysym);
@@ -1097,18 +925,16 @@ static void wkb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
         ev.state    = state;
         ev.mods     = g_mods;
         ev.capture  = 1;
-        WLOG("wkb_key SWALLOW: keycode=%u state=%u — forwarding to webview", key, state);
+        WLOG("wkb_key: keycode=%u state=%u", key, state);
         send_event_to_webview(&ev);
         return;
     }
-    WLOG("wkb_key FORWARD: keycode=%u state=%u — sending to game", key, state);
     if (st->game && st->game->key)
         st->game->key(st->game_data, kb, serial, time, key, state);
 }
 
 static void update_mod_bitmask(void) {
-    /* Recompute IDK_MOD_* bitmask from xkb state. Called after
-     * xkb_state_update_mask or xkb_state_update_key. */
+
     if (!g_xkb_state || !fn_xkb_state_mod_index_is_active) {
         g_mods = 0;
         return;
@@ -1133,15 +959,12 @@ static void wkb_modifiers(void *d, struct wl_keyboard *kb, uint32_t serial,
                           uint32_t dep, uint32_t lat, uint32_t lck, uint32_t grp) {
     struct kb_state *st = (struct kb_state *)d;
 
-    /* Always update xkb state (needed for keysym resolution + modifier
-     * tracking) — even when captured, so when capture turns off our state
-     * is correct. */
     if (g_xkb_state && fn_xkb_state_update_mask) {
         fn_xkb_state_update_mask(g_xkb_state, dep, lat, lck, 0, 0, grp);
         update_mod_bitmask();
     }
 
-    if (g_captured) return;  /* swallow from game */
+    if (g_captured) return;
     if (st->game && st->game->modifiers)
         st->game->modifiers(st->game_data, kb, serial, dep, lat, lck, grp);
 }
@@ -1153,7 +976,7 @@ static void wkb_repeat_info(void *d, struct wl_keyboard *kb, int32_t rate, int32
         st->game->repeat_info(st->game_data, kb, rate, delay);
 }
 
-/* ── Solution B: Scan wl_event_queue.proxy_list for game's keyboards ────── */
+/* Scan wl_event_queue.proxy_list for game keyboards/pointers */
 
 /* Forward declarations — defined later in the file */
 struct wl_list { struct wl_list *prev; struct wl_list *next; };
@@ -1161,34 +984,9 @@ static void *direct_overwrite_implementation(struct wl_proxy *proxy,
                                               void *new_impl, void *new_data,
                                               void **old_data_out);
 
-/*
- * When game registers its keyboard BEFORE our hook installs, the
- * add_listener hook never fires for game's keyboard. We need to find
- * it by scanning the event queue's proxy list.
- *
- * struct wl_event_queue layout (from wayland source):
- *   offset 0:  struct wl_list event_list   (prev, next = 16 bytes)
- *   offset 16: struct wl_list proxy_list   (prev, next = 16 bytes)
- *
- * struct wl_proxy layout:
- *   offset 0:  struct wl_object object (interface, impl, id = 24 bytes)
- *   ...
- *   offset 80: struct wl_list queue_link (prev, next = 16 bytes)
- *
- * struct wl_list { struct wl_list *prev; struct wl_list *next; };
- *
- * To iterate: start at proxy_list.next, walk until back to proxy_list head.
- * For each item, compute proxy = (wl_proxy *)((char *)item - 80).
- * Check wl_proxy_get_class(proxy) == "wl_keyboard" → overwrite implementation.
- *
- * We skip proxies that already have our wrapper installed (impl == g_kb_wrapper).
- */
-
-/* wl_list offsets in structs */
 #define WL_EVENT_QUEUE_PROXY_LIST_OFFSET 16
 #define WL_PROXY_QUEUE_LINK_OFFSET 80
 
-/* Track which proxies we've already intercepted to avoid double-overwrite */
 #define MAX_INTERCEPTED 16
 static struct wl_proxy *g_intercepted_proxies[MAX_INTERCEPTED];
 static int g_intercepted_count = 0;
@@ -1219,7 +1017,6 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
         return;
     }
 
-    /* Iterate proxy_list of this queue */
     struct wl_list *head = (struct wl_list *)((char *)queue + WL_EVENT_QUEUE_PROXY_LIST_OFFSET);
     struct wl_list *item = head->next;
 
@@ -1262,13 +1059,8 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
             g_game_pointer_proxy = proxy;
             WLOG("scan: intercepted game pointer: proxy=%p game=%p data=%p",
                  (void *)proxy, (void *)st->game, st->game_data);
-            /* If sidecar already received an enter (compositor sent enter
-             * before we intercepted the game's pointer), fire the game's
-             * original enter handler to initialize cursor state tracking.
-             * This ensures g_game_cursor_hidden is populated before the
-             * first F8 press. */
             if (g_sidecar_pointer_enter_serial && st->game && st->game->enter) {
-                WLOG("scan: firing synthetic enter for cursor state init "
+                WLOG("scan: synthetic enter for cursor state init "
                      "(serial=%u surface=%p)", g_sidecar_pointer_enter_serial,
                      g_sidecar_surface);
                 g_last_enter_serial = g_sidecar_pointer_enter_serial;
@@ -1279,8 +1071,7 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
                     g_sidecar_pointer_enter_serial,
                     (struct wl_surface *)g_sidecar_surface,
                     g_sidecar_sx, g_sidecar_sy);
-                WLOG("scan: after synthetic enter: g_game_cursor_hidden=%d",
-                     g_game_cursor_hidden);
+
             }
             found++;
         }
@@ -1289,28 +1080,14 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
     pthread_mutex_unlock(&g_scan_mutex);
 }
 
-/* ── The hook on wl_proxy_add_listener ──────────────────────────────────── */
+
 
 static int (*orig_wl_proxy_add_listener)(struct wl_proxy *, void (**)(void), void *) = NULL;
 
-/* Direct implementation overwrite — bypasses wl_proxy_add_listener's
- * "already has listener" check by writing directly to the proxy struct.
- *
- * wl_proxy struct layout (from wayland source):
- *   offset 0:  const struct wl_interface *interface
- *   offset 8:  const void *implementation   ← listener vtable
- *   offset 16: uint32_t id
- *   offset 24: struct wl_display *display
- *   offset 32: struct wl_event_queue *queue
- *   offset 40: uint32_t flags
- *   offset 44: int refcount
- *   offset 48: void *user_data              ← listener data
- *
- * Returns the old implementation (game's listener) or NULL if none. */
+/* Direct overwrite — bypass "already has listener" check */
 static void *direct_overwrite_implementation(struct wl_proxy *proxy,
                                               void *new_impl, void *new_data,
                                               void **old_data_out) {
-    /* implementation is at offset 8, user_data at offset 48 */
     void **impl_ptr = (void **)((char *)proxy + 8);
     void **data_ptr = (void **)((char *)proxy + 48);
 
@@ -1326,7 +1103,6 @@ static void *direct_overwrite_implementation(struct wl_proxy *proxy,
 static int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
                                        void (**impl)(void), void *data) {
     if (!real_wl_proxy_get_class || !real_wl_proxy_add_listener) {
-        /* Not initialized — pass through (shouldn't happen, but defensive) */
         if (orig_wl_proxy_add_listener)
             return orig_wl_proxy_add_listener(proxy, impl, data);
         return -1;
@@ -1334,14 +1110,11 @@ static int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
 
     const char *cls = real_wl_proxy_get_class(proxy);
     if (!cls) {
-        /* Unknown class — pass through */
         return orig_wl_proxy_add_listener
             ? orig_wl_proxy_add_listener(proxy, impl, data)
             : real_wl_proxy_add_listener(proxy, impl, data);
     }
 
-    /* Log only input-related classes, but only first few times to avoid
-     * spam if the game registers many keyboards/pointers. */
     static int s_kb_log_count = 0;
     static int s_ptr_log_count = 0;
     static int s_seat_log_count = 0;
@@ -1359,16 +1132,11 @@ static int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
              cls, (void *)impl, data);
     }
 
-    /* No re-entry guard needed — we use direct_overwrite_implementation
-     * which writes directly to the proxy struct without calling
-     * wl_proxy_add_listener, so there's no hook re-entry. */
-
     if (strcmp(cls, "wl_pointer") == 0) {
         struct ptr_state *st = (struct ptr_state *)calloc(1, sizeof(*st));
         if (!st) goto passthrough;
         st->game      = (const struct wl_pointer_listener *)impl;
         st->game_data = data;
-        /* ALWAYS use direct overwrite — see wl_keyboard comment above */
         void *old_data = NULL;
         void *old_impl = direct_overwrite_implementation(
             proxy, (void *)&g_ptr_wrapper, st, &old_data);
@@ -1387,15 +1155,10 @@ static int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
         if (!st) goto passthrough;
         st->game      = (const struct wl_keyboard_listener *)impl;
         st->game_data = data;
-        /* ALWAYS use direct overwrite — don't call real_wl_proxy_add_listener
-         * because it can re-enter our hook for the SAME proxy (guard skips
-         * it, but then game's listener gets installed instead of ours).
-         * Direct overwrite bypasses the hook entirely. */
         void *old_data = NULL;
         void *old_impl = direct_overwrite_implementation(
             proxy, (void *)&g_kb_wrapper, st, &old_data);
         if (old_impl) {
-            /* Proxy already had a listener — save it so we can forward */
             st->game = (const struct wl_keyboard_listener *)old_impl;
             st->game_data = old_data;
         }
@@ -1404,23 +1167,13 @@ static int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
         return 0;
     }
 
-    /* wl_touch and everything else: pass through unchanged (no logging). */
-
 passthrough:
     return orig_wl_proxy_add_listener
         ? orig_wl_proxy_add_listener(proxy, impl, data)
         : real_wl_proxy_add_listener(proxy, impl, data);
 }
 
-/* ── Hook on wl_proxy_add_dispatcher (GTK/Qt-style clients) ─────────────── */
-/*
- * For v1 we don't intercept dispatchers — we just pass through. Adding
- * dispatcher interception would require parsing the wl_message + wl_argument
- * union for every event opcode. Most games use SDL/GLFW which use the
- * listener path, so this is OK for now.
- *
- * The hook is still installed so we can LOG dispatcher usage for diagnosis.
- */
+/* Dispatcher hook — pass-through for now */
 
 static int (*orig_wl_proxy_add_dispatcher)(struct wl_proxy *,
     int (*)(const void *, void *, uint32_t, const void *, const void *),
@@ -1443,9 +1196,7 @@ static int hook_wl_proxy_add_dispatcher(struct wl_proxy *proxy,
            : -1);
 }
 
-/* ── Hotkey configuration ───────────────────────────────────────────────── */
-
-/* Linux input-event-codes.h scancodes (used as fallback when xkb is unavailable) */
+/* Linux input-event-codes.h scancodes (fallback when xkb unavailable) */
 #define IDK_KEY_F1   59
 #define IDK_KEY_F2   60
 #define IDK_KEY_F3   61
@@ -1467,7 +1218,7 @@ struct hotkey_name_to_scancode {
     uint32_t keysym;  /* XKB_KEY_* value */
 };
 
-/* Common XKB keysym values (from X11/keysymdef.h, subset) */
+
 #define IDK_XKB_KEY_F1   0xffbe
 #define IDK_XKB_KEY_F2   0xffbf
 #define IDK_XKB_KEY_F3   0xffc0
@@ -1502,14 +1253,12 @@ static const struct hotkey_name_to_scancode HOTKEY_TABLE[] = {
 
 static void configure_hotkey(void) {
     const char *env = getenv("IDK_TOGGLE_KEY");
-    if (!env || !env[0]) env = "F8";  /* default */
+    if (!env || !env[0]) env = "F8";
 
-    /* Try xkb_keysym_from_name first (handles arbitrary keysyms) */
     if (fn_xkb_keysym_from_name) {
         uint32_t ks = fn_xkb_keysym_from_name(env, IDK_XKB_KEYSYM_NO_FLAGS);
         if (ks != 0) {
             g_hotkey_keysym = ks;
-            /* Also try to find a matching scancode for fallback */
             for (size_t i = 0; i < sizeof(HOTKEY_TABLE) / sizeof(HOTKEY_TABLE[0]); i++) {
                 if (strcmp(env, HOTKEY_TABLE[i].name) == 0) {
                     g_hotkey_scancode = HOTKEY_TABLE[i].scancode;
@@ -1522,7 +1271,6 @@ static void configure_hotkey(void) {
         }
     }
 
-    /* Fall back to built-in table */
     for (size_t i = 0; i < sizeof(HOTKEY_TABLE) / sizeof(HOTKEY_TABLE[0]); i++) {
         if (strcmp(env, HOTKEY_TABLE[i].name) == 0) {
             g_hotkey_keysym = HOTKEY_TABLE[i].keysym;
@@ -1533,28 +1281,15 @@ static void configure_hotkey(void) {
         }
     }
 
-    /* Unknown — fall back to F8 */
     g_hotkey_keysym = IDK_XKB_KEY_F8;
     g_hotkey_scancode = IDK_KEY_F8;
     WLOG("unknown hotkey '%s', falling back to F8", env);
 }
 
-/* ── Sidecar input listener (MangoHud-style) ──────────────────────────── */
-/*
- * The sidecar creates a private event queue on the game's wl_display,
- * binds its own wl_seat + wl_keyboard, and receives DUPLICATE copies of
- * all key events. This is a FALLBACK for hotkey detection when listener
- * substitution misses (e.g. game registered listeners before our hook
- * installed, or uses wl_proxy_add_dispatcher).
- *
- * The sidecar CANNOT swallow events — the game still sees them. But it
- * CAN detect the hotkey and toggle capture mode.
- */
+/* Sidecar (MangoHud-style) — duplicate key events for hotkey detection */
 
 #define WL_SEAT_CAPABILITY_KEYBOARD 2
 #define WL_SEAT_CAPABILITY_POINTER  1
-
-/* ── Sidecar pointer listener (for fresh enter serial) ─────────────────── */
 
 static void sidecar_ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                               struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy) {
@@ -1563,12 +1298,6 @@ static void sidecar_ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
     g_sidecar_surface = (void *)s;
     g_sidecar_sx = sx;
     g_sidecar_sy = sy;
-    WLOG("sidecar_ptr_enter: serial=%u surface=%p (fresh enter for set_shape)",
-         serial, (void *)s);
-
-    /* If the game's pointer was intercepted but never received an enter
-     * (the initial enter was dispatched before our scan), synthesize one
-     * so the game calls set_cursor() and we can track cursor hidden state. */
     if (g_game_pointer_proxy && !g_pointer_in_surface) {
         void **data_ptr = (void **)((char *)g_game_pointer_proxy + 48);
         struct ptr_state *st = (struct ptr_state *)*data_ptr;
@@ -1576,13 +1305,9 @@ static void sidecar_ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
             g_pointer_in_surface = 1;
             g_last_enter_serial = serial;
             g_last_pointer_serial = serial;
-            WLOG("sidecar_ptr_enter: synthetic enter to game (serial=%u)"
-                 " for cursor state init", serial);
             st->game->enter(st->game_data,
                 (struct wl_pointer *)g_game_pointer_proxy,
                 serial, s, sx, sy);
-            WLOG("sidecar_ptr_enter: after synthetic enter:"
-                 " g_game_cursor_hidden=%d", g_game_cursor_hidden);
         }
     }
 }
@@ -1671,20 +1396,11 @@ static void sidecar_kb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
                            uint32_t time, uint32_t key, uint32_t state) {
     (void)d; (void)kb; (void)serial; (void)time;
 
-    /* Filter synthetic release events */
     if (key == 0 && state == 0) return;
 
-    /* Detect hotkey — game ALSO receives this event (can't swallow) */
     uint32_t keysym = 0;
     if (g_xkb_state && fn_xkb_state_key_get_one_sym) {
         keysym = fn_xkb_state_key_get_one_sym(g_xkb_state, key + 8);
-    }
-
-    static int s_log = 0;
-    if (s_log < 10) {
-        s_log++;
-        WLOG("sidecar_kb_key: keycode=%u keysym=0x%x state=%u (event %d)",
-             key, keysym, state, s_log);
     }
 
     if (g_xkb_state && fn_xkb_state_update_key) {
@@ -1693,10 +1409,6 @@ static void sidecar_kb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
     }
 
     if (is_hotkey(key, keysym)) {
-        /* Same shared guard as wkb_key — if wkb_key already handled
-         * the press (g_hotkey_pressed=1), sidecar won't toggle.
-         * If wkb_key didn't fire (game's keyboard not intercepted),
-         * sidecar handles the toggle. */
         if (state == WL_KEYBOARD_KEY_STATE_PRESSED && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
             WLOG("sidecar hotkey detected (key=%u keysym=0x%x) — toggling capture", key, keysym);
@@ -1739,31 +1451,24 @@ static void sidecar_seat_capabilities(void *d, struct wl_seat *seat, uint32_t ca
             void *old_impl = direct_overwrite_implementation(
                 (struct wl_proxy *)g_sidecar_pointer,
                 (void *)&g_sidecar_ptr_listener, NULL, &old_data);
-            WLOG("sidecar: wl_pointer bound + listener installed (old_impl=%p)",
-                 old_impl);
+            WLOG("sidecar: wl_pointer bound + listener installed (old_impl=%p)", old_impl);
         }
     }
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !g_sidecar_keyboard) {
         g_sidecar_keyboard = my_wl_seat_get_keyboard(seat);
         if (g_sidecar_keyboard) {
-            /* Use direct_overwrite to install sidecar listener — bypass
-             * the add_listener hook, which would intercept our sidecar's
-             * keyboard instead of letting us install our own listener.
-             * (The hook can't tell the difference between game's keyboard
-             * and sidecar's keyboard — both are "wl_keyboard" class.) */
             void *old_data = NULL;
             void *old_impl = direct_overwrite_implementation(
                 (struct wl_proxy *)g_sidecar_keyboard,
                 (void *)&g_sidecar_kb_listener, NULL, &old_data);
-            WLOG("sidecar: wl_keyboard bound + listener installed (direct overwrite, old_impl=%p)",
-                 old_impl);
+            WLOG("sidecar: wl_keyboard bound + listener installed (old_impl=%p)", old_impl);
         }
     }
 }
 
 static void sidecar_seat_name(void *d, struct wl_seat *seat, const char *name) {
     (void)d; (void)seat;
-    WLOG("sidecar: seat name=%s", name ? name : "(null)");
+
 }
 
 static const struct wl_seat_listener g_sidecar_seat_listener = {
@@ -1784,7 +1489,6 @@ static void sidecar_registry_global(void *d, struct wl_registry *reg,
         if (g_sidecar_seat && real_wl_proxy_add_listener) {
             real_wl_proxy_add_listener((struct wl_proxy *)g_sidecar_seat,
                                        (void (**)(void))&g_sidecar_seat_listener, NULL);
-            WLOG("sidecar: wl_seat listener installed");
         }
     } else if (strcmp(iface, "wp_cursor_shape_manager_v1") == 0 && !g_sidecar_cursor_shape_manager) {
         uint32_t bind_ver = ver < 2 ? ver : 2;
@@ -1808,13 +1512,9 @@ static int sidecar_init(struct wl_display *display) {
     if (g_sidecar_initialized) return 0;
     if (!display) return -1;
 
-    /* Don't retry after first failure — if symbols are missing, they'll
-     * still be missing next frame. This prevents log spam from
-     * dispatch_queue_pending calling sidecar_init every frame. */
     static int s_sidecar_failed = 0;
     if (s_sidecar_failed) return -1;
 
-    /* Check all required symbols for manual wayland function implementation */
     if (!real_wl_display_create_queue || !real_wl_proxy_create_wrapper ||
         !real_wl_proxy_wrapper_destroy || !real_wl_proxy_set_queue ||
         !real_wl_display_roundtrip_queue || !real_wl_display_dispatch_queue_pending ||
@@ -1822,117 +1522,57 @@ static int sidecar_init(struct wl_display *display) {
         !real_wl_proxy_marshal_constructor_versioned || !real_wl_proxy_marshal_flags ||
         !g_wl_seat_interface || !g_wl_keyboard_interface || !g_wl_registry_interface) {
         s_sidecar_failed = 1;
-        WLOG("sidecar: missing wayland symbols: create_queue=%p create_wrapper=%p "
-             "wrapper_destroy=%p set_queue=%p roundtrip=%p dispatch=%p "
-             "get_version=%p destroy=%p marshal_ctor_ver=%p marshal_flags=%p "
-             "seat_iface=%p kb_iface=%p registry_iface=%p",
-             (void*)real_wl_display_create_queue,
-             (void*)real_wl_proxy_create_wrapper,
-             (void*)real_wl_proxy_wrapper_destroy,
-             (void*)real_wl_proxy_set_queue,
-             (void*)real_wl_display_roundtrip_queue,
-             (void*)real_wl_display_dispatch_queue_pending,
-             (void*)real_wl_proxy_get_version,
-             (void*)real_wl_proxy_destroy,
-             (void*)real_wl_proxy_marshal_constructor_versioned,
-             (void*)real_wl_proxy_marshal_flags,
-             (void*)g_wl_seat_interface,
-             (void*)g_wl_keyboard_interface,
-             (void*)g_wl_registry_interface);
+        WLOG("sidecar: missing wayland symbols");
         return -1;
     }
 
     g_sidecar_display = display;
 
-    WLOG("sidecar: calling wl_display_create_queue");
     g_sidecar_queue = real_wl_display_create_queue(display);
     if (!g_sidecar_queue) {
         s_sidecar_failed = 1;
-        WLOG("sidecar: wl_display_create_queue failed");
         return -1;
     }
-    WLOG("sidecar: queue=%p", (void *)g_sidecar_queue);
 
-    WLOG("sidecar: calling wl_proxy_create_wrapper");
     struct wl_proxy *display_wrapper = real_wl_proxy_create_wrapper((struct wl_proxy *)display);
     if (!display_wrapper) {
         s_sidecar_failed = 1;
-        WLOG("sidecar: wl_proxy_create_wrapper failed");
         return -1;
     }
-    WLOG("sidecar: display_wrapper=%p", (void *)display_wrapper);
     real_wl_proxy_set_queue(display_wrapper, g_sidecar_queue);
 
-    /* Use our manual implementation of wl_display_get_registry */
-    WLOG("sidecar: calling my_wl_display_get_registry (marshal_ctor_versioned=%p, registry_iface=%p)",
-         (void*)real_wl_proxy_marshal_constructor_versioned, (void*)g_wl_registry_interface);
     struct wl_registry *registry = my_wl_display_get_registry((struct wl_display *)display_wrapper);
-    WLOG("sidecar: registry=%p", (void *)registry);
     real_wl_proxy_wrapper_destroy(display_wrapper);
 
     if (!registry) {
         s_sidecar_failed = 1;
-        WLOG("sidecar: wl_display_get_registry failed");
         return -1;
     }
 
-    WLOG("sidecar: adding registry listener");
     real_wl_proxy_add_listener((struct wl_proxy *)registry,
                                (void (**)(void))&g_sidecar_registry_listener, NULL);
 
-    /* Mark as initialized — registry listener is installed. The actual
-     * seat/keyboard binding will happen asynchronously when events are
-     * dispatched on our sidecar queue.
-     *
-     * We CANNOT call any dispatch function here because:
-     * - roundtrip_queue blocks on read_events (deadlock with SDL2's read lock)
-     * - dispatch_queue_pending also internally calls prepare_read → can block
-     *
-     * Instead, sidecar_dispatch() is called from the EGL swap hook every
-     * frame. It calls dispatch_queue_pending on our sidecar queue. The first
-     * call will process the registry global event (wl_seat advertisement)
-     * that's already buffered, binding our wl_seat. Subsequent calls process
-     * seat capability events (binding wl_keyboard) and keyboard events.
-     *
-     * This is safe because:
-     * 1. dispatch_queue_pending is non-blocking if no events are pending
-     * 2. We only dispatch OUR queue, not the game's default queue
-     * 3. The game's read lock state doesn't matter — we're not reading,
-     *    just processing already-read events on our queue
-     *
-     * The first dispatch happens on the next EGL swap, within 1 frame. */
     g_sidecar_initialized = 1;
-    WLOG("sidecar: initialized (seat=%p keyboard=%p) — will bind on next dispatch",
+    WLOG("sidecar: initialized (seat=%p keyboard=%p)",
          (void *)g_sidecar_seat, (void *)g_sidecar_keyboard);
     return 0;
 }
 
-/* ── Cursor shape device management ──────────────────────────────────────── */
-
-/* Lazily create a wp_cursor_shape_device_v1 for the given wl_pointer.
- * Re-creates if the pointer proxy changes (seat reconnect, etc.). */
+/* Cursor shape device lifecycle */
 static void sidecar_ensure_cursor_shape_device(struct wl_pointer *p) {
     if (!g_sidecar_cursor_shape_manager) {
-        WLOG("cursor: no cursor_shape_manager — can't set cursor shape");
         return;
     }
     if (g_cursor_shape_device &&
         g_shape_device_pointer_proxy == (struct wl_proxy *)p)
         return;
 
-    /* Destroy old device if proxy changed */
     if (g_cursor_shape_device) {
-        real_wl_proxy_marshal_flags(g_cursor_shape_device, 0,  /* destroy */
+        real_wl_proxy_marshal_flags(g_cursor_shape_device, 0,
             NULL, 2, WL_MARSHAL_FLAG_DESTROY);
         g_cursor_shape_device = NULL;
         g_shape_device_pointer_proxy = NULL;
     }
-
-    /* wp_cursor_shape_manager_v1.get_pointer: opcode 1, signature "no"
-     * Variadic args must match ALL non-version chars in the signature:
-     *   'n' (new_id) → NULL (library creates the new proxy internally)
-     *   'o' (object) → p (the wl_pointer proxy)
-     * Missing the NULL for 'n' causes va_list to read garbage for 'o' → crash. */
     g_cursor_shape_device = real_wl_proxy_marshal_constructor_versioned(
         g_sidecar_cursor_shape_manager, 1,
         &g_wp_cursor_shape_device_v1_interface, 2,
@@ -1942,48 +1582,28 @@ static void sidecar_ensure_cursor_shape_device(struct wl_pointer *p) {
         return;
     }
     g_shape_device_pointer_proxy = (struct wl_proxy *)p;
-    WLOG("cursor: shape device created for pointer %p → device %p (manager=%p)",
-         (void *)p, (void *)g_cursor_shape_device,
-         (void *)g_sidecar_cursor_shape_manager);
 }
 
-/* Forward declaration — defined later, after hook function */
 static int (*orig_wl_display_dispatch_queue_pending)(struct wl_display *, struct wl_event_queue *) = NULL;
 
 void idk_wayland_input_sidecar_dispatch(void) {
     if (!g_sidecar_initialized || !g_sidecar_display || !g_sidecar_queue) return;
-    /* Use orig_ (bounce stub) to avoid hitting the inline trampoline
-     * which would re-enter our hook. orig_ safely calls the real function
-     * body without re-entering the hook. */
     if (!orig_wl_display_dispatch_queue_pending) return;
     orig_wl_display_dispatch_queue_pending(g_sidecar_display, g_sidecar_queue);
 }
 
-/* ── Hook on wl_display_connect / wl_display_connect_to_fd ─────────────── */
-/*
- * SDL2 on Wayland uses wl_display_connect_to_fd() (not wl_display_connect)
- * because SDL opens the socket itself via SOCK_NONBLOCK + connect(). We
- * must hook BOTH variants to catch all clients.
- *
- * HOWEVER: if our hook installs AFTER SDL2 already called connect (timing
- * race), we miss the display. To handle this, we ALSO hook
- * wl_display_dispatch_queue_pending (called every frame by SDL2's event
- * loop) — when we see a dispatch call, we lazily init the sidecar using
- * the display from that call.
- */
+/* Display connect hooks — init sidecar lazily */
 
 static struct wl_display *(*orig_wl_display_connect)(const char *name) = NULL;
 static struct wl_display *(*orig_wl_display_connect_to_fd)(int fd) = NULL;
-/* orig_wl_display_dispatch_queue_pending forward-declared above, before
- * idk_wayland_input_sidecar_dispatch() */
+
 
 static struct wl_display *hook_wl_display_connect(const char *name) {
     struct wl_display *display = orig_wl_display_connect
         ? orig_wl_display_connect(name)
         : NULL;
     if (display) {
-        WLOG("wl_display_connect(\"%s\") → %p — initializing sidecar",
-             name ? name : "(default)", (void *)display);
+        WLOG("wl_display_connect(\"%s\") → %p", name ? name : "(default)", (void *)display);
         sidecar_init(display);
     }
     return display;
@@ -1994,24 +1614,16 @@ static struct wl_display *hook_wl_display_connect_to_fd(int fd) {
         ? orig_wl_display_connect_to_fd(fd)
         : NULL;
     if (display) {
-        WLOG("wl_display_connect_to_fd(%d) → %p — initializing sidecar",
-             fd, (void *)display);
+        WLOG("wl_display_connect_to_fd(%d) → %p", fd, (void *)display);
         sidecar_init(display);
     }
     return display;
 }
 
 static int hook_wl_display_dispatch_queue_pending(struct wl_display *display,
-                                                   struct wl_event_queue *queue) {
-    /* Re-entry guard — sidecar_init calls roundtrip_queue which calls
-     * dispatch_queue_pending internally. Without this guard, the hook
-     * re-enters sidecar_init → infinite recursion → crash. */
+                                                    struct wl_event_queue *queue) {
     static int s_in_sidecar_init = 0;
 
-    /* When inside sidecar_init, call the ORIGINAL function via bounce stub
-     * — NOT real_ (dlsym), which would hit the inline trampoline and
-     * re-enter our hook. orig_ runs the saved prologue and jumps past
-     * the trampoline, safely calling the real function body. */
     if (s_in_sidecar_init) {
         if (orig_wl_display_dispatch_queue_pending)
             return orig_wl_display_dispatch_queue_pending(display, queue);
@@ -2020,59 +1632,24 @@ static int hook_wl_display_dispatch_queue_pending(struct wl_display *display,
         return -1;
     }
 
-    /* Lazy sidecar init — if connect hooks missed (timing race), catch
-     * the display here. This fires every frame, so we'll init within
-     * 1 frame of the game starting its event loop. */
     if (!g_sidecar_initialized && display) {
         s_in_sidecar_init = 1;
-        WLOG("wl_display_dispatch_queue_pending: display=%p — lazy sidecar init",
-             (void *)display);
         sidecar_init(display);
         s_in_sidecar_init = 0;
-        WLOG("sidecar_init returned, g_sidecar_initialized=%d", g_sidecar_initialized);
     }
 
-    /* Scan event queue's proxy_list for game's keyboards AND pointers.
-     * Game may have registered before our hook installed. */
     scan_and_intercept_input_proxies(display);
 
-    /* DO NOT dispatch sidecar queue here — calling dispatch_queue_pending
-     * on our sidecar queue from inside the game's dispatch hook causes
-     * reentrancy issues (prepare_read conflicts, crashes). The sidecar
-     * queue is dispatched from idk_wayland_input_sidecar_dispatch() which
-     * is called from the EGL swap hook (separate call site, safe). */
-
-    /* Call the ORIGINAL dispatch for the game's display+queue.
-     * IMPORTANT: use orig_ (syringe bounce stub), NOT real_ (dlsym).
-     * syringe installs an inline trampoline at the start of the real
-     * function. If we call real_ directly, we hit the trampoline →
-     * re-enter our hook → infinite loop / deadlock. orig_ is the bounce
-     * stub that runs the saved prologue then jumps past the trampoline. */
     if (orig_wl_display_dispatch_queue_pending) {
         return orig_wl_display_dispatch_queue_pending(display, queue);
     }
-    /* Fallback: if orig is NULL (hook not fully set up), use real_ */
     if (real_wl_display_dispatch_queue_pending) {
         return real_wl_display_dispatch_queue_pending(display, queue);
     }
     return -1;
 }
 
-/* ── Hook on wl_proxy_marshal_array_flags (for cursor state tracking) ────── */
-/*
- * We hook this to intercept the game's wl_pointer.set_cursor calls.
- * When the game calls set_cursor(serial, NULL, 0, 0), it's hiding the
- * cursor. We record this so we can restore the hidden state when
- * capture turns OFF.
- *
- * wl_proxy_marshal_flags (variadic) internally calls
- * wl_proxy_marshal_array_flags (array-based) via the GOT. By hooking
- * the array version, we intercept ALL marshal calls without dealing
- * with variadic arg forwarding.
- *
- * The hook only inspects set_cursor calls (opcode 0 on wl_pointer);
- * everything else passes through untouched.
- */
+/* Track game cursor state via set_cursor interception */
 
 static struct wl_proxy *(*orig_wl_proxy_marshal_array_flags)(
     struct wl_proxy *, uint32_t, const struct wl_interface *,
@@ -2082,14 +1659,10 @@ static struct wl_proxy *hook_wl_proxy_marshal_array_flags(
     struct wl_proxy *proxy, uint32_t opcode,
     const struct wl_interface *interface,
     uint32_t version, uint32_t flags, union wl_argument *args) {
-    /* Only intercept set_cursor on the game's pointer proxy */
     if (proxy && proxy == g_game_pointer_proxy && opcode == WL_POINTER_SET_CURSOR
         && args && !g_captured) {
-        /* wl_pointer.set_cursor signature: "u o i i"
-         * args[0].u = serial, args[1].o = surface (NULL = hide cursor) */
         g_game_cursor_hidden = (args[1].o == NULL);
     }
-    /* Always call original — never modify args */
     if (orig_wl_proxy_marshal_array_flags)
         return orig_wl_proxy_marshal_array_flags(proxy, opcode, interface,
                                                   version, flags, args);
@@ -2099,26 +1672,11 @@ static struct wl_proxy *hook_wl_proxy_marshal_array_flags(
     return NULL;
 }
 
-/* ── Hook on wl_proxy_destroy (for stale cursor shape device tracking) ───── */
-/*
- * SDL3 destroys and recreates wl_pointer when transitioning rendering modes
- * (e.g., osu! menu → gameplay). When the old pointer is destroyed, our
- * cursor shape device (created via get_pointer on the old pointer) becomes
- * a zombie — set_shape requests to it are silently ignored by the compositor.
- *
- * By hooking wl_proxy_destroy, we detect when the game's pointer is being
- * destroyed and clean up our references BEFORE the proxy actually dies.
- * This ensures that on the next wptr_enter (with the new pointer proxy),
- * sidecar_ensure_cursor_shape_device creates a fresh, valid device.
- */
+/* Clean up stale cursor shape device on pointer recreate */
 
 static void (*orig_wl_proxy_destroy)(struct wl_proxy *) = NULL;
 
 static void hook_wl_proxy_destroy(struct wl_proxy *proxy) {
-    /* If game is destroying its pointer proxy, clean up our cursor
-     * shape device BEFORE the pointer goes away. The cursor shape
-     * manager spec requires the wl_pointer to outlive the device.
-     * Order: destroy device → then let pointer die. */
     if (proxy && proxy == g_game_pointer_proxy) {
         WLOG("wl_proxy_destroy: game pointer %p — destroying cursor shape device",
              (void *)proxy);
@@ -2132,7 +1690,6 @@ static void hook_wl_proxy_destroy(struct wl_proxy *proxy) {
         g_pointer_in_surface = 0;
     }
 
-    /* Sidecar pointer is also destroyed during teardown — clear ref */
     if (proxy == (struct wl_proxy *)g_sidecar_pointer) {
         g_sidecar_pointer = NULL;
     }
@@ -2143,28 +1700,24 @@ static void hook_wl_proxy_destroy(struct wl_proxy *proxy) {
         real_wl_proxy_destroy(proxy);
 }
 
-/* ── Public API ─────────────────────────────────────────────────────────── */
+
 
 int idk_wayland_input_init(void) {
     if (g_hook_installed) return 0;
 
     if (resolve_wayland_symbols() != 0) {
-        return -1;  /* not a wayland client, or libwayland not loaded */
+        return -1;
     }
 
-    /* xkbcommon is optional — gracefully degrade if unavailable */
     resolve_xkbcommon_symbols();
 
     configure_hotkey();
 
     if (init_input_socket() != 0) {
         WLOG("input socket init failed — events will be dropped (no webview)");
-        /* Continue anyway — hooks still useful for hotkey detection */
     }
 
-    /* Install the hook via syringe — this catches all callers in the
-     * process (including libraries like SDL, GLFW, Qt that link
-     * libwayland-client normally). */
+
     int n = syringe_hook_install("wl_proxy_add_listener",
                                   (void *)hook_wl_proxy_add_listener,
                                   (void **)&orig_wl_proxy_add_listener);
@@ -2173,17 +1726,15 @@ int idk_wayland_input_init(void) {
         return -1;
     }
 
-    /* Also hook dispatcher for diagnostic logging (pass-through for now) */
+
     int n2 = syringe_hook_install("wl_proxy_add_dispatcher",
                                    (void *)hook_wl_proxy_add_dispatcher,
                                    (void **)&orig_wl_proxy_add_dispatcher);
     if (n2 <= 0) {
-        WLOG("wl_proxy_add_dispatcher hook not installed (n=%d) — OK for SDL/GLFW games", n2);
+        WLOG("wl_proxy_add_dispatcher hook not installed (n=%d)", n2);
     }
 
-    /* Hook wl_display_connect + wl_display_connect_to_fd to capture the
-     * display for sidecar init. SDL2 uses connect_to_fd (it opens the
-     * socket itself); other clients use connect. Hook both to be safe. */
+
     int n3 = syringe_hook_install("wl_display_connect",
                                    (void *)hook_wl_display_connect,
                                    (void **)&orig_wl_display_connect);
@@ -2195,47 +1746,31 @@ int idk_wayland_input_init(void) {
                                    (void *)hook_wl_display_connect_to_fd,
                                    (void **)&orig_wl_display_connect_to_fd);
     if (n4 <= 0) {
-        WLOG("wl_display_connect_to_fd hook not installed (n=%d) — "
-             "SDL2 Wayland clients may not get sidecar via connect path", n4);
+        WLOG("wl_display_connect_to_fd hook not installed (n=%d)", n4);
     }
 
-    /* Hook wl_display_dispatch_queue_pending — this is called EVERY FRAME
-     * by SDL2's event loop. It's our RELIABLE fallback for two things:
-     * 1. Lazy sidecar init if connect hooks missed (timing race)
-     * 2. Dispatching our sidecar's private event queue (process keyboard
-     *    events for hotkey detection)
-     * This is the most important hook — it guarantees we catch the display
-     * and process input regardless of when our hook installed. */
+
     int n5 = syringe_hook_install("wl_display_dispatch_queue_pending",
                                    (void *)hook_wl_display_dispatch_queue_pending,
                                    (void **)&orig_wl_display_dispatch_queue_pending);
     if (n5 <= 0) {
-        WLOG("wl_display_dispatch_queue_pending hook not installed (n=%d) — "
-             "sidecar lazy init + dispatch will not work", n5);
+        WLOG("wl_display_dispatch_queue_pending hook not installed (n=%d)", n5);
     }
 
-    /* Hook wl_proxy_marshal_array_flags to track the game's cursor state.
-     * When the game calls wl_pointer.set_cursor(serial, NULL, ...), it
-     * hides the cursor. We record this to restore the hidden state when
-     * capture turns OFF. */
+
     int n6 = syringe_hook_install("wl_proxy_marshal_array_flags",
                                    (void *)hook_wl_proxy_marshal_array_flags,
                                    (void **)&orig_wl_proxy_marshal_array_flags);
     if (n6 <= 0) {
-        WLOG("wl_proxy_marshal_array_flags hook not installed (n=%d) — "
-             "cursor state tracking disabled", n6);
+        WLOG("wl_proxy_marshal_array_flags hook not installed (n=%d)", n6);
     }
 
-    /* Hook wl_proxy_destroy to detect game pointer destruction.
-     * When SDL3 destroys and recreates a wl_pointer (e.g., on render mode
-     * switch), our cursor shape device for the old pointer becomes stale.
-     * This hook lets us clean up and recreate the device on the next enter. */
+
     int n7 = syringe_hook_install("wl_proxy_destroy",
                                    (void *)hook_wl_proxy_destroy,
                                    (void **)&orig_wl_proxy_destroy);
     if (n7 <= 0) {
-        WLOG("wl_proxy_destroy hook not installed (n=%d) — "
-             "cursor shape device may go stale on pointer recreate", n7);
+        WLOG("wl_proxy_destroy hook not installed (n=%d)", n7);
     }
 
     g_hook_installed = 1;
@@ -2249,10 +1784,6 @@ int idk_wayland_input_init(void) {
 void idk_wayland_input_shutdown(void) {
     if (!g_hook_installed) return;
 
-    /* During process exit, don't remove hooks or destroy wayland objects —
-     * the game's wayland display is being torn down concurrently and
-     * syringe_hook_remove can race with active calls. Just close our
-     * input socket and let the OS reclaim the rest. */
     g_hook_installed = 0;
     g_sidecar_initialized = 0;
     g_sidecar_display = NULL;
@@ -2261,13 +1792,9 @@ void idk_wayland_input_shutdown(void) {
     g_sidecar_cursor_shape_manager = NULL;
     g_sidecar_queue = NULL;
 
-    /* Don't destroy cursor shape device — the display is being torn
-     * down concurrently and marshalling on a dead connection segfaults.
-     * Just NULL our pointers and let the OS reclaim resources. */
     g_cursor_shape_device = NULL;
     g_shape_device_pointer_proxy = NULL;
 
-    /* NULL orig hooks so teardown path doesn't call wayland functions */
     orig_wl_proxy_destroy = NULL;
 
     if (g_accept_thread_started) {

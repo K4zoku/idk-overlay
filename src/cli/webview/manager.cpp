@@ -41,19 +41,7 @@ Manager::Manager(const QString &confFile,
         m_socketPath = resolvePath(m_settings->value("Socket", "/tmp/idk-overlay").toString());
     }
 
-    /* ── Connection strategy ───────────────────────────────────────────
-     * OLD design (commit 525c106 and earlier) used TWO sockets to the
-     * compositor: idk_fs's internal g_sock_fd (for data) + a
-     * QLocalSocket m_socket (for status). The compositor only accepts
-     * ONE client, so whichever socket connect()'d first got accept()'d.
-     * If QLocalSocket won the race, idk_fs's frames went into a
-     * dead queue and the overlay never showed — this was the
-     * "start client first → no overlay" bug.
-     *
-     * NEW design: use idk_fs as the SOLE connection. A QTimer polls
-     * idk_fs_get_fd() every 1s to detect (dis)connect transitions
-     * and emit socketConnected / socketDisconnected. No QLocalSocket —
-     * no race, no dual-socket confusion. */
+    /* Connection: use idk_fs as sole connection */
     const char *reuse_fd = getenv("IDK_SOCKET_FD");
     int fd = reuse_fd ? atoi(reuse_fd) : -1;
     m_was_connected = false;
@@ -66,9 +54,7 @@ Manager::Manager(const QString &confFile,
             startInputReceiver();
         }
     } else {
-        /* Try to connect now; if it fails, the reconnect timer will retry.
-         * Uses blocking init with 30 retries (~3s) for the initial attempt —
-         * handles the common case where compositor is already running. */
+        /* Try blocking connect (retry timer handles failure) */
         if (idk_fs_init(m_socketPath.toUtf8().data(), false) == 0) {
             m_was_connected = true;
             IDK_LOG("webview", "idk_fs connected to %s\n",
@@ -85,21 +71,15 @@ Manager::Manager(const QString &confFile,
             bool connected_now = (fd_now >= 0);
 
             if (connected_now && !m_was_connected) {
-                /* Transition: disconnected → connected */
                 m_disconnect_count = 0;
                 IDK_LOG("webview", "idk_fs connected (fd=%d)\n", fd_now);
                 emit socketConnected();
                 startInputReceiver();
             } else if (!connected_now && m_was_connected) {
-                /* Transition: connected → disconnected.
-                 * idk_fs's fd went dead (compositor closed, EPIPE, etc.).
-                 * Try to reconnect; if it fails, the next timer tick retries.
-                 * Log only ONCE per disconnect (not every retry) — the
-                 * "still connecting" branch below handles subsequent retries. */
+                /* connected → disconnected: try reconnect once */
                 IDK_LOG("webview", "idk_fs disconnected — attempting reconnect\n");
                 emit socketDisconnected();
                 stopInputReceiver();
-                /* Attempt non-blocking reconnect (single attempt, no 3s block) */
                 if (idk_fs_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
                     IDK_LOG("webview", "idk_fs reconnected\n");
                     emit socketConnected();
@@ -107,20 +87,10 @@ Manager::Manager(const QString &confFile,
                     connected_now = true;
                     m_disconnect_count = 0;
                 } else {
-                    /* Start counting retries for the "still connecting" branch */
                     m_disconnect_count = 1;
                 }
             } else if (!connected_now && !m_was_connected) {
-                /* Still never connected — retry with non-blocking init.
-                 * This handles the "client-first, game-after" scenario.
-                 * LOG SPARSELY: only at attempts 1, 5, 30, then every 60
-                 * (~1min). At 1s timer interval this means:
-                 *   attempt 1 (1s)  — first retry
-                 *   attempt 5 (5s)  — "still trying"
-                 *   attempt 30 (30s) — "still trying"
-                 *   attempt 60, 120, ... (1min, 2min) — heartbeat
-                 * Silent in between — no log spam while waiting for the
-                 * compositor to come up. */
+                /* Still not connected — retry (logged sparsely at 1,5,30,60..) */
                 m_disconnect_count++;
                 bool should_log = (m_disconnect_count == 1 ||
                                    m_disconnect_count == 5 ||
@@ -274,7 +244,6 @@ QString Manager::resolvePath(const QString &path) const
 
 void Manager::startInputReceiver()
 {
-    /* Already running — nothing to do */
     if (m_inputRx && m_inputRx->isConnected()) return;
 
     if (!m_inputRx) {
@@ -295,9 +264,7 @@ void Manager::startInputReceiver()
         return;
     }
 
-    /* Connection failed — game may not have started yet, or game is not
-     * a wayland client (input hook disabled). Retry every 2s for up to
-     * 30s, then give up silently (no point spamming logs). */
+    /* Connection failed — retry every 2s for 30s, then give up */
     if (!m_inputRetryTimer) {
         m_inputRetryTimer = new QTimer(this);
         m_inputRetryTimer->setSingleShot(false);
@@ -311,9 +278,7 @@ void Manager::startInputReceiver()
                 return;
             }
             if (*retries >= 15) {
-                /* Game probably isn't a wayland client, or doesn't have the
-                 * input hook installed. Stop retrying — the frame socket
-                 * still works, just no input forwarding. */
+                /* Give up after 30s — no input hook available */
                 IDK_LOG("webview", "input receiver giving up after 30s — "
                         "game may not be a wayland client\n");
                 m_inputRetryTimer->stop();

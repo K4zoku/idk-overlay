@@ -1,19 +1,4 @@
-/*
- * compositor.c — Wayland EGL compositor for overlay frames
- *
- * Receives dmabuf frames from webview, converts to GL textures via
- * EGL DMA-BUF import, and renders fullscreen quads on top of the
- * game's EGL framebuffer.
- *
- * This is the SAME approach used by Steam/Discord overlays on Wayland:
- * render additional content in the same EGL context before swap.
- *
- * Flow:
- *   1. Background thread receives dmabuf from webview socket
- *   2. Converts to EGLImage → GL texture
- *   3. EGL swap hook renders overlay quad before calling original swap
- *   4. Game + overlay are presented together
- */
+/* compositor.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,19 +20,9 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* ── Frame header from webview ─────────────────────────────────────── */
-/*
- * Wire format (matches idk_fs_frame_t::build_frame_hdr):
- *   fields[0] = width
- *   fields[1] = height
- *   fields[2] = x position (overloaded "stride")
- *   fields[3] = y position (overloaded "format")
- *   fields[4] = overlay ID (overloaded "num_planes")
- *   fields[5] = pixel byte size (overloaded "pid") — used by SHM mode
- *   fields[6] = visibility (low byte) + frame type (high byte)
- *               type: 0 = DMABUF, 1 = SHM
- *   fields[7] = checksum
- */
+#define IDK_FRAME_TYPE_DMABUF  0
+#define IDK_FRAME_TYPE_SHM     1
+
 struct frame_hdr {
     uint32_t width;
     uint32_t height;
@@ -58,11 +33,6 @@ struct frame_hdr {
     uint32_t vis_type;     /* visibility (low byte) + frame type (high byte) */
     uint32_t checksum;
 };
-
-#define IDK_FRAME_TYPE_DMABUF  0
-#define IDK_FRAME_TYPE_SHM     1
-
-/* ── EGL types (opaque — we don't need full EGL headers) ────────────────── */
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
@@ -84,8 +54,6 @@ typedef intptr_t EGLNativeDisplayType;
 #define EGL_DRM_BUFFER_FORMAT_MESA     0x31DD
 #define EGL_DRM_BUFFER_STRIDE_MESA     0x31DE
 
-/* ── EGL function pointers (resolved at runtime via dlsym) ──────────────── */
-
 typedef EGLDisplay (*PFN_eglGetDisplay_fn)(EGLNativeDisplayType);
 typedef EGLint (*PFN_eglGetError_fn)(void);
 typedef EGLImageKHR (*PFN_eglCreateImageKHR_fn)(EGLDisplay dpy, EGLContext ctx,
@@ -99,8 +67,6 @@ static PFN_eglGetError_fn         fn_eglGetError         = NULL;
 static PFN_eglCreateImageKHR_fn   fn_eglCreateImageKHR   = NULL;
 static PFN_eglDestroyImageKHR_fn  fn_eglDestroyImageKHR  = NULL;
 
-/* Resolve EGL function pointers from libEGL.so.1 (RTLD_NOLOAD — reuse
- * the lib already loaded by the target process). */
 static void resolve_egl_functions(void) {
     if (fn_eglGetDisplay) return;
     void *lib = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
@@ -118,43 +84,28 @@ static void resolve_egl_functions(void) {
             (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
 }
 
-/* ── GL state ──────────────────────────────────────────────────────── */
-
 static GLuint g_program = 0;
 
 
-/* Double-buffered overlay textures — upload to back while drawing from front */
+/* Double-buffered textures */
 static GLuint g_tex[2] = {0, 0};
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static bool g_has_frame = false;
 
-/* GL error counter for render_overlay — counts consecutive draw errors.
- * Reset to 0 on successful frame upload (shm_to_texture / dmabuf path)
- * so each new texture gets a fresh chance. When it hits 5, the current
- * texture is marked invalid (g_tex[g_tex_idx]=0, g_has_frame=false) to
- * stop spam at its source.
- *
- * IMPORTANT: must be file-scope (not function-scope static) so it can be
- * reset from shm_to_texture / dmabuf path. With function-scope only, the
- * counter never resets on new frame upload → climbs to 39000+ on a
- * persistently-bad texture, with "if (count == 5)" only firing once. */
+/* Draw error counter — reset on new frame upload, invalidate tex at 5 */
 static int g_draw_err_count = 0;
 
-/* Persistent SHM mapping (kept between frames for zero-copy reads) */
 static int    g_shm_fd = -1;
 static void  *g_shm_map = NULL;
 static size_t g_shm_map_size = 0;
 
-/* GL version detection (MangoHud-style) */
 static bool g_is_gles = false;
 static int g_gl_version = 0;  /* major*100 + minor*10, e.g. 330 for GL 3.3 */
 
-/* DMABUF fd — kept open until next frame replaces it */
 static int g_dmabuf_fd = -1;
 static uint32_t g_frame_w = 0;
 static uint32_t g_frame_h = 0;
 
-/* GL function pointers for GL 2.0+ (resolved at runtime) */
 typedef void* GLeglImage;
 typedef void (*PFN_glEGLImageTargetTexture2DOES_fn)(GLenum target, GLeglImage image);
 static PFN_glEGLImageTargetTexture2DOES_fn fn_glEGLImageTargetTexture2DOES = NULL;
@@ -163,18 +114,11 @@ static PFN_glEGLImageTargetTexture2DOES_fn fn_glEGLImageTargetTexture2DOES = NUL
 static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                                     uint32_t stride, uint32_t format);
 
-/* ── Webview socket receiver (server) ──────────────────────────────── */
-
 static int g_listen_fd = -1;
 static int g_client_fd = -1;
 static char g_sock_path[512];
 
-/**
- * Start listening for overlay frames from webview clients.
- * Must be called from main thread (creates/binds socket).
- * Returns 0 on success.
- * Uses IDK_SOCKET env var if set, falls back to /tmp/idk-overlay-<pid>.
- */
+/* Init compositor — bind socket, accept client */
 int idk_compositor_init(void) {
     const char *env_sock = getenv("IDK_SOCKET");
     if (env_sock && env_sock[0] != '\0') {
@@ -183,9 +127,6 @@ int idk_compositor_init(void) {
         snprintf(g_sock_path, sizeof(g_sock_path), "/tmp/idk-overlay-%d", getpid());
     }
 
-    /* Check if a previous instance is still alive.
-     * If the socket exists AND we can connect, another instance owns it.
-     * We're a spare — exit immediately. */
     {
         struct stat st;
         if (stat(g_sock_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
@@ -201,7 +142,6 @@ int idk_compositor_init(void) {
         }
     }
 
-    /* Remove stale socket */
     unlink(g_sock_path);
 
     g_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -223,7 +163,6 @@ int idk_compositor_init(void) {
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_sock_path);
 
     if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        /* Retry: stale socket may have been re-created between unlink and bind */
         unlink(g_sock_path);
         if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             if (errno == EADDRINUSE) {
@@ -247,7 +186,6 @@ int idk_compositor_init(void) {
         return -1;
     }
 
-    /* Accept first client (non-blocking — return -1 if none yet) */
     g_client_fd = accept(g_listen_fd, NULL, NULL);
     if (g_client_fd < 0) {
         IDK_LOG("comp", "No client yet (fd=-1, will retry next frame, err=%s)\n",
@@ -255,17 +193,13 @@ int idk_compositor_init(void) {
         g_client_fd = -1;
     }
 
-    /* Init GL resources (will be used in GL context thread) */
     g_has_frame = false;
 
     IDK_LOG("comp", "Listening on %s, waiting for webview client...\n", g_sock_path);
     return 0;
 }
 
-/**
- * Accept a new client connection (called from render loop).
- * Non-blocking.
- */
+/* Non-blocking accept */
 static int accept_client(void) {
     if (g_client_fd >= 0) return 0; /* already have a client */
     if (g_listen_fd < 0) return -1;
@@ -280,21 +214,7 @@ static int accept_client(void) {
     return 0;
 }
 
-/**
- * Called from EGL swap hook (before original swap) to receive and render
- * a new overlay frame. Non-blocking.
- *
- * Returns 0 if frame rendered, -1 if no frame.
- */
-/*
- * Convert SHM pixel data to GL texture via glTex(Sub)Image2D.
- * Uses a persistent mmap and persistent GL texture — does not
- * delete/recreate per frame (avoids flickering from double-buffer
- * offset mismatch).
- *
- * Pixel format: RGBA8888 (matches Qt's QImage::Format_RGBA8888).
- * buffer_idx: which half of the double-buffered SHM has fresh data.
- */
+/* SHM → GL texture upload via glTex(Sub)Image2D */
 static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
                               uint32_t pixel_size, uint32_t buffer_idx) {
     if (!idk_fn_glTexImage2D) {
@@ -302,15 +222,6 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         return 0;
     }
 
-    /* ── Validate dimensions BEFORE glTexImage2D / glTexSubImage2D ─────
-     * Both calls with width=0 or height=0 return GL_INVALID_VALUE (0x501).
-     * Likely root cause of the flaky "GL error after draw: 0x501" — on the
-     * first eglSwapBuffers, eglQuerySurface may return 0×0 before the
-     * surface is fully realized, and the client may send a frame with the
-     * same 0×0 dimensions before ACK flow control kicks in. Also catches
-     * pixel_size < w*h*4 (SHM buffer smaller than expected RGBA payload),
-     * which would make glTexSubImage2D read past the mmap region.
-     */
     if (w == 0 || h == 0) {
         fprintf(stderr,
             "[idk-comp] shm_to_texture: rejecting zero-dim frame w=%u h=%u\n",
@@ -324,10 +235,6 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
             w, h, pixel_size, expected);
         return 0;
     }
-    /* pixel_size > expected is OK — driver reads expected bytes, extra is
-     * padding (e.g. row alignment). Only pixel_size < expected is rejected. */
-
-    /* Check if this is a new memfd (via inode comparison) */
     struct stat st;
     if (fstat(shm_fd, &st) < 0) {
         IDK_ERR("comp", "SHM fstat failed: %s\n", strerror(errno));
@@ -337,7 +244,6 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     static dev_t s_shm_dev = 0;
 
     if (st.st_ino != s_shm_ino || st.st_dev != s_shm_dev) {
-        /* New memfd — remap */
         if (g_shm_map) {
             munmap(g_shm_map, g_shm_map_size);
             g_shm_map = NULL;
@@ -358,18 +264,12 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         g_shm_fd = shm_fd;  /* keep open so mmap stays alive */
     }
 
-    /* Compute buffer offset within the double-buffered memfd */
     uint32_t buf_size = pixel_size;
     uint8_t *buf = (uint8_t*)g_shm_map + (buffer_idx * buf_size);
 
-    /* Save GL_UNPACK_ALIGNMENT so we don't corrupt the host's pixel store
-     * state. glPixelStorei affects ALL subsequent glTexImage2D/glTexSubImage2D
-     * calls — including the host's — until restored. */
     GLint last_unpack_align = 4;
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &last_unpack_align);
 
-    /* Upload to the BACK texture (the one NOT currently displayed),
-     * so the FRONT texture remains valid for concurrent drawing. */
     int back = 1 - g_tex_idx;
     if (g_tex[back] == 0) {
         glGenTextures(1, &g_tex[back]);
@@ -394,20 +294,15 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
                                GL_RGBA, GL_UNSIGNED_BYTE, buf);
     }
 
-    /* Restore GL_UNPACK_ALIGNMENT for the host. */
     if (idk_fn_glPixelStorei) {
         idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, last_unpack_align);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    /* Swap: the newly uploaded texture becomes the display texture */
     g_tex_idx = back;
     g_has_frame = true;
     g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
 
-    /* Close the received fd — if it's the same memfd, our persistent
-     * mmap keeps it alive. If it's a new one, the mmap above references
-     * it. Either way, the fd we received is safe to close. */
     close(shm_fd);
 
     return g_tex[g_tex_idx];
@@ -417,11 +312,7 @@ int idk_compositor_render(void) {
     accept_client();
     if (g_client_fd < 0) return -1;
 
-    /* Drain ALL pending frames — only process the NEWEST one.
-     * Without this, if the webview sends frames faster than the game's
-     * swap rate, frames accumulate in the socket buffer. Each frame
-     * (except the last) would be stale by the time we read it, and
-     * the SHM buffer race causes flickering. */
+    /* Poll for new frame — keep newest only */
     int processed = 0;
 
     while (1) {
@@ -466,7 +357,6 @@ int idk_compositor_render(void) {
 
         memcpy(&hdr, msg_buf, sizeof(hdr));
 
-        /* If we already processed a frame this call, skip this older one */
         if (processed > 0) {
             close(dmabuf_fd);
             continue;
@@ -508,16 +398,10 @@ int idk_compositor_render(void) {
     }
 
     if (processed) {
-        /* Send exactly ONE ACK per compositor render call (regardless of
-         * how many frames were drained) — the webview expects one ACK per
-         * frame it sent, but since we only process the newest, we only
-         * need to ACK once. The webview's flow control will handle the
-         * rest (it retries every 16ms until ACK arrives). */
         char ack = 0;
         int flags = fcntl(g_client_fd, F_GETFL, 0);
         if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags | O_NONBLOCK);
         if (write(g_client_fd, &ack, 1) < 0) {
-            /* EAGAIN = client not reading ACKs — fine, drop it */
         }
         if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags);
 
@@ -526,11 +410,6 @@ int idk_compositor_render(void) {
     return -1;
 }
 
-/**
- * Convert dmabuf to GL texture via EGL.
- * Uses EGL_EXT_image_dma_buf_import to import dmabuf directly.
- * No DRM header dependency — format is handled by EGL driver.
- */
 GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                               uint32_t stride, uint32_t format) {
     if (!fn_eglCreateImageKHR) {
@@ -541,7 +420,6 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
-    /* Get EGL display */
     EGLDisplay egl_dpy = EGL_NO_DISPLAY;
     if (fn_eglGetDisplay) {
         egl_dpy = fn_eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -551,16 +429,11 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     }
     if (egl_dpy == EGL_NO_DISPLAY) return 0;
 
-    /* Format from IDK → EGL DRM format (both use same fourcc)
-     * 0x34324742 = 'BG24' = DRM_FORMAT_BGRA8888
-     * 0x34325258 = 'XR24' = DRM_FORMAT_XRGB8888
-     */
     uint32_t drm_fmt = 0x34324742; /* default: BGRA8888 */
     if (format == 0x34325258) {
         drm_fmt = 0x34325258; /* XR24 = XRGB8888 */
     }
 
-    /* Create EGLImage from DMA-BUF */
     EGLint attrs[] = {
         EGL_WIDTH, (EGLint)w,
         EGL_HEIGHT, (EGLint)h,
@@ -579,7 +452,6 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         return 0;
     }
 
-    /* Bind to GL texture */
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -593,42 +465,16 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    /* Destroy EGL image — GL texture keeps reference */
     fn_eglDestroyImageKHR(egl_dpy, img);
 
     return tex;
 }
 
-/**
- * Render the current overlay texture as a fullscreen quad.
- * Call this from the EGL swap hook (before calling original swap).
- *
- * Adapted from imgoverlay/imgui_impl_opengl3 — uses GLES2-compatible
- * vertex attribute setup (no VAO, manual glEnableVertexAttribArray).
- */
 void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     (void)x; (void)y;
     if (g_program == 0) return;
 
-    /* ── Validate our program is still linked ──────────────────────────
-     * The GL driver REUSES program object IDs after glDeleteProgram. If
-     * the host app (e.g. glmark2) calls glDeleteProgram on its own program
-     * and then creates a new one, the driver may hand back the same ID we
-     * stored in g_program. Now g_program points to the host's program
-     * (which may not be linked, or has different shaders) — calling
-     * glUseProgram on it sets GL_INVALID_VALUE (0x501).
-     *
-     * Detect this by checking GL_LINK_STATUS each frame. If our program
-     * got clobbered (link status = 0 or glIsProgram returns false),
-     * re-init the shader. This is cheap (one glGetProgramiv + one
-     * glIsProgram per frame) and prevents the 0x501 spam at its source.
-     *
-     * Observed in inject.log:
-     *   "pre-draw diag: tex[1]=1 valid=1 prog=6 link=0 frame=1920x1080"
-     *   "GL setup error @ glUseProgram: 0x501"
-     * → prog=6 exists (glIsProgram would return true) but link=0 means
-     *   it's either our program that got somehow unlinked, or another
-     *   program with the same ID that never linked. Re-init fixes both. */
+    /* Validate program is still linked */
     if (g_program != 0) {
         GLboolean is_prog = glIsProgram(g_program);
         GLint link_status = 0;
@@ -650,17 +496,10 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         }
     }
 
-    /* ── Don't draw if we have no valid frame ──────────────────────────
-     * Without this guard, when no client has sent a frame yet (or the
-     * last frame was rejected by shm_to_texture's validation), we'd
-     * call glBindTexture(0) + glDrawArrays → GL_INVALID_OPERATION or
-     * GL_INVALID_VALUE every frame → 0x501 spam in the log.
-     * The original code only checked g_program, not g_has_frame. */
     if (!g_has_frame || g_tex[g_tex_idx] == 0) {
         return;
     }
 
-    /* Use framebuffer dimensions for viewport */
     GLint fb_w = (GLint)w, fb_h = (GLint)h;
     {
         GLint vp[4];
@@ -670,7 +509,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     }
     if (fb_w <= 0 || fb_h <= 0) return;
 
-    /* ── Save GL state (MangoHud-style) ── */
     GLenum last_active_texture; glGetIntegerv(GL_ACTIVE_TEXTURE, (GLint*)&last_active_texture);
     glActiveTexture(GL_TEXTURE0);
     GLint last_program; glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
@@ -696,8 +534,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
     GLint last_scissor_box[4]; glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
 
-    /* Save color mask — we overwrite it with all-TRUE during our draw.
-     * Without restoring, the host's glColorMask state leaks. */
     GLint last_color_mask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
     glGetIntegerv(GL_COLOR_WRITEMASK, last_color_mask);
 
@@ -722,15 +558,8 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     GLint last_draw_buffer = GL_BACK;
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
 
-    /* Clear any stale GL errors before our draw */
     while (glGetError() != GL_NO_ERROR) {}
 
-    /* ── Setup render state (MangoHud-style) ──
-     * Each call is followed by an error check ON THE FIRST FAILED DRAW
-     * (g_draw_err_count == 1) so we can identify exactly which GL call
-     * sets the error that post-draw glGetError picks up. After the first
-     * diagnosis, the checks are skipped (g_draw_err_count > 1) to avoid
-     * per-frame overhead. */
     #define GLCHECK(label) do { \
         if (g_draw_err_count == 1) { \
             GLenum _e = glGetError(); \
@@ -748,7 +577,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     glDisable(GL_STENCIL_TEST);        GLCHECK("glDisable(GL_STENCIL_TEST)");
     glEnable(GL_SCISSOR_TEST);         GLCHECK("glEnable(GL_SCISSOR_TEST)");
     glScissor(0, 0, fb_w, fb_h);       GLCHECK("glScissor");
-    /* Bind to default framebuffer (FBO 0) to ensure overlay renders to back buffer */
     if (g_gl_version >= 300) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                                        GLCHECK("glBindFramebuffer");
@@ -764,12 +592,9 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                                        GLCHECK("glDisable(GL_PRIMITIVE_RESTART)"); }
     }
 
-    /* Set viewport to full framebuffer (MangoHud overrides viewport) */
     glViewport(0, 0, fb_w, fb_h);      GLCHECK("glViewport");
-    /* Ensure shader output goes to back buffer */
     glDrawBuffer(GL_BACK);             GLCHECK("glDrawBuffer");
 
-    /* Create temporary VAO (MangoHud creates one per frame if GL >= 3.0) */
     GLuint vertex_array_object = 0;
     if (g_gl_version >= 300)
         glGenVertexArrays(1, &vertex_array_object);
@@ -778,8 +603,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                                        GLCHECK("glBindVertexArray");
     }
 
-    /* On first failure, log texture validity + program status — these are
-     * the most common 0x501 sources when no setup call above errors. */
     if (g_draw_err_count == 1) {
         GLuint cur_tex = g_tex[g_tex_idx];
         GLboolean tex_valid = cur_tex ? glIsTexture(cur_tex) : GL_FALSE;
@@ -804,32 +627,16 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
     {
         GLenum err = glGetError();
-        /* g_draw_err_count is file-scope — reset to 0 on successful frame
-         * upload (in shm_to_texture / dmabuf path) so each new texture
-         * gets a fresh chance. When it hits 5, the current texture is
-         * marked invalid to stop the spam at its source.
-         *
-         * IMPORTANT: do NOT reset on every successful draw (else-branch).
-         * Resetting per-draw would let a persistently-bad texture survive
-         * past 5 errors just because of one lucky successful frame in
-         * between. Reset only on NEW frame upload — that's the natural
-         * boundary where a texture transition happens. */
         if (err != GL_NO_ERROR) {
             g_draw_err_count++;
-            /* Throttle: log first 5 (capture onset), then every 300th (~5s
-             * at 60fps) so we see persistent issues without flooding. */
+            /* Throttle: log first 5, then every 300th */
             if (g_draw_err_count <= 5 || g_draw_err_count % 300 == 0) {
                 fprintf(stderr,
                     "[idk-comp] GL error after draw: 0x%x (tex[%d]=%u fb=%dx%d frame=%ux%u, occurrence %d)\n",
                     err, g_tex_idx, g_tex[g_tex_idx], fb_w, fb_h,
                     g_frame_w, g_frame_h, g_draw_err_count);
             }
-            /* If we keep failing on the same texture, it's probably dead —
-             * mark it invalid AND delete it so the GL driver reclaims the
-             * memory/ID. Without glDeleteTextures, the texture leaks: each
-             * new frame creates a new texture (IDs climb 32, 33, 34, ...),
-             * and at high FPS (glmark2-egl runs ~1800 FPS) this burns
-             * through texture IDs fast and may exhaust driver resources. */
+            /* Invalidate texture after 5 consecutive errors */
             if (g_draw_err_count == 5) {
                 GLuint dead = g_tex[g_tex_idx];
                 fprintf(stderr,
@@ -840,12 +647,8 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                 g_has_frame = false;
             }
         }
-        /* No else-branch — g_draw_err_count is reset in shm_to_texture /
-         * dmabuf path when a NEW frame is uploaded, not on every draw. */
+        /* Reset only on new frame upload in shm_to_texture / dmabuf path */
     }
-    // glFinish();
-
-    /* Check if display texture is valid */
     GLuint cur = g_tex[g_tex_idx];
     if (cur > 0 && !glIsTexture(cur)) {
         IDK_ERR("comp", "WARNING: tex[%d] (%u) is not a valid texture!\n", g_tex_idx, cur);
@@ -853,7 +656,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         g_has_frame = false;
     }
 
-    /* ── Restore GL state (MangoHud-style) ── */
     if (vertex_array_object)
         glDeleteVertexArrays(1, &vertex_array_object);
 
@@ -890,7 +692,6 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     if (last_fbo >= 0)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)last_fbo);
 
-    /* Restore color mask — was overwritten with all-TRUE during our draw. */
     glColorMask((GLboolean)last_color_mask[0], (GLboolean)last_color_mask[1],
                 (GLboolean)last_color_mask[2], (GLboolean)last_color_mask[3]);
 }
@@ -943,18 +744,7 @@ void idk_compositor_shutdown(void) {
         unlink(g_sock_path);
     }
 
-    /* GL resource cleanup — SKIP ENTIRELY during shutdown.
-     *
-     * During process exit, the game's EGL context is torn down BEFORE our
-     * destructor runs. Calling glDeleteTextures/glDeleteProgram with a dead
-     * context segfaults (the function pointers are non-NULL, but the driver
-     * state is gone). Checking function pointers isn't enough — we'd need
-     * to check if a GL context is current, which requires EGL functions we
-     * don't have resolved here.
-     *
-     * The OS reclaims ALL GPU resources on process exit anyway, so leaking
-     * 2 textures + 1 program is completely harmless. Just zero our pointers
-     * so we don't try to use them after shutdown. */
+    /* GL cleanup skipped — OS reclaims on exit */
     g_program = 0;
     g_tex[0] = g_tex[1] = 0;
     g_has_frame = false;
@@ -963,19 +753,13 @@ void idk_compositor_shutdown(void) {
 
 /* ── GL resource initialization ────────────────────────────────────── */
 
-/**
- * Initialize GL shaders and VBO. Call from GL context.
- */
+/* Init shaders and GL resources */
 int idk_compositor_init_gl(void) {
-    /* Resolve all GL function pointers via dlsym (no link-time GL dep).
-     * idk_gl_loader_init tries libGL.so.1, libGLESv2.so.2, etc. */
     if (idk_gl_loader_init() != 0) {
         IDK_ERR("comp", "GL loader init failed — cannot init GL resources\n");
         return -1;
     }
 
-    /* glEGLImageTargetTexture2DOES is an EGL extension, not in core GL.
-     * Resolve it separately (it may be in libEGL.so or libGL.so). */
     void *libgl = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
     if (!libgl) libgl = dlopen("libGL.so.1", RTLD_NOW);
     if (!libgl) libgl = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_NOLOAD);
@@ -987,7 +771,6 @@ int idk_compositor_init_gl(void) {
         IDK_LOG("comp", "glEGLImageTargetTexture2DOES = %p\n",
                 (void *)fn_glEGLImageTargetTexture2DOES);
     }
-    /* ── Compile shaders (SPIR-V preferred, fallback to GLSL) ────────── */
     g_program = idk_shader_loader_init(&g_gl_version, &g_is_gles);
     if (g_program == 0) {
         IDK_ERR("comp", "Shader init failed — cannot init GL resources\n");

@@ -102,10 +102,6 @@ static int install_egl_hook(void) {
     void *egl_swap_addr = NULL;
     int n = 0;
 
-    /* Use RTLD_NOLOAD only — we want to detect if the game has already
-     * loaded libEGL, NOT force-load it ourselves. Force-loading in the
-     * constructor was the original crash cause; the background thread in
-     * overlay.c ensures we only call this after libEGL is loaded by the game. */
     if (real_dlopen) {
         egl_handle = real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
         if (!egl_handle)
@@ -170,7 +166,6 @@ static int install_egl_hook(void) {
     }
 
     EDBG("all install methods failed — will retry from background thread");
-    /* Do NOT set g_hook_installed — allow the background thread to retry */
     pthread_mutex_unlock(&g_hook_mutex);
     return -1;
 }
@@ -186,10 +181,6 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
      * is in place. Idempotent. */
     idk_overlay_try_install_wayland_input();
 
-    /* Dispatch sidecar wayland input events (MangoHud-style private queue).
-     * This processes keyboard events on our sidecar wl_keyboard so we can
-     * detect the hotkey even if listener substitution missed (e.g. game
-     * registered listeners before our hook installed). Non-blocking. */
     idk_wayland_input_sidecar_dispatch();
 
     if (!g_gl_resources_ready) {

@@ -15,8 +15,7 @@
 
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
 #include <QQuickRenderTarget>
-// NOTE: Private header #include <QtGui/private/qrhi_p.h> is now only used in RhiTextureExtractor
-// This separation allows easier Qt version updates and API changes
+
 #endif
 
 #define EGL_NO_X11
@@ -31,7 +30,7 @@
 #include "public/idk_fs.h"
 #include "core/log.h"
 
-// ── Constants ───────────────────────────────────────────────────────────
+
 
 #define PIXELS_SIZE(w, h)  ((w) * (h) * 4)
 
@@ -54,26 +53,14 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
     if (!m_manager->isConnected()) {
         // Wait for socket connection before sending
         connect(m_manager, &Manager::socketConnected, this, [this]() {
-            /* Guard against double-init on reconnect — initMemory() creates
-             * a new memfd each time, and the old one would leak. The memfd
-             * and mmap persist across socket reconnects (they're independent
-             * of the socket fd), so only init once. */
+            /* Guard against double-init on reconnect — skip if already init'd */
             if (m_memory) {
                 IDK_LOG("client-qt", "Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
-                /* On reconnect after a long disconnect, the Qt WebEngine
-                 * render process may have been suspended/idle. Just calling
-                 * update() queues a paint event — this is the correct
-                 * non-recursive way to trigger a repaint. DO NOT call
-                 * repaint() (synchronous) — Qt logs "Recursive repaint
-                 * detected" and the call is a no-op when we're already
-                 * inside a paint event handler. */
+
                 if (auto *fp = focusProxy()) {
                     fp->update();
                 }
-                /* If the page was idle too long, the render process may
-                 * have discarded its backing store. Schedule an update
-                 * after a short delay to give the render process time to
-                 * wake up. */
+
                 QTimer::singleShot(100, this, [this]() {
                     if (auto *fp = focusProxy()) fp->update();
                 });
@@ -85,10 +72,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
             sendCreateImage();
             m_waitReply = false;  /* ready to send first frame */
             m_buffer = 0;
-            /* Force-schedule a paint — without this, the first frame send
-             * is delayed ~3s waiting for Qt/WebEngine to naturally schedule
-             * one. update() posts a paint event through the event loop,
-             * which fires our eventFilter → sends first frame immediately. */
+            /* Force first paint */
             if (auto *fp = focusProxy()) fp->update();
         });
     } else {
@@ -99,7 +83,7 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         sendCreateImage();
         m_waitReply = false;  /* ready to send first frame */
         m_buffer = 0;
-        /* Kick first paint — see comment in the socketConnected branch. */
+
         if (auto *fp = focusProxy()) fp->update();
     }
 
@@ -107,13 +91,9 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, QWidget 
         if (!ok || m_conf.url().isEmpty()) {
             return;
         }
-        /* Page finished loading — force a repaint so we send a frame with
-         * actual page content, not the blank/loading state. Without this,
-         * the first frame after connect might be transparent (img.fill
-         * was called before render() produced real content). */
+        /* Force paint after load */
         if (auto *fp = focusProxy()) fp->update();
-        // TODO: Inject script if needed
-        // page()->runJavaScript(QStringLiteral("(function(){%1}());").arg(m_conf.injectScript()));
+
     });
 }
 
@@ -132,7 +112,7 @@ WebView::~WebView()
 bool WebView::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == focusProxy() && event->type() == QEvent::Paint) {
-        /* Guard against recursive paint events. */
+        /* Guard recursive paint */
         static bool s_in_paint = false;
         if (s_in_paint) {
             return QWebEngineView::eventFilter(obj, event);
@@ -144,7 +124,7 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
             return QWebEngineView::eventFilter(obj, event);
         }
 
-        /* Schedule the render + send OUTSIDE the paint event handler. */
+
         QTimer::singleShot(0, this, [this]() {
             doRenderAndSend();
         });
@@ -162,15 +142,7 @@ void WebView::doRenderAndSend()
         return;
     }
 
-    /* ── ACK flow control ──────────────────────────────────────────
-     * If a frame is pending (sent but compositor hasn't ACK'd yet),
-     * check for ACK before sending another. This prevents the SHM buffer
-     * race: without ACK sync, the webview would overwrite buffer X while
-     * the compositor still has an in-flight frame pointing to buffer X.
-     *
-     * The poll is NON-BLOCKING (0 timeout) — never blocks the event loop.
-     * Safety timeout: if ACK is missing for 100ms (e.g., dropped by
-     * compositor due to EAGAIN), force-unlock and send anyway. */
+    /* ACK flow control: non-blocking poll + 100ms safety timeout */
     if (m_pending) {
         int ack_fd = idk_fs_get_fd();
         if (ack_fd >= 0) {
@@ -194,7 +166,7 @@ void WebView::doRenderAndSend()
         }
     }
 
-    /* ── Render to SHM ────────────────────────────────────────────── */
+
     uint8_t buffer = m_buffer;
     m_buffer = (m_buffer + 1) % 2;
     uchar *memory = (uchar*)m_memory + (PIXELS_SIZE(m_conf.width(), m_conf.height()) * buffer);
@@ -202,7 +174,7 @@ void WebView::doRenderAndSend()
     img.fill(Qt::transparent);
     render(&img);
 
-    /* ── Send frame ───────────────────────────────────────────────── */
+
     idk_fs_frame_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.width   = static_cast<uint32_t>(m_conf.width());
@@ -238,11 +210,7 @@ void WebView::doRenderAndSend()
             frame.width, frame.height, m_memfd);
     emit frameSent();
 
-    /* Mark pending — compositor must ACK before next frame.
-     * No timer: next render is triggered by paint events (from page changes
-     * or input-driven focusProxy()->update()). The retry timer inside the
-     * ACK-wait block handles the case where a frame is pending and we need
-     * to poll for ACK before the next trigger. */
+
     m_pending = true;
     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
 }
