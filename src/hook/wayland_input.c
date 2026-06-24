@@ -1033,7 +1033,7 @@ static void scan_and_intercept_input_proxies(struct wl_display *display) {
         struct wl_proxy *proxy = (struct wl_proxy *)((char *)item - WL_PROXY_QUEUE_LINK_OFFSET);
         struct wl_list *next = item->next;
         if (next == NULL || next == head || next == item) {
-            WERR("proxy list corrupted at iteration %u, aborting scan", iterations);
+            // WERR("proxy list corrupted at iteration %u, aborting scan", iterations);
             break;
         }
         item = next;
