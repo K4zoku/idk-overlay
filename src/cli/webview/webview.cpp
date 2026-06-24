@@ -737,7 +737,8 @@ bool WebView::tryExportDMABufVulkan()
     VkDeviceSize bufSize = w * h * 4;
 
     // Create staging buffer with exportable DMABUF memory
-    VkBufferCreateInfo bufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bufInfo = {};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufInfo.size = bufSize;
     bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -767,10 +768,12 @@ bool WebView::tryExportDMABufVulkan()
         return false;
     }
 
-    VkExportMemoryAllocateInfo exportInfo = { VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO };
+    VkExportMemoryAllocateInfo exportInfo = {};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
     exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 
-    VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.pNext = &exportInfo;
     allocInfo.allocationSize = memReqs.size;
     allocInfo.memoryTypeIndex = memTypeIdx;
@@ -785,7 +788,8 @@ bool WebView::tryExportDMABufVulkan()
     vkBindBufferMemory(dev, buffer, memory, 0);
 
     // One-shot command buffer
-    VkCommandBufferAllocateInfo cmdAI = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    VkCommandBufferAllocateInfo cmdAI = {};
+    cmdAI.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmdAI.commandPool = m_vk.cmdPool;
     cmdAI.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmdAI.commandBufferCount = 1;
@@ -797,12 +801,14 @@ bool WebView::tryExportDMABufVulkan()
         return false;
     }
 
-    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmdBuf, &beginInfo);
 
     // Transition image: current → TRANSFER_SRC_OPTIMAL
-    VkImageMemoryBarrier toTransfer = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    VkImageMemoryBarrier toTransfer = {};
+    toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     toTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     toTransfer.oldLayout = currentLayout;
@@ -828,7 +834,8 @@ bool WebView::tryExportDMABufVulkan()
     vkCmdCopyImageToBuffer(cmdBuf, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copyRegion);
 
     // Transition back to original layout
-    VkImageMemoryBarrier back = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    VkImageMemoryBarrier back = {};
+    back.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     back.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -846,7 +853,8 @@ bool WebView::tryExportDMABufVulkan()
     vkEndCommandBuffer(cmdBuf);
 
     // Submit and wait
-    VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
     if (vkCreateFence(dev, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
         vkFreeCommandBuffers(dev, m_vk.cmdPool, 1, &cmdBuf);
@@ -855,7 +863,8 @@ bool WebView::tryExportDMABufVulkan()
         return false;
     }
 
-    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmdBuf;
 
@@ -879,7 +888,8 @@ bool WebView::tryExportDMABufVulkan()
         return false;
     }
 
-    VkMemoryGetFdInfoKHR fdInfo = { VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
+    VkMemoryGetFdInfoKHR fdInfo = {};
+    fdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
     fdInfo.memory = memory;
     fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 
@@ -905,7 +915,7 @@ bool WebView::tryExportDMABufVulkan()
 
     int fds[4] = {dmabufFd, -1, -1, -1};
     int rc = idk_fs_send_dma_buf(fds, &frame);
-    close(dmabufFd);
+    ::close(dmabufFd);
 
     vkDestroyBuffer(dev, buffer, nullptr);
     vkFreeMemory(dev, memory, nullptr);
@@ -954,7 +964,8 @@ void WebView::initVulkan(QSGRendererInterface *rif, QQuickWindow *window)
         return;
     }
 
-    VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    VkCommandPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     poolInfo.queueFamilyIndex = m_vk.queueFamily;
     if (vkCreateCommandPool(m_vk.device, &poolInfo, nullptr, &m_vk.cmdPool) != VK_SUCCESS) {
