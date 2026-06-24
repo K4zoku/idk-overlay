@@ -573,7 +573,7 @@ void idk_wayland_input_set_capture(int enable) {
                      g_last_enter_serial, g_sidecar_pointer_enter_serial,
                      g_last_pointer_serial, g_pre_capture_cursor_hidden);
                 my_wp_cursor_shape_device_set_shape(
-                    g_cursor_shape_device, serial, WP_CURSOR_SHAPE_CROSSHAIR);
+                    g_cursor_shape_device, serial, WP_CURSOR_SHAPE_DEFAULT);
             }
         } else {
             if (g_pointer_in_surface && g_game_pointer_proxy) {
@@ -678,7 +678,7 @@ static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
         if (g_cursor_shape_device) {
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, serial,
-                WP_CURSOR_SHAPE_CROSSHAIR);
+                WP_CURSOR_SHAPE_DEFAULT);
         }
         return;
     }
@@ -705,7 +705,7 @@ static void wptr_motion(void *d, struct wl_pointer *p, uint32_t time,
         if (g_cursor_shape_device && g_last_enter_serial)
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
-                WP_CURSOR_SHAPE_CROSSHAIR);
+                WP_CURSOR_SHAPE_DEFAULT);
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_MOTION;
         ev.time   = time;
@@ -732,7 +732,7 @@ static void wptr_button(void *d, struct wl_pointer *p, uint32_t serial,
         if (g_cursor_shape_device && g_last_enter_serial)
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
-                WP_CURSOR_SHAPE_CROSSHAIR);
+                WP_CURSOR_SHAPE_DEFAULT);
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_BUTTON;
         ev.time   = time;
@@ -757,7 +757,7 @@ static void wptr_axis(void *d, struct wl_pointer *p, uint32_t time,
         if (g_cursor_shape_device && g_last_enter_serial)
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
-                WP_CURSOR_SHAPE_CROSSHAIR);
+                WP_CURSOR_SHAPE_DEFAULT);
         idk_ipc_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_AXIS;
         ev.time   = time;

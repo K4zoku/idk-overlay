@@ -4,6 +4,12 @@
 #include <QDebug>
 #include <QWebEngineView>
 #include <QWebEnginePage>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QFocusEvent>
+#include <QDateTime>
+#include <QGuiApplication>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -14,6 +20,84 @@
 
 #include "public/idk_ipc.h"
 #include "core/log.h"
+
+/* ─── XKB keysym → Qt::Key translation table ──────────────────────────── */
+
+struct SymQtEntry { quint32 sym; int qtKey; };
+static const SymQtEntry SYM_QT[] = {
+    /* MISC function keys */
+    { 0xff08, Qt::Key_Backspace },
+    { 0xff09, Qt::Key_Tab       },
+    { 0xff0d, Qt::Key_Return    },
+    { 0xff1b, Qt::Key_Escape    },
+    { 0xff50, Qt::Key_Home      },
+    { 0xff51, Qt::Key_Left      },
+    { 0xff52, Qt::Key_Up        },
+    { 0xff53, Qt::Key_Right     },
+    { 0xff54, Qt::Key_Down      },
+    { 0xff55, Qt::Key_PageUp    },
+    { 0xff56, Qt::Key_PageDown  },
+    { 0xff57, Qt::Key_End       },
+    { 0xff63, Qt::Key_Insert    },
+    { 0xffff, Qt::Key_Delete    },
+    /* Function keys */
+    { 0xffbe, Qt::Key_F1  }, { 0xffbf, Qt::Key_F2  }, { 0xffc0, Qt::Key_F3  },
+    { 0xffc1, Qt::Key_F4  }, { 0xffc2, Qt::Key_F5  }, { 0xffc3, Qt::Key_F6  },
+    { 0xffc4, Qt::Key_F7  }, { 0xffc5, Qt::Key_F8  }, { 0xffc6, Qt::Key_F9  },
+    { 0xffc7, Qt::Key_F10 }, { 0xffc8, Qt::Key_F11 }, { 0xffc9, Qt::Key_F12 },
+    /* Modifier keys (Qt wants Key_Shift/Control/Alt/Meta even though text is empty) */
+    { 0xffe1, Qt::Key_Shift    }, { 0xffe2, Qt::Key_Shift    },
+    { 0xffe3, Qt::Key_Control  }, { 0xffe4, Qt::Key_Control  },
+    { 0xffe5, Qt::Key_CapsLock },
+    { 0xffe7, Qt::Key_Meta     }, { 0xffe8, Qt::Key_Meta     },
+    { 0xffe9, Qt::Key_Alt      }, { 0xffea, Qt::Key_Alt      },
+    { 0xffeb, Qt::Key_Meta     }, { 0xffec, Qt::Key_Meta     },
+    /* Keypad equivalents */
+    { 0xff8d, Qt::Key_Enter    },
+    { 0xff95, Qt::Key_Home     }, { 0xff96, Qt::Key_Left     },
+    { 0xff97, Qt::Key_Up       }, { 0xff98, Qt::Key_Right    },
+    { 0xff99, Qt::Key_Down     }, { 0xff9a, Qt::Key_PageUp   },
+    { 0xff9b, Qt::Key_PageDown }, { 0xff9c, Qt::Key_End      },
+    { 0xff9e, Qt::Key_Insert   }, { 0xff9f, Qt::Key_Delete   },
+    { 0, 0 }
+};
+
+/* Translate a single xkb keysym to a Qt::Key value.
+ * For printable ASCII (0x20-0x7f) the Qt key is just the unicode
+ * codepoint (lowercased for letters — Qt convention).
+ * Returns 0 if the keysym cannot be translated. */
+static int keysymToQtKey(quint32 sym)
+{
+    if (sym < 0x20)
+        return 0;
+    if (sym >= 0x20 && sym < 0x7f) {
+        char c = (char)sym;
+        if (c >= 'a' && c <= 'z') c -= 32;           /* Qt::Key_A = 0x41 (uppercase) */
+        return (int)c;
+    }
+    for (int i = 0; SYM_QT[i].sym; i++) {
+        if (SYM_QT[i].sym == sym)
+            return SYM_QT[i].qtKey;
+    }
+    if (sym >= 0xffbe && sym <= 0xffc9)              /* F1-F12 fallback */
+        return Qt::Key_F1 + (sym - 0xffbe);
+    return 0;
+}
+
+/* Translate the idk modifier bitmask to Qt::KeyboardModifiers. */
+static Qt::KeyboardModifiers idkModsToQt(quint32 mods)
+{
+    Qt::KeyboardModifiers m = Qt::NoModifier;
+    if (mods & IDK_MOD_CTRL)  m |= Qt::ControlModifier;
+    if (mods & IDK_MOD_SHIFT) m |= Qt::ShiftModifier;
+    if (mods & IDK_MOD_ALT)   m |= Qt::AltModifier;
+    if (mods & IDK_MOD_SUPER) m |= Qt::MetaModifier;
+    return m;
+}
+
+static quint64 nowMs() { return (quint64)QDateTime::currentMSecsSinceEpoch(); }
+
+/* ─── InputReceiver ─────────────────────────────────────────────────────── */
 
 InputReceiver::InputReceiver(const QString &frameSocketPath, QObject *parent)
     : QObject(parent)
@@ -83,6 +167,37 @@ void InputReceiver::closeFd()
     }
 }
 
+QWidget *InputReceiver::focusProxy()
+{
+    if (!m_webview) return nullptr;
+    if (m_focusProxy) return m_focusProxy;
+    /* focusProxy is created lazily after the page finishes loading */
+    m_focusProxy = m_webview->focusProxy();
+    return m_focusProxy;
+}
+
+void InputReceiver::sendFocusIn()
+{
+    QWidget *fp = focusProxy();
+    if (!fp) return;
+    QFocusEvent fin(QEvent::FocusIn, Qt::OtherFocusReason);
+    qApp->sendEvent(fp, &fin);
+    fp->setFocus(Qt::OtherFocusReason);
+
+    /* Synthesize one MouseMove so Chromium's RenderWidgetHost has a valid
+     * previous mouse position — some sites won't hit-test correctly
+     * otherwise. We rely on the next real mouse event to take over. */
+    QMouseEvent mv(QEvent::MouseMove,
+                   QPointF(m_mouseX, m_mouseY),
+                   QPointF(m_mouseX, m_mouseY),
+                   QPointF(m_mouseX, m_mouseY),
+                   Qt::NoButton, m_buttons, Qt::NoModifier);
+    mv.setTimestamp(nowMs());
+    qApp->sendEvent(fp, &mv);
+
+    m_focusSent = true;
+}
+
 void InputReceiver::onReadyRead()
 {
     if (m_fd < 0) return;
@@ -114,29 +229,32 @@ void InputReceiver::onReadyRead()
             bool nowCaptured = (ev.capture != 0);
             if (nowCaptured != m_captureState) {
                 m_captureState = nowCaptured;
+                m_focusSent = false;
                 emit inputCaptureChanged(nowCaptured);
                 IDK_LOG("input-rx", "capture %s\n", nowCaptured ? "ENABLED" : "DISABLED");
+                /* When capture goes ON, give Chromium focus so subsequent
+                 * key events reach the page. (focusProxy may not be ready
+                 * yet if the page is still loading — we retry below.) */
+                if (nowCaptured) sendFocusIn();
             }
 
-            if (ev.type == IDK_INPUT_KEY && ev.keycode != 0) {
-                IDK_LOG("input-rx", "KEY: keycode=%u keysym=0x%x state=%u mods=%u\n",
-                        ev.keycode, ev.keysym, ev.state, ev.mods);
-            }
+            /* Lazy retry: if page finished loading after capture-on, push
+             * focus as soon as focusProxy becomes available. */
+            if (nowCaptured && !m_focusSent)
+                sendFocusIn();
 
             emit eventReceived(ie);
 
-            if (m_webview) {
-                switch (ev.type) {
-                case IDK_INPUT_KEY:
-                    if (ev.keycode != 0)
-                        injectKeyboardEvent(ie);
-                    break;
-                case IDK_INPUT_BUTTON:
-                case IDK_INPUT_MOTION:
-                case IDK_INPUT_AXIS:
-                    injectMouseEvent(ie);
-                    break;
-                }
+            switch (ev.type) {
+            case IDK_INPUT_KEY:
+                if (ev.keycode != 0)
+                    injectKeyboardEvent(ie);
+                break;
+            case IDK_INPUT_BUTTON:
+            case IDK_INPUT_MOTION:
+            case IDK_INPUT_AXIS:
+                injectMouseEvent(ie);
+                break;
             }
         } else if (n < 0) {
             if (errno == EINTR) continue;
@@ -153,258 +271,117 @@ void InputReceiver::onReadyRead()
     }
 }
 
-/* JS helper templates */
+/* ─── Keyboard ─────────────────────────────────────────────────────────── */
 
-static const char *JS_PREAMBLE = R"(
-window.__idk_el=null;
-(function(){
-try{
-var el=document.activeElement;
-if(!el||el===document.body){
-  el=document.querySelector('input:not([type=hidden]):not([disabled]),textarea,[contenteditable]');
-  if(el)el.focus();
-  else{console.error('idk:no-input');return;}
-}
-if(el.isContentEditable||el.tagName==='INPUT'||el.tagName==='TEXTAREA'){
-  window.__idk_el=el;
-}
-else console.error('idk:bad-el='+el.tagName);
-}catch(e){console.error('idk:preamble '+e.message);}
-})();
-
-(function(){
-try{
-var el=window.__idk_el;
-if(!el)return;
-)";
-
-static const char *JS_SUFFIX = R"(
-}catch(e){console.error('idk:exec '+e.message);}
-})();
-)";
-
-static const char *JS_INSERT_CHAR = R"(
-var start=el.selectionStart,end=el.selectionEnd;
-el.value=el.value.substring(0,start)+'%1'+el.value.substring(end);
-el.setSelectionRange(start+1,start+1);
-el.dispatchEvent(new InputEvent('input',{inputType:'insertText',bubbles:true,cancelable:true}));
-)";
-
-static const char *JS_BACKSPACE = R"(
-if(el.isContentEditable){document.execCommand('deleteContentBackward');return;}
-var start=el.selectionStart,end=el.selectionEnd;
-if(start>0||end>0){
-  if(start===end)start--;
-  el.value=el.value.substring(0,start)+el.value.substring(end);
-  el.setSelectionRange(start,start);
-  el.dispatchEvent(new InputEvent('input',{inputType:'deleteContentBackward',bubbles:true,cancelable:true}));
-}
-)";
-
-static const char *JS_DELETE = R"(
-if(el.isContentEditable){document.execCommand('deleteContentForward');return;}
-var start=el.selectionStart,end=el.selectionEnd;
-if(start<el.value.length||end<el.value.length){
-  if(start===end)end++;
-  el.value=el.value.substring(0,start)+el.value.substring(end);
-  el.setSelectionRange(start,start);
-  el.dispatchEvent(new InputEvent('input',{inputType:'deleteContentForward',bubbles:true,cancelable:true}));
-}
-)";
-
-static const char *JS_ENTER = R"(
-if(el.tagName==='INPUT'||el.tagName==='TEXTAREA'){
-  el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
-  el.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',bubbles:true,cancelable:true}));
-  el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true,cancelable:true}));
-  el.dispatchEvent(new InputEvent('beforeinput',{inputType:'insertLineBreak',bubbles:true}));
-  el.dispatchEvent(new InputEvent('input',{inputType:'insertLineBreak',bubbles:true,cancelable:true}));
-}else if(el.isContentEditable){
-  document.execCommand('insertParagraph');
-}
-)";
-
-static const char *JS_KEY_EVENT_FMT = R"(
-var el=document.activeElement||document.body;
-el.dispatchEvent(new KeyboardEvent('keydown',{key:'%1',bubbles:true,cancelable:true}));
-el.dispatchEvent(new KeyboardEvent('keyup',{key:'%1',bubbles:true,cancelable:true}));
-)";
-
-static const char *JS_INSERT_SPACE = R"(
-var start=el.selectionStart,end=el.selectionEnd;
-el.value=el.value.substring(0,start)+' '+el.value.substring(end);
-el.setSelectionRange(start+1,start+1);
-el.dispatchEvent(new InputEvent('input',{inputType:'insertText',bubbles:true,cancelable:true,data:' '}));
-)";
-
-static const char *JS_MOUSE_MOVE = R"(
-(function(){
-try{
-var el=document.elementFromPoint(%1,%2)||document.body;
-el.dispatchEvent(new MouseEvent('mousemove',{clientX:%1,clientY:%2,bubbles:true,view:window}));
-}catch(e){console.error('idk:mouse '+e.message);}
-})();
-)";
-
-static const char *JS_MOUSE_DOWN = R"(
-(function(){
-try{
-var el=document.elementFromPoint(%1,%2)||document.body;
-el.dispatchEvent(new MouseEvent('mousedown',{clientX:%1,clientY:%2,button:%3,bubbles:true,view:window}));
-}catch(e){console.error('idk:mouse '+e.message);}
-})();
-)";
-
-static const char *JS_MOUSE_UP = R"(
-(function(){
-try{
-var el=document.elementFromPoint(%1,%2)||document.body;
-el.dispatchEvent(new MouseEvent('mouseup',{clientX:%1,clientY:%2,button:%3,bubbles:true,view:window}));
-}catch(e){console.error('idk:mouse '+e.message);}
-})();
-)";
-
-static const char *JS_SCROLL = R"(
-(function(){
-try{
-var el=document.elementFromPoint(%1,%2);
-while(el&&el!==document.body&&el.scrollHeight<=el.clientHeight)el=el.parentElement;
-if(!el||el===document.body)el=document.scrollingElement||document.documentElement||document.body;
-el.scrollBy(%3,%4);
-}catch(e){console.error('idk:scroll '+e.message);}
-})();
-)";
-
-struct KeyName { quint32 ks; const char *name; };
-static const KeyName KEY_NAMES[] = {
-    { 0xff08, "Backspace" },
-    { 0xff09, "Tab" },
-    { 0xff0d, "Enter" },
-    { 0xff1b, "Escape" },
-    { 0xff50, "Home" },
-    { 0xff51, "ArrowLeft" },
-    { 0xff52, "ArrowUp" },
-    { 0xff53, "ArrowRight" },
-    { 0xff54, "ArrowDown" },
-    { 0xff55, "PageUp" },
-    { 0xff56, "PageDown" },
-    { 0xff57, "End" },
-    { 0xff63, "Insert" },
-    { 0xffff, "Delete" },
-    { 0xffbe, "F1" },  { 0xffbf, "F2" },  { 0xffc0, "F3" },
-    { 0xffc1, "F4" },  { 0xffc2, "F5" },  { 0xffc3, "F6" },
-    { 0xffc4, "F7" },  { 0xffc5, "F8" },  { 0xffc6, "F9" },
-    { 0xffc7, "F10" }, { 0xffc8, "F11" }, { 0xffc9, "F12" },
-    { 0, nullptr }
-};
-
-static const char *keysymToKeyName(quint32 ks)
-{
-    for (int i = 0; KEY_NAMES[i].name; i++)
-        if (KEY_NAMES[i].ks == ks) return KEY_NAMES[i].name;
-    return nullptr;
-}
-
-static void runJs(QWebEnginePage *page, QWebEngineView *view, const QString &js)
-{
-    if (!page) return;
-    page->runJavaScript(js, [view](const QVariant &result) {
-        if (result.isValid() && result.canConvert<QVariantMap>()) {
-            QVariantMap m = result.toMap();
-            if (m.contains("error"))
-                qWarning("[idk-js] %s", m["error"].toString().toUtf8().data());
-        }
-        if (view) {
-            if (auto *fp = view->focusProxy())
-                fp->update();
-        }
-    });
-    if (view) {
-        if (auto *fp = view->focusProxy())
-            fp->update();
-    }
-}
-
-/* Keyboard injection */
 void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
 {
     if (!m_webview) return;
+    QWidget *fp = focusProxy();
+    if (!fp) return;
 
-    if (ev.state != 1) return;
+    int qtKey = keysymToQtKey(ev.keysym);
+    if (!qtKey) return;
 
-    QWebEnginePage *page = m_webview->page();
-    if (!page) return;
+    Qt::KeyboardModifiers mods = idkModsToQt(ev.mods);
 
-    if (ev.keysym >= 0x20 && ev.keysym < 0x7f) {
-        QString c = QChar(ev.keysym);
-        if (c == QLatin1Char('\'')) c = QStringLiteral("\\'");
-        if (c == QLatin1Char('\\')) c = QStringLiteral("\\\\");
-        if (c == QLatin1Char('\n')) c = QStringLiteral("\\n");
-        if (c == QLatin1Char('\r')) c = QStringLiteral("\\r");
-        QString js = QString(JS_PREAMBLE) + QString(JS_INSERT_CHAR).arg(c) + JS_SUFFIX;
-        runJs(page, m_webview, js);
-        return;
-    }
+    /* For printable ASCII, attach the character as text so Chromium inserts
+     * it into the focused input field. The keysym from xkb already reflects
+     * the current shift/altgr state (uppercase, etc). */
+    QString text;
+    if (ev.keysym >= 0x20 && ev.keysym < 0x7f)
+        text = QString(QChar((uint)ev.keysym));
+    else if (ev.keysym == 0xff0d)
+        text = QStringLiteral("\r");
 
-    if (ev.keysym == 0xff08) { /* Backspace */
-        runJs(page, m_webview, QString(JS_PREAMBLE) + JS_BACKSPACE + JS_SUFFIX);
-        return;
-    }
-    if (ev.keysym == 0xffff) { /* Delete */
-        runJs(page, m_webview, QString(JS_PREAMBLE) + JS_DELETE + JS_SUFFIX);
-        return;
-    }
-    if (ev.keysym == 0xff0d) { /* Enter */
-        runJs(page, m_webview, QString(JS_PREAMBLE) + JS_ENTER + JS_SUFFIX);
-        return;
-    }
-    if (ev.keysym == 0x0020) { /* Space */
-        runJs(page, m_webview, QString(JS_PREAMBLE) + JS_INSERT_SPACE + JS_SUFFIX);
-        return;
-    }
+    quint64 t = nowMs();
 
-    const char *keyName = keysymToKeyName(ev.keysym);
-    if (!keyName) return;
-    QString js = QString(JS_PREAMBLE) + QString(JS_KEY_EVENT_FMT).arg(keyName) + JS_SUFFIX;
-    runJs(page, m_webview, js);
+    if (ev.state == 1) {                          /* press */
+        QKeyEvent p(QEvent::KeyPress, qtKey, mods, text, /*autorepeat=*/false);
+        p.setTimestamp(t);
+        qApp->sendEvent(fp, &p);
+    } else {                                       /* release */
+        QKeyEvent r(QEvent::KeyRelease, qtKey, mods, text, /*autorepeat=*/false);
+        r.setTimestamp(t);
+        qApp->sendEvent(fp, &r);
+    }
 }
+
+/* ─── Mouse ─────────────────────────────────────────────────────────────── */
 
 void InputReceiver::injectMouseEvent(const InputEvent &ev)
 {
     if (!m_webview) return;
+    QWidget *fp = focusProxy();
+    if (!fp) return;
 
     m_mouseX = ev.x;
     m_mouseY = ev.y;
-    emit cursorMoved(m_mouseX, m_mouseY);
-
-    QWebEnginePage *page = m_webview->page();
-    if (!page) return;
+    quint64 t = nowMs();
+    QPointF local(ev.x, ev.y);
 
     switch (ev.type) {
     case IDK_INPUT_MOTION: {
-        QString js = QString(JS_MOUSE_MOVE).arg(m_mouseX).arg(m_mouseY);
-        runJs(page, m_webview, js);
+        QMouseEvent mv(QEvent::MouseMove, local, local, local,
+                       Qt::NoButton, m_buttons, Qt::NoModifier);
+        mv.setTimestamp(t);
+        qApp->sendEvent(fp, &mv);
         break;
     }
     case IDK_INPUT_BUTTON: {
-        int btn = 0;
-        if (ev.button == 0x110) btn = 0;
-        else if (ev.button == 0x111) btn = 2;
-        else if (ev.button == 0x112) btn = 1;
-        else return;
+        Qt::MouseButton sqBtn;
+        if (ev.button == 0x110)      sqBtn = Qt::LeftButton;
+        else if (ev.button == 0x111) sqBtn = Qt::RightButton;
+        else if (ev.button == 0x112) sqBtn = Qt::MiddleButton;
+        else                          return;
 
-        const char *tmpl = (ev.state == 1) ? JS_MOUSE_DOWN : JS_MOUSE_UP;
-        QString js = QString(tmpl).arg(m_mouseX).arg(m_mouseY).arg(btn);
-        runJs(page, m_webview, js);
+        if (ev.state == 1) m_buttons |=  sqBtn;
+        else               m_buttons &= ~sqBtn;
 
+        QEvent::Type type = (ev.state == 1) ? QEvent::MouseButtonPress
+                                            : QEvent::MouseButtonRelease;
+        QMouseEvent be(type, local, local, local,
+                       sqBtn, m_buttons, Qt::NoModifier);
+        be.setTimestamp(t);
+        qApp->sendEvent(fp, &be);
         break;
     }
-    case IDK_INPUT_AXIS: {
-        QString js = QString(JS_SCROLL)
-            .arg(m_mouseX).arg(m_mouseY)
-            .arg(ev.dx * 20).arg(-ev.dy * 20);
-        runJs(page, m_webview, js);
+    case IDK_INPUT_AXIS:
+        injectWheelEvent(ev);
         break;
     }
-    }
+}
+
+/* ─── Wheel ─────────────────────────────────────────────────────────────── */
+
+/* Wayland axis events deliver raw pixel deltas per frame. Chromium treats
+ * wheel input through a phase-aware path; a lone QWheelEvent with
+ * Qt::NoScrollPhase does NOT trigger the default scroll action. We therefore
+ * emit a Begin → Update → End burst for every axis event so the renderer's
+ * input router commits the scroll consistently. */
+void InputReceiver::injectWheelEvent(const InputEvent &ev)
+{
+    if (!m_webview) return;
+    QWidget *fp = focusProxy();
+    if (!fp) return;
+
+    QPointF local(m_mouseX, m_mouseY);
+
+    /* Convert wayland axis units (~10 per wheel notch on most compositors)
+     * to Qt angle ticks (120 per notch). Sign matches the JS path we are
+     * replacing: scrollBy(0, dy * 20) which scrolls down for positive dy.
+     * angleDelta positive = scroll up, so negate. */
+    const int scale = 12;
+    int ax = -ev.dx * scale;
+    int ay = -ev.dy * scale;
+
+    auto post = [&](Qt::ScrollPhase phase, int dy, int dx = 0) {
+        QWheelEvent e(local, local, QPoint(0, 0), QPoint(dx, dy),
+                      m_buttons, Qt::NoModifier, phase, false);
+        e.setTimestamp(nowMs());
+        qApp->sendEvent(fp, &e);
+    };
+
+    post(Qt::ScrollBegin, 0);
+    if (ax || ay) post(Qt::ScrollUpdate, ay, ax);
+    post(Qt::ScrollEnd, 0);
 }

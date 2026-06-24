@@ -6,6 +6,7 @@
 
 class QIODevice;
 class QWebEngineView;
+class QWidget;
 
 class InputReceiver : public QObject
 {
@@ -19,11 +20,10 @@ public:
     void disconnect();
     bool isConnected() const { return m_fd >= 0; }
 
-    void setWebView(QWebEngineView *view) { m_webview = view; }
+    void setWebView(QWebEngineView *view) { m_webview = view; m_focusProxy = nullptr; }
 
 signals:
     void inputCaptureChanged(bool captured);
-    void cursorMoved(int x, int y);
     void eventReceived(const struct InputEvent &ev);
 
 private slots:
@@ -33,15 +33,21 @@ private:
     void closeFd();
     void injectKeyboardEvent(const struct InputEvent &ev);
     void injectMouseEvent(const struct InputEvent &ev);
+    void injectWheelEvent(const struct InputEvent &ev);
+    QWidget *focusProxy();                  /* lazily resolved */
+    void sendFocusIn();
 
     QString m_socketPath;
     int m_fd = -1;
     QSocketNotifier *m_notifier = nullptr;
     bool m_captureState = false;
     QWebEngineView *m_webview = nullptr;
+    QWidget *m_focusProxy = nullptr;
 
     int m_mouseX = 0;
     int m_mouseY = 0;
+    Qt::MouseButtons m_buttons;
+    bool m_focusSent = false;          /* Chromium focus has been pushed */
 };
 
 struct InputEvent {
