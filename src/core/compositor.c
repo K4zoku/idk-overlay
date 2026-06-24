@@ -540,52 +540,61 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
 
-    /* Resolve glEGLImageTargetTexture2DOES — try dlsym from multiple libs
-     * then eglGetProcAddress. On GLVND, eglGetProcAddress may return a
-     * GLES-only stub that rejects GL_TEXTURE_2D; try libOpenGL.so for
-     * the desktop GL dispatch. */
+    /* Resolve both EGL image binding functions up front */
     if (!fn_glEGLImageTargetTexture2DOES) {
         void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
         if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
         if (lib) {
             fn_glEGLImageTargetTexture2DOES =
                 (PFN_glEGLImageTargetTexture2DOES_fn)dlsym(lib, "glEGLImageTargetTexture2DOES");
-            IDK_LOG("comp", "glEGLImageTargetTexture2DOES dlsym=%p (libOpenGL)\n",
-                    (void*)fn_glEGLImageTargetTexture2DOES);
         }
     }
     if (!fn_glEGLImageTargetTexture2DOES && fn_eglGetProcAddress) {
         fn_glEGLImageTargetTexture2DOES = (PFN_glEGLImageTargetTexture2DOES_fn)
             fn_eglGetProcAddress("glEGLImageTargetTexture2DOES");
-        IDK_LOG("comp", "glEGLImageTargetTexture2DOES via eglGetProcAddress = %p\n",
-                (void*)fn_glEGLImageTargetTexture2DOES);
+    }
+    if (!fn_glEGLImageTargetTexStorageEXT) {
+        void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
+        if (lib) {
+            fn_glEGLImageTargetTexStorageEXT =
+                (PFN_glEGLImageTargetTexStorageEXT_fn)dlsym(lib, "glEGLImageTargetTexStorageEXT");
+        }
+        if (!fn_glEGLImageTargetTexStorageEXT && fn_eglGetProcAddress) {
+            fn_glEGLImageTargetTexStorageEXT =
+                (PFN_glEGLImageTargetTexStorageEXT_fn)fn_eglGetProcAddress("glEGLImageTargetTexStorageEXT");
+        }
     }
 
+    IDK_LOG("comp", "EGL image bind funcs: TexStorage=%p Texture2DOES=%p\n",
+            (void*)fn_glEGLImageTargetTexStorageEXT,
+            (void*)fn_glEGLImageTargetTexture2DOES);
+
+    /* Try glEGLImageTargetTexStorageEXT FIRST — correct for desktop GL.
+     * It allocates texture storage from the EGLImage.
+     * glEGLImageTargetTexture2DOES is GLES-only; on desktop GL it may
+     * silently "succeed" (GL_NO_ERROR) but leave texture unallocated (= white). */
     GLboolean ok = GL_FALSE;
     GLenum err = GL_NO_ERROR;
-    if (fn_glEGLImageTargetTexture2DOES) {
-        fn_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImage)img);
-        ok = GL_TRUE;
+
+    if (fn_glEGLImageTargetTexStorageEXT) {
+        fn_glEGLImageTargetTexStorageEXT(GL_TEXTURE_2D, (GLeglImage)img, NULL);
         err = glGetError();
-    }
-    if (err == GL_INVALID_ENUM) {
-        IDK_LOG("comp", "glEGLImageTargetTexture2DOES rejected GL_TEXTURE_2D, trying glEGLImageTargetTexStorageEXT\n");
-        /* Resolve glEGLImageTargetTexStorageEXT (GL_EXT_EGL_image_storage) */
-        if (!fn_glEGLImageTargetTexStorageEXT) {
-            void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
-            if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
-            if (lib) {
-                fn_glEGLImageTargetTexStorageEXT =
-                    (PFN_glEGLImageTargetTexStorageEXT_fn)dlsym(lib, "glEGLImageTargetTexStorageEXT");
-            }
-            if (!fn_glEGLImageTargetTexStorageEXT && fn_eglGetProcAddress) {
-                fn_glEGLImageTargetTexStorageEXT =
-                    (PFN_glEGLImageTargetTexStorageEXT_fn)fn_eglGetProcAddress("glEGLImageTargetTexStorageEXT");
-            }
+        if (err == GL_NO_ERROR) {
+            ok = GL_TRUE;
+            IDK_LOG("comp", "EGL image bound via TexStorageEXT\n");
+        } else {
+            IDK_LOG("comp", "TexStorageEXT failed (0x%04X), trying Texture2DOES\n", err);
         }
-        if (fn_glEGLImageTargetTexStorageEXT) {
-            fn_glEGLImageTargetTexStorageEXT(GL_TEXTURE_2D, (GLeglImage)img, NULL);
-            err = glGetError();
+    }
+
+    if (!ok && fn_glEGLImageTargetTexture2DOES) {
+        while (glGetError() != GL_NO_ERROR) {}
+        fn_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImage)img);
+        err = glGetError();
+        if (err == GL_NO_ERROR) {
+            ok = GL_TRUE;
+            IDK_LOG("comp", "EGL image bound via Texture2DOES\n");
         }
     }
     if (err != GL_NO_ERROR) {
