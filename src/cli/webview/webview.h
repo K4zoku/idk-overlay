@@ -87,6 +87,10 @@ private:
     bool m_useDmaBuf = true;
     bool m_dmaBufFailed = false;
     bool m_needSharedCtx = true;
+    /* Cooldown timestamp (monotonic ms) after a resize — Qt RHI is
+     * rebuilding its render-target texture during this window and
+     * exporting DMABUF mid-rebuild can SIGSEGV. Force SHM until it expires. */
+    qint64 m_dmabufCooldownUntil = 0;
     EGLDisplay m_eglDpy = EGL_NO_DISPLAY;
     EGLConfig  m_eglConfig = nullptr;
     EGLContext m_eglCtx = EGL_NO_CONTEXT;

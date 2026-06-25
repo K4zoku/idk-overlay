@@ -20,11 +20,11 @@ Manager::Manager(const QString &confFile,
                  bool noDmaBuf,
                  QObject *parent)
     : QObject(parent)
-    , m_noDmaBuf(noDmaBuf)
     , m_settings(new QSettings(
         confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-webview.conf") : confFile,
         QSettings::IniFormat, this))
     , m_reconnectTimer(new QTimer(this))
+    , m_noDmaBuf(noDmaBuf)
     , m_window(new QWidget())
     , m_tabBar(new QTabBar())
     , m_container(new QWidget())

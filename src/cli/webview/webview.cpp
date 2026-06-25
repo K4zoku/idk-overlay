@@ -220,8 +220,21 @@ void WebView::doRenderAndSend()
         return;
     }
 
-    /* ── Try zero-copy DMABUF export (backend auto-detected) ── */
-    if (m_useDmaBuf && !m_dmaBufFailed) {
+    /* ── Try zero-copy DMABUF export (backend auto-detected) ──
+     * Skip DMABUF during the post-resize cooldown window: Qt RHI is
+     * rebuilding its render-target texture in this period and exporting
+     * DMABUF mid-rebuild can SIGSEGV (the QRhiTexture pointer we
+     * obtained may be invalidated underneath us). Force SHM instead. */
+    qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+    if (now_ms < m_dmabufCooldownUntil) {
+        /* Log cooldown start once per cooldown period */
+        static qint64 s_last_cooldown_log = 0;
+        if (s_last_cooldown_log != m_dmabufCooldownUntil) {
+            IDK_LOG("webview-qt", "DMABUF cooldown active (%lldms remaining) — forcing SHM\n",
+                    m_dmabufCooldownUntil - now_ms);
+            s_last_cooldown_log = m_dmabufCooldownUntil;
+        }
+    } else if (m_useDmaBuf && !m_dmaBufFailed) {
         if (tryExportDMABuf())
             return;     // sent zero-copy, pending
         /* tryExportDMABuf() sets m_dmaBufFailed for permanent failures only;
@@ -306,6 +319,11 @@ void WebView::resizeForGame(int w, int h)
 
     IDK_LOG("webview-qt", "game resize: %dx%d -> %dx%d\n",
             m_renderW, m_renderH, w, h);
+
+    /* Arm DMABUF cooldown: Qt RHI rebuilds its render-target texture during
+     * and after the widget resize; exporting DMABUF mid-rebuild can crash.
+     * 300ms is enough for Qt to settle at any frame rate. */
+    m_dmabufCooldownUntil = QDateTime::currentMSecsSinceEpoch() + 300;
 
     setMinimumSize(w, h);
     setMaximumSize(w, h);
@@ -677,6 +695,14 @@ bool WebView::tryExportDMABufOpenGL()
     /* Make our shared context current; the texture belongs to Qt's context
        but is accessible through our shared context's namespace. */
     if (eglMakeCurrent(m_eglDpy, m_eglSurf, m_eglSurf, m_eglCtx)) {
+        /* Force Qt's pending GL commands to complete before we export the
+         * texture as a dmabuf. Without this, the exported dmabuf may
+         * contain stale/uninitialized memory (appears as WHITE for opaque
+         * content) because Qt RHI's render commands haven't been flushed
+         * to the GPU yet. Shared contexts on Mesa share a command queue,
+         * so glFinish() here waits for Qt's rendering to complete. */
+        glFinish();
+
         glBindTexture(GL_TEXTURE_2D, texId);
 
         EGLImageKHR eglImg = eglCreateImage(
@@ -716,6 +742,8 @@ bool WebView::tryExportDMABufOpenGL()
                     if (fds[i] >= 0) ::close(fds[i]);
 
                 if (rc == 0) {
+                    IDK_LOG("webview-qt", "frame sent OK (%dx%d type=DMABUF fd=%d stride=%u fourcc=0x%x)\n",
+                            frame.width, frame.height, fds[0], frame.stride, frame.format);
                     m_buffer = (m_buffer + 1) % 2;
                     m_pending = true;
                     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;

@@ -112,13 +112,37 @@ static void resolve_egl_functions(void) {
 static GLuint g_program = 0;
 
 
-/* Double-buffered textures */
+/* Double-buffered textures.
+ * For DMABUF textures, we MUST keep the EGLImage and dmabuf_fd alive
+ * for the texture's lifetime — Mesa's glEGLImageTargetTexStorageEXT
+ * does NOT retain a reference to the dmabuf storage; if we destroy the
+ * EGLImage or close the fd, the texture's backing is freed/reused
+ * and renders as empty/white. */
 static GLuint g_tex[2] = {0, 0};
 static int    g_tex_w[2] = {0, 0};
 static int    g_tex_h[2] = {0, 0};
+static EGLImageKHR g_tex_img[2] = {0, 0};   /* EGLImage backing g_tex[i], or 0 */
+static int    g_tex_dmabuf_fd[2] = {-1, -1}; /* fd backing g_tex[i], or -1 */
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static bool g_has_frame = false;
 static bool g_frame_premultiplied = false;  /* current frame's alpha mode */
+
+/* Free the DMABUF backing (EGLImage + fd) for slot i, if any.
+ * Safe to call when slot i has a SHM texture (no-op). */
+static void release_dmabuf_backing(int i) {
+    if (i < 0 || i > 1) return;
+    if (g_tex_img[i] && fn_eglDestroyImageKHR) {
+        EGLDisplay dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
+        if (dpy != EGL_NO_DISPLAY) {
+            fn_eglDestroyImageKHR(dpy, g_tex_img[i]);
+        }
+    }
+    g_tex_img[i] = 0;
+    if (g_tex_dmabuf_fd[i] >= 0) {
+        close(g_tex_dmabuf_fd[i]);
+        g_tex_dmabuf_fd[i] = -1;
+    }
+}
 
 /* Draw error counter — reset on new frame upload, invalidate tex at 5 */
 static int g_draw_err_count = 0;
@@ -159,9 +183,11 @@ static PFN_glEGLImageTargetTexture2DOES_fn fn_glEGLImageTargetTexture2DOES = NUL
 typedef void (*PFN_glEGLImageTargetTexStorageEXT_fn)(GLenum target, GLeglImage image, const GLint* attrib_list);
 static PFN_glEGLImageTargetTexStorageEXT_fn fn_glEGLImageTargetTexStorageEXT = NULL;
 
-/* Forward declaration */
+/* Forward declaration — caller must keep *out_img alive for the
+ * lifetime of the returned texture. */
 static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
-                                    uint32_t stride, uint32_t format);
+                                    uint32_t stride, uint32_t format,
+                                    EGLImageKHR *out_img);
 
 static int g_listen_fd = -1;
 static int g_client_fd = -1;
@@ -322,11 +348,19 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
 
     int back = 1 - g_tex_idx;
 
-    /* If dimensions changed, delete old texture and reallocate via glTexImage2D */
+    /* If dimensions changed, delete old texture and reallocate via glTexImage2D.
+     * Also force-delete if the slot was previously DMABUF-backed: a DMABUF
+     * texture's storage is owned by the EGLImage and cannot be updated via
+     * glTexSubImage2D — we must recreate it as a regular GL texture. */
     bool size_changed = (GLsizei)w != g_tex_w[back] || (GLsizei)h != g_tex_h[back];
-    if (size_changed && g_tex[back] != 0) {
+    bool was_dmabuf = (g_tex_img[back] != 0) || (g_tex_dmabuf_fd[back] >= 0);
+    if ((size_changed || was_dmabuf) && g_tex[back] != 0) {
         glDeleteTextures(1, &g_tex[back]);
         g_tex[back] = 0;
+    }
+    /* Replacing a slot that was previously DMABUF-backed: free the backing. */
+    if (was_dmabuf) {
+        release_dmabuf_backing(back);
     }
 
     if (g_tex[back] == 0) {
@@ -369,7 +403,15 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     g_frame_premultiplied = (premultiplied != 0);
     g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
 
-    close(shm_fd);
+    IDK_LOG("comp", "SHM frame uploaded: %ux%u tex[%d]=%u premul=%d buf_idx=%u\n",
+            (unsigned)w, (unsigned)h, back, g_tex[back],
+            (int)g_frame_premultiplied, (unsigned)buffer_idx);
+
+    /* Don't close shm_fd if we stored it as g_shm_fd — the mmap relies on
+     * the fd staying open. If it's a different fd (not stored), close it. */
+    if (shm_fd != g_shm_fd) {
+        close(shm_fd);
+    }
 
     return g_tex[g_tex_idx];
 }
@@ -443,23 +485,41 @@ int idk_compositor_render(void) {
             processed = 1;
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
+            EGLImageKHR img = 0;
             tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                         hdr.stride, hdr.format);
-            if (tex == 0) {
-                IDK_LOG("comp", "DMABUF import failed, telling client to use SHM\n");
+                                         hdr.stride, hdr.format, &img);
+            if (tex == 0 || img == 0) {
+                /* Transient failure (e.g. Qt RHI reallocated the texture
+                 * mid-export, causing TexStorageEXT to fail with 0x0500).
+                 * Don't tell the webview to permanently fall back to SHM —
+                 * just drop this frame and let the webview send a new one.
+                 * ACK=0 means "frame received OK", so the webview will
+                 * retry DMABUF next frame instead of switching to SHM. */
+                IDK_LOG("comp", "DMABUF import failed (transient) — dropping frame, not falling back to SHM\n");
+                if (img && fn_eglDestroyImageKHR) {
+                    EGLDisplay dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
+                    if (dpy != EGL_NO_DISPLAY) fn_eglDestroyImageKHR(dpy, img);
+                }
                 close(dmabuf_fd);
-                /* Still send ACK=1 to notify webview → SHM fallback */
-                processed = -1;
+                /* ACK=0 (success) so webview retries DMABUF next frame */
+                processed = 1;
             } else {
                 int back = 1 - g_tex_idx;
+                /* Replacing previous slot: delete its texture AND any
+                 * DMABUF backing (EGLImage + fd) so we don't leak. */
                 if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
+                release_dmabuf_backing(back);
+                /* Install new texture + keep its backing alive. */
                 g_tex[back] = tex;
+                g_tex_img[back] = img;
+                g_tex_dmabuf_fd[back] = dmabuf_fd;  /* keep fd open! */
+                g_tex_w[back] = (GLsizei)hdr.width;
+                g_tex_h[back] = (GLsizei)hdr.height;
                 g_tex_idx = back;
                 g_has_frame = true;
                 /* DMABUF from Qt RHI is always premultiplied alpha */
                 g_frame_premultiplied = true;
                 g_draw_err_count = 0;
-                close(dmabuf_fd);
                 g_frame_w = hdr.width;
                 g_frame_h = hdr.height;
                 processed = 1;
@@ -496,7 +556,9 @@ int idk_compositor_render(void) {
 }
 
 GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
-                              uint32_t stride, uint32_t format) {
+                              uint32_t stride, uint32_t format,
+                              EGLImageKHR *out_img) {
+    if (out_img) *out_img = 0;
     if (!fn_eglCreateImageKHR) {
         resolve_egl_functions();
         if (!fn_eglCreateImageKHR) {
@@ -566,9 +628,10 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
-    IDK_LOG("comp", "EGL image bind funcs: TexStorage=%p Texture2DOES=%p\n",
+    IDK_LOG("comp", "EGL image bind funcs: TexStorage=%p Texture2DOES=%p (w=%u h=%u stride=%u fourcc=0x%x)\n",
             (void*)fn_glEGLImageTargetTexStorageEXT,
-            (void*)fn_glEGLImageTargetTexture2DOES);
+            (void*)fn_glEGLImageTargetTexture2DOES,
+            (unsigned)w, (unsigned)h, (unsigned)stride, (unsigned)drm_fmt);
 
     /* Try glEGLImageTargetTexStorageEXT FIRST — correct for desktop GL.
      * It allocates texture storage from the EGLImage.
@@ -576,13 +639,18 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
      * silently "succeed" (GL_NO_ERROR) but leave texture unallocated (= white). */
     GLboolean ok = GL_FALSE;
     GLenum err = GL_NO_ERROR;
+    static int s_texstorage_success_logged = 0;
 
     if (fn_glEGLImageTargetTexStorageEXT) {
         fn_glEGLImageTargetTexStorageEXT(GL_TEXTURE_2D, (GLeglImage)img, NULL);
         err = glGetError();
         if (err == GL_NO_ERROR) {
             ok = GL_TRUE;
-            IDK_LOG("comp", "EGL image bound via TexStorageEXT\n");
+            /* Log success only once to avoid per-frame spam */
+            if (!s_texstorage_success_logged) {
+                IDK_LOG("comp", "EGL image bound via TexStorageEXT (will not re-log)\n");
+                s_texstorage_success_logged = 1;
+            }
         } else {
             IDK_LOG("comp", "TexStorageEXT failed (0x%04X), trying Texture2DOES\n", err);
         }
@@ -613,7 +681,14 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    fn_eglDestroyImageKHR(egl_dpy, img);
+    /* DO NOT destroy the EGLImage here — Mesa's TexStorageEXT does NOT
+     * retain a reference to the dmabuf storage; if we destroy the image
+     * (or the caller closes the dmabuf fd), the texture's backing memory
+     * gets freed/reused and the texture renders as empty/white.
+     * The caller is responsible for keeping *out_img (and the dmabuf fd)
+     * alive for the texture's lifetime, and destroying them when the
+     * texture is replaced/deleted. */
+    if (out_img) *out_img = img;
 
     return tex;
 }
@@ -812,6 +887,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                     g_tex_idx, dead);
                 if (dead > 0) glDeleteTextures(1, &dead);
                 g_tex[g_tex_idx] = 0;
+                release_dmabuf_backing(g_tex_idx);
                 g_has_frame = false;
             }
         }
@@ -821,6 +897,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     if (cur > 0 && !glIsTexture(cur)) {
         IDK_ERR("comp", "WARNING: tex[%d] (%u) is not a valid texture!\n", g_tex_idx, cur);
         g_tex[g_tex_idx] = 0;
+        release_dmabuf_backing(g_tex_idx);
         g_has_frame = false;
     }
 
@@ -915,6 +992,9 @@ void idk_compositor_shutdown(void) {
     /* GL cleanup skipped — OS reclaims on exit */
     g_program = 0;
     g_tex[0] = g_tex[1] = 0;
+    /* Release DMABUF backing (EGLImage + fd) for both slots */
+    release_dmabuf_backing(0);
+    release_dmabuf_backing(1);
     g_has_frame = false;
     IDK_LOG("comp", "Shut down\n");
 }

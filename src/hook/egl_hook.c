@@ -37,17 +37,10 @@ typedef int32_t EGLint;
 static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = NULL;
 static int g_hook_installed = 0;
 static int g_retry_done = 0;
-static int g_wl_egl_retry_count = 0;
-static int g_wl_egl_hook_installed = 0;
-static int g_wl_egl_hook_gave_up = 0;
 static int g_gl_resources_ready = 0;
 static pthread_mutex_t g_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static EGLBoolean (*fn_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint*) = NULL;
-
-typedef void (*PFN_glViewport_fn)(GLint, GLint, GLsizei, GLsizei);
-static PFN_glViewport_fn orig_glViewport = NULL;
-static int g_glViewport_hook_installed = 0;
 
 static void *(*real_dlsym)(void *, const char *) = NULL;
 static void *(*real_dlopen)(const char *, int) = NULL;
@@ -82,9 +75,7 @@ static void load_real_functions(void) {
 }
 
 static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface);
-static int install_wl_egl_hook(void);
 static int ensure_eglQuerySurface(void);
-static int install_glViewport_hook(void);
 
 static EGLBoolean call_real_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     load_real_functions();
@@ -152,7 +143,6 @@ static int install_egl_hook(void) {
         if (n > 0) {
             g_hook_installed = 1;
             EDBG("installed via install_addr");
-            install_wl_egl_hook();
             pthread_mutex_unlock(&g_hook_mutex);
             return 0;
         }
@@ -164,7 +154,6 @@ static int install_egl_hook(void) {
     if (n > 0) {
         g_hook_installed = 1;
         EDBG("installed via GOT walk");
-        install_wl_egl_hook();
         pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
@@ -177,7 +166,6 @@ static int install_egl_hook(void) {
         if (n > 0) {
             g_hook_installed = 1;
             EDBG("installed via install_addr (retry)");
-            install_wl_egl_hook();
             pthread_mutex_unlock(&g_hook_mutex);
             return 0;
         }
@@ -192,18 +180,6 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     if (!orig_eglSwapBuffers && !g_retry_done) {
         g_retry_done = 1;
         install_egl_hook();
-    }
-    if (!g_wl_egl_hook_installed && !g_wl_egl_hook_gave_up) {
-        g_wl_egl_retry_count++;
-        if (g_wl_egl_retry_count % 10 == 0) {
-            int r = install_wl_egl_hook();
-            if (r != 0 && g_wl_egl_retry_count >= 100) {
-                g_wl_egl_hook_gave_up = 1;
-                EDBG("wl_egl_window_resize gave up after %d retries", g_wl_egl_retry_count);
-            }
-        }
-        if (!g_glViewport_hook_installed && g_wl_egl_retry_count == 30)
-            install_glViewport_hook();
     }
 
     /* Install wayland input hook on first swap — by now libwayland-client
@@ -223,9 +199,9 @@ static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
 
     idk_compositor_render();
 
-    /* Per-frame EGL surface size query — catches game resizes that skip
-     * wl_egl_window_resize / vkCreateSwapchainKHR (e.g. SDL_SetWindowSize
-     * on XWayland). Only triggers notify_resize on actual change. */
+    /* Per-frame EGL surface size query — catches all game resizes
+     * (e.g. SDL_SetWindowSize on XWayland, wl_egl_window_resize on
+     * native Wayland). Only triggers notify_resize on actual change. */
     if (!fn_eglQuerySurface) {
         if (ensure_eglQuerySurface() != 0) {
             EDBG("eglQuerySurface resolution failed");
@@ -282,124 +258,6 @@ static int ensure_eglQuerySurface(void) {
     return -1;
 }
 
-/* ── glViewport hook (resize signal) ──────────────────────────── */
-
-static void hook_glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
-    if (orig_glViewport)
-        orig_glViewport(x, y, w, h);
-    if (w > 0 && h > 0)
-        idk_compositor_notify_resize((int)w, (int)h);
-}
-
-static int install_glViewport_hook(void) {
-    if (g_glViewport_hook_installed) return 0;
-
-    void *sym = NULL;
-    void *libgl = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-    if (!libgl) libgl = dlopen("libGL.so.1", RTLD_NOW);
-    if (!libgl) libgl = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
-    if (!libgl) libgl = dlopen("libOpenGL.so.0", RTLD_NOW);
-    if (libgl) {
-        sym = dlsym(libgl, "glViewport");
-        if (!sym && real_dlsym) sym = real_dlsym(libgl, "glViewport");
-    }
-    if (!sym) sym = dlsym(RTLD_DEFAULT, "glViewport");
-
-    if (!sym) {
-        EDBG("glViewport symbol not found");
-        return -1;
-    }
-
-    int n = syringe_hook_install("glViewport",
-                                  (void*)hook_glViewport,
-                                  (void**)&orig_glViewport);
-    if (n > 0) {
-        g_glViewport_hook_installed = 1;
-        EDBG("glViewport hook installed via GOT walk");
-        return 0;
-    }
-
-    n = syringe_hook_install_addr("glViewport", sym,
-                                   (void*)hook_glViewport,
-                                   (void**)&orig_glViewport);
-    if (n > 0) {
-        g_glViewport_hook_installed = 1;
-        EDBG("glViewport hook installed via install_addr");
-        return 0;
-    }
-
-    EDBG("glViewport hook install failed");
-    return -1;
-}
-
-/* ── wl_egl_window_resize hook ─────────────────────────────────────── */
-
-typedef void (*PFN_wl_egl_window_resize_fn)(void*, int, int, int, int);
-static PFN_wl_egl_window_resize_fn orig_wl_egl_window_resize = NULL;
-
-static void hook_wl_egl_window_resize(void *win, int w, int h, int dx, int dy) {
-    if (orig_wl_egl_window_resize)
-        orig_wl_egl_window_resize(win, w, h, dx, dy);
-    idk_compositor_notify_resize(w, h);
-}
-
-static int install_wl_egl_hook(void) {
-    if (g_wl_egl_hook_installed) return 0;
-
-    void *sym = NULL;
-    int n;
-
-    /* Method 1: dlsym(RTLD_DEFAULT) — works when symbol is in global table
-     * (e.g. SDL3 statically linked against libwayland-egl) */
-    sym = real_dlsym
-        ? real_dlsym(RTLD_DEFAULT, "wl_egl_window_resize")
-        : dlsym(RTLD_DEFAULT, "wl_egl_window_resize");
-    if (sym) {
-        n = syringe_hook_install_addr("wl_egl_window_resize", sym,
-                                       (void*)hook_wl_egl_window_resize,
-                                       (void**)&orig_wl_egl_window_resize);
-        if (n > 0) {
-            g_wl_egl_hook_installed = 1;
-            EDBG("wl_egl_window_resize installed via RTLD_DEFAULT\n");
-            return 0;
-        }
-    }
-
-    /* Method 2: dlopen libwayland-egl + dlsym (traditional) */
-    void *lib = real_dlopen
-        ? real_dlopen("libwayland-egl.so.1", RTLD_NOW | RTLD_NOLOAD)
-        : dlopen("libwayland-egl.so.1", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib)
-        lib = real_dlopen
-            ? real_dlopen("libwayland-egl.so", RTLD_NOW | RTLD_NOLOAD)
-            : dlopen("libwayland-egl.so", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib) return -1;
-
-    sym = real_dlsym
-        ? real_dlsym(lib, "wl_egl_window_resize")
-        : dlsym(lib, "wl_egl_window_resize");
-    if (!sym) return -1;
-
-    n = syringe_hook_install("wl_egl_window_resize",
-                              (void*)hook_wl_egl_window_resize,
-                              (void**)&orig_wl_egl_window_resize);
-    if (n > 0) {
-        g_wl_egl_hook_installed = 1;
-        EDBG("wl_egl_window_resize installed via GOT walk\n");
-        return 0;
-    }
-
-    n = syringe_hook_install_addr("wl_egl_window_resize", sym,
-                                   (void*)hook_wl_egl_window_resize,
-                                   (void**)&orig_wl_egl_window_resize);
-    if (n > 0) {
-        g_wl_egl_hook_installed = 1;
-        EDBG("wl_egl_window_resize installed via install_addr\n");
-        return 0;
-    }
-
-    return -1;
-}
 
 int idk_egl_init(void) {
     if (g_hook_installed) return 0;
