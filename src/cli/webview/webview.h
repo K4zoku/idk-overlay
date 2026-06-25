@@ -51,6 +51,7 @@ private:
     bool tryExportDMABufOpenGL();
     bool tryExportDMABufVulkan();
     bool ensureDmaBufSharedCtx();
+    bool tryReadPixelsToSHM(uchar *shm, int w, int h);  // 0-copy SHM via glReadPixels
 
     void resizeForGame(int w, int h);
     void initVulkan(QSGRendererInterface *rif, QQuickWindow *window);

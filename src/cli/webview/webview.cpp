@@ -243,7 +243,7 @@ void WebView::doRenderAndSend()
            transient failures (e.g. Qt context not ready) retry next cycle. */
     }
 
-    /* ── SHM fallback: grabFramebuffer → memcpy → send ── */
+    /* ── SHM fallback: glReadPixels directly into SHM (0 CPU copies) ── */
     if (!m_memory) {
         QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
         return;
@@ -253,19 +253,23 @@ void WebView::doRenderAndSend()
     m_buffer = (m_buffer + 1) % 2;
     uchar *shm = (uchar*)m_memory + (PIXELS_SIZE(m_renderW, m_renderH) * buffer);
 
-    if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
-        QImage fb = qw->grabFramebuffer();
-        QImage &img = fb;  // use directly, no conversion
+    /* Try 0-copy glReadPixels path first. Falls back to grabFramebuffer
+     * if shared context not available (e.g. EGL init failed). */
+    bool read_ok = tryReadPixelsToSHM(shm, m_renderW, m_renderH);
 
-        int bytesPerRow = img.bytesPerLine();
-        int targetBpr = m_renderW * 4;  // tightly packed RGBA
-        int bpr = qMin(bytesPerRow, targetBpr);
-        for (int y = 0; y < m_renderH; y++) {
-            const uchar *srcRow = img.constScanLine(m_renderH - 1 - y);
-            uchar *dstRow = shm + y * targetBpr;
-            memcpy(dstRow, srcRow, bpr);
+    if (!read_ok) {
+        /* Fallback: grabFramebuffer → row-reverse memcpy (2 CPU copies) */
+        if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
+            QImage img = qw->grabFramebuffer();
+            int bpr = qMin(img.bytesPerLine(), m_renderW * 4);
+            for (int y = 0; y < m_renderH; y++) {
+                const uchar *srcRow = img.constScanLine(m_renderH - 1 - y);
+                uchar *dstRow = shm + y * (m_renderW * 4);
+                memcpy(dstRow, srcRow, bpr);
+            }
+            m_framePremultiplied = true;
+            read_ok = true;
         }
-        m_framePremultiplied = true;
     }
 
     idk_fs_frame_t frame;
@@ -989,6 +993,139 @@ bool WebView::tryExportDMABufOpenGL()
         eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
 
     return ok;
+}
+
+// ── SHM 0-copy path: glReadPixels directly into SHM buffer ──
+bool WebView::tryReadPixelsToSHM(uchar *shm, int w, int h)
+{
+    /* Lazy shared-context init — same as DMABUF path.
+     * Even when --no-dmabuf is set, we need the shared EGL context
+     * to access Qt's render target texture. */
+    if (m_needSharedCtx && !ensureDmaBufSharedCtx())
+        return false;
+
+    QQuickWidget *qw = qobject_cast<QQuickWidget *>(focusProxy());
+    if (!qw) return false;
+    QQuickWindow *window = qw->quickWindow();
+    if (!window) return false;
+
+    auto *rif = window->rendererInterface();
+    if (!rif) return false;
+
+    /* Get Qt's render target texture */
+    auto *rhiRt = reinterpret_cast<QRhiTextureRenderTarget *>(
+        rif->getResource(window, QSGRendererInterface::RhiRedirectRenderTarget));
+    if (!rhiRt) return false;
+
+    auto desc = rhiRt->description();
+    if (desc.colorAttachmentCount() == 0) return false;
+    const QRhiColorAttachment *ca = desc.colorAttachmentAt(0);
+    if (!ca || !ca->texture()) return false;
+
+    QRhiTexture::NativeTexture native = ca->texture()->nativeTexture();
+    GLuint texId = static_cast<GLuint>(native.object);
+    if (!texId) return false;
+
+    /* Save & restore the caller's EGL context */
+    EGLDisplay savedDpy = eglGetCurrentDisplay();
+    EGLContext savedCtx = eglGetCurrentContext();
+    EGLSurface savedRead = eglGetCurrentSurface(EGL_READ);
+    EGLSurface savedDraw = eglGetCurrentSurface(EGL_DRAW);
+
+    /* Make our shared context current */
+    if (!eglMakeCurrent(m_eglDpy, m_eglSurf, m_eglSurf, m_eglCtx)) {
+        IDK_LOG("webview-qt", "tryReadPixelsToSHM: eglMakeCurrent failed\n");
+        return false;
+    }
+
+    /* Fence sync — flush Qt's render commands via shared command buffer
+     * (same pattern as tryExportDMABufOpenGL) */
+    typedef void* (*PFN_glFenceSync)(unsigned int, unsigned int);
+    typedef unsigned int (*PFN_glClientWaitSync)(void*, unsigned int, uint64_t);
+    typedef void (*PFN_glDeleteSync)(void*);
+    static PFN_glFenceSync fn_glFenceSync = nullptr;
+    static PFN_glClientWaitSync fn_glClientWaitSync = nullptr;
+    static PFN_glDeleteSync fn_glDeleteSync = nullptr;
+    if (!fn_glFenceSync) {
+        void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
+        if (lib) {
+            fn_glFenceSync = (PFN_glFenceSync)dlsym(lib, "glFenceSync");
+            fn_glClientWaitSync = (PFN_glClientWaitSync)dlsym(lib, "glClientWaitSync");
+            fn_glDeleteSync = (PFN_glDeleteSync)dlsym(lib, "glDeleteSync");
+        }
+    }
+    if (fn_glFenceSync && fn_glClientWaitSync && fn_glDeleteSync) {
+        void *fence = fn_glFenceSync(0x9117, 0);
+        if (fence) {
+            glFlush();
+            unsigned int result = fn_glClientWaitSync(fence, 0x00000001, 1000000000ULL);
+            fn_glDeleteSync(fence);
+            if (result != 0x911A && result != 0x911C) {
+                IDK_LOG("webview-qt", "tryReadPixelsToSHM: fence sync failed (0x%x)\n", result);
+                if (savedDpy != EGL_NO_DISPLAY)
+                    eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+                return false;
+            }
+        }
+    } else {
+        glFinish();
+    }
+
+    /* Resolve FBO + glReadPixels functions via dlsym */
+    typedef void (*PFN_glGenFramebuffers)(GLsizei, GLuint*);
+    typedef void (*PFN_glBindFramebuffer)(GLenum, GLuint);
+    typedef void (*PFN_glFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+    typedef void (*PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*);
+    typedef void (*PFN_glDeleteFramebuffers)(GLsizei, const GLuint*);
+    static PFN_glGenFramebuffers fn_glGenFramebuffers = nullptr;
+    static PFN_glBindFramebuffer fn_glBindFramebuffer = nullptr;
+    static PFN_glFramebufferTexture2D fn_glFramebufferTexture2D = nullptr;
+    static PFN_glReadPixels fn_glReadPixels = nullptr;
+    static PFN_glDeleteFramebuffers fn_glDeleteFramebuffers = nullptr;
+    if (!fn_glGenFramebuffers) {
+        void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
+        if (lib) {
+            fn_glGenFramebuffers = (PFN_glGenFramebuffers)dlsym(lib, "glGenFramebuffers");
+            fn_glBindFramebuffer = (PFN_glBindFramebuffer)dlsym(lib, "glBindFramebuffer");
+            fn_glFramebufferTexture2D = (PFN_glFramebufferTexture2D)dlsym(lib, "glFramebufferTexture2D");
+            fn_glReadPixels = (PFN_glReadPixels)dlsym(lib, "glReadPixels");
+            fn_glDeleteFramebuffers = (PFN_glDeleteFramebuffers)dlsym(lib, "glDeleteFramebuffers");
+        }
+    }
+    if (!fn_glGenFramebuffers || !fn_glBindFramebuffer || !fn_glFramebufferTexture2D ||
+        !fn_glReadPixels || !fn_glDeleteFramebuffers) {
+        if (savedDpy != EGL_NO_DISPLAY)
+            eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+        return false;
+    }
+
+    /* Attach Qt's texture to read FBO */
+    GLuint readFbo = 0;
+    fn_glGenFramebuffers(1, &readFbo);
+    fn_glBindFramebuffer(0x8CA8 /* GL_READ_FRAMEBUFFER */, readFbo);
+    fn_glFramebufferTexture2D(0x8CA8, 0x8CE0 /* GL_COLOR_ATTACHMENT0 */,
+                              0x0DE1 /* GL_TEXTURE_2D */, texId, 0);
+
+    /* Set pack alignment for tightly packed RGBA (4 bytes per pixel) */
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    /* glReadPixels reads bottom-up (row 0 = bottom of framebuffer).
+     * glTexImage2D in compositor expects bottom-up data.
+     * → NO flip, NO row-reverse memcpy needed — orientation matches! */
+    fn_glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, shm);
+
+    /* Cleanup */
+    fn_glBindFramebuffer(0x8D40 /* GL_FRAMEBUFFER */, 0);
+    fn_glDeleteFramebuffers(1, &readFbo);
+
+    if (savedDpy != EGL_NO_DISPLAY)
+        eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+
+    m_framePremultiplied = true;  /* Qt RHI textures are premultiplied */
+    return true;
 }
 
 // ── Vulkan DMABUF export — staged buffer copy ──
