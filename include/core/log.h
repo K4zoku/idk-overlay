@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* Check IDK_DEBUG once at startup, cache the result */
 static inline int idk_debug_enabled(void) {
@@ -27,14 +28,32 @@ static inline int idk_debug_enabled(void) {
     return cached;
 }
 
-/* Info/debug log — only prints if IDK_DEBUG is set */
+/* Get millisecond timestamp string for log prefix: [HH:MM:SS.mmm] */
+static inline void idk_timestamp(char *buf, size_t len) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    localtime_r(&ts.tv_sec, &tm);
+    snprintf(buf, len, "%02d:%02d:%02d.%03d",
+             tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(ts.tv_nsec / 1000000));
+}
+
+/* Info/debug log — only prints if IDK_DEBUG is set.
+ * Includes millisecond timestamp for easier debugging of timing issues. */
 #define IDK_LOG(tag, fmt, ...) do { \
-    if (idk_debug_enabled()) \
-        fprintf(stderr, "[idk:%s] " fmt, tag, ##__VA_ARGS__); \
+    if (idk_debug_enabled()) { \
+        char _ts[16]; \
+        idk_timestamp(_ts, sizeof(_ts)); \
+        fprintf(stderr, "[%s][idk:%s] " fmt, _ts, tag, ##__VA_ARGS__); \
+    } \
 } while(0)
 
 /* Error log — always prints (errors should be visible even without IDK_DEBUG) */
 #define IDK_ERR(tag, fmt, ...) \
-    fprintf(stderr, "[idk:%s] " fmt, tag, ##__VA_ARGS__)
+    do { \
+        char _ts[16]; \
+        idk_timestamp(_ts, sizeof(_ts)); \
+        fprintf(stderr, "[%s][idk:%s] " fmt, _ts, tag, ##__VA_ARGS__); \
+    } while(0)
 
 #endif /* IDK_LOG_H */

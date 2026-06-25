@@ -44,6 +44,14 @@ static void build_frame_hdr(const idk_fs_frame_t *frame,
     fields[5] = frame->width * frame->height * 4; /* pid → pixel byte size */
     fields[6] = (uint32_t)frame->visible          /* reserved → visibility (low byte) */
               | ((uint32_t)frame->type << 8);     /*            frame type (high byte) */
+    /* fields[7] = checksum (filled by caller) */
+
+    /* Write modifier at bytes 32-39 (after the 32-byte header).
+     * The compositor reads 64 bytes, so this fits in the existing buffer. */
+    if (hdr_size >= 40) {
+        uint64_t *mod = (uint64_t *)(hdr + 32);
+        *mod = frame->modifier;
+    }
 }
 
 /* SHM helpers */
@@ -164,10 +172,10 @@ int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    uint8_t hdr[32] = { 0 };
+    uint8_t hdr[40] = { 0 };
     build_frame_hdr(frame, hdr, sizeof(hdr));
 
-    uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t));
+    uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t) - 8);
     ((uint32_t *)hdr)[7] = checksum;
 
     struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(hdr) };
@@ -239,10 +247,10 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    uint8_t hdr[32] = { 0 };
+    uint8_t hdr[40] = { 0 };
     build_frame_hdr(frame, hdr, sizeof(hdr));
 
-    uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t));
+    uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t) - 8);
     ((uint32_t *)hdr)[7] = checksum;
 
     struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(hdr) };

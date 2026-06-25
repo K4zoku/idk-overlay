@@ -58,6 +58,7 @@ typedef struct idk_fs_frame {
     uint8_t  visible;     /* Visibility flag */
     uint8_t  nfd;         /* Number of file descriptors to send */
     uint8_t  type;        /* Frame type: IDK_FRAME_TYPE_DMABUF or IDK_FRAME_TYPE_SHM */
+    uint64_t modifier;    /* DMABUF layout modifier (0 = linear, 0xFFFF...F = invalid) */
 } idk_fs_frame_t;
 
 /* ── Client initialization ────────────────────────────────────────────── */

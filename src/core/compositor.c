@@ -33,6 +33,9 @@ struct frame_hdr {
     uint32_t reserved;     /* SHM: pixel byte size, DMABUF: unused */
     uint32_t vis_type;     /* visibility (low byte) + frame type (high byte) */
     uint32_t checksum;
+    /* Modifier follows at byte 32 (after this 32-byte header).
+     * Sent by idk_fs as uint64_t at offset 32. */
+    uint64_t modifier;
 };
 
 /* SHM format flags (stored in hdr.format for SHM frames) */
@@ -60,6 +63,9 @@ typedef intptr_t EGLNativeDisplayType;
 #define EGL_DMA_BUF_PLANE0_FD_EXT      0x3272
 #define EGL_DMA_BUF_PLANE0_OFFSET_EXT  0x3273
 #define EGL_DMA_BUF_PLANE0_PITCH_EXT   0x3274
+#define EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT  0x3443
+#define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT  0x3444
+#define DRM_FORMAT_MOD_INVALID 0x00FFFFFFFFFFFFFFULL
 
 typedef EGLDisplay (*PFN_eglGetDisplay_fn)(EGLNativeDisplayType);
 typedef EGLDisplay (*PFN_eglGetCurrentDisplay_fn)(void);
@@ -187,6 +193,7 @@ static PFN_glEGLImageTargetTexStorageEXT_fn fn_glEGLImageTargetTexStorageEXT = N
  * lifetime of the returned texture. */
 static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                                     uint32_t stride, uint32_t format,
+                                    uint64_t modifier,
                                     EGLImageKHR *out_img);
 
 static int g_listen_fd = -1;
@@ -487,7 +494,8 @@ int idk_compositor_render(void) {
         } else {
             EGLImageKHR img = 0;
             tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                         hdr.stride, hdr.format, &img);
+                                         hdr.stride, hdr.format,
+                                         hdr.modifier, &img);
             if (tex == 0 || img == 0) {
                 /* Transient failure (e.g. Qt RHI reallocated the texture
                  * mid-export, causing TexStorageEXT to fail with 0x0500).
@@ -557,6 +565,7 @@ int idk_compositor_render(void) {
 
 GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                               uint32_t stride, uint32_t format,
+                              uint64_t modifier,
                               EGLImageKHR *out_img) {
     if (out_img) *out_img = 0;
     if (!fn_eglCreateImageKHR) {
@@ -579,15 +588,35 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     uint32_t drm_fmt = format;
     if (drm_fmt == 0) drm_fmt = 0x34324742; /* fallback: BGRA8888 */
 
-    EGLint attrs[] = {
-        EGL_WIDTH, (EGLint)w,
-        EGL_HEIGHT, (EGLint)h,
-        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)drm_fmt,
-        EGL_DMA_BUF_PLANE0_FD_EXT, dmabuf_fd,
-        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)stride,
-        EGL_NONE
-    };
+    /* Build attribute list. Include modifier if it's valid (not
+     * DRM_FORMAT_MOD_INVALID). Without the modifier, Mesa assumes
+     * linear layout — if the dmabuf is actually tiled/compressed,
+     * the imported texture will have garbled/white content. */
+    EGLint attrs[16];
+    int ai = 0;
+    attrs[ai++] = EGL_WIDTH;
+    attrs[ai++] = (EGLint)w;
+    attrs[ai++] = EGL_HEIGHT;
+    attrs[ai++] = (EGLint)h;
+    attrs[ai++] = EGL_LINUX_DRM_FOURCC_EXT;
+    attrs[ai++] = (EGLint)drm_fmt;
+    attrs[ai++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+    attrs[ai++] = dmabuf_fd;
+    attrs[ai++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+    attrs[ai++] = 0;
+    attrs[ai++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+    attrs[ai++] = (EGLint)stride;
+    if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
+        attrs[ai++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+        attrs[ai++] = (EGLint)(modifier & 0xFFFFFFFF);
+        attrs[ai++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+        attrs[ai++] = (EGLint)((modifier >> 32) & 0xFFFFFFFF);
+    }
+    attrs[ai++] = EGL_NONE;
+
+    IDK_LOG("comp", "eglCreateImage: %ux%u fourcc=0x%x stride=%u modifier=0x%llx\n",
+            (unsigned)w, (unsigned)h, (unsigned)drm_fmt, (unsigned)stride,
+            (unsigned long long)modifier);
 
     EGLImageKHR img = fn_eglCreateImageKHR(
         egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);

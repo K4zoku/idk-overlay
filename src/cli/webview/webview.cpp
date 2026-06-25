@@ -725,7 +725,8 @@ bool WebView::tryExportDMABufOpenGL()
                 qFn(m_eglDpy, eglImg, &fourcc, &nfd, &modifier) &&
                 eFn(m_eglDpy, eglImg, fds, strides, offsets))
             {
-                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query OK (fourcc=0x%x nfd=%d)\n", fourcc, nfd);
+                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query OK (fourcc=0x%x nfd=%d modifier=0x%llx)\n",
+                        fourcc, nfd, (unsigned long long)modifier);
                 idk_fs_frame_t frame;
                 memset(&frame, 0, sizeof(frame));
                 frame.width   = static_cast<uint32_t>(m_renderW);
@@ -736,6 +737,7 @@ bool WebView::tryExportDMABufOpenGL()
                 frame.type    = IDK_FRAME_TYPE_DMABUF;
                 frame.stride  = static_cast<uint32_t>(strides[0]);
                 frame.format  = static_cast<uint32_t>(fourcc);
+                frame.modifier = modifier;
 
                 int rc = idk_fs_send_dma_buf(fds, &frame);
                 for (int i = 0; i < nfd && i < 4; i++)
