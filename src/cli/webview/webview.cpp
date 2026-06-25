@@ -651,7 +651,7 @@ bool WebView::tryExportDMABuf()
     }
 }
 
-// ── OpenGL DMABUF export ──
+// ── OpenGL DMABUF export (hybrid: grabFramebuffer → GPU upload → dmabuf) ──
 bool WebView::tryExportDMABufOpenGL()
 {
     /* Lazy shared-context init — Qt's GL context may not be ready at init time */
@@ -660,29 +660,34 @@ bool WebView::tryExportDMABufOpenGL()
 
     QQuickWidget *qw = qobject_cast<QQuickWidget *>(focusProxy());
     if (!qw) return false;
-    QQuickWindow *window = qw->quickWindow();
-    if (!window) return false;
 
-    auto *rif = window->rendererInterface();
-    if (!rif) return false;
-
-    /* Get the redirect render target → its color attachment texture */
-    auto *rhiRt = reinterpret_cast<QRhiTextureRenderTarget *>(
-        rif->getResource(window, QSGRendererInterface::RhiRedirectRenderTarget));
-    if (!rhiRt) {
-        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: RhiRedirectRenderTarget null\n");
-        m_dmaBufFailed = true;
+    /* ── Step 1: grabFramebuffer() — forces Qt RHI sync render + readback ──
+     * This is the SAME function the SHM path uses, and it returns correct
+     * content. We use it to get a synced QImage, then upload to our own
+     * GL texture and export THAT as dmabuf.
+     *
+     * Why not export Qt RHI's texture directly? Because Qt RHI's texture
+     * has stale/white content when exported — grabFramebuffer()'s
+     * readback returns content, but the texture itself appears empty
+     * to eglCreateImage/eglExportDMABUFImage. This is likely a Mesa
+     * driver issue with QQuickWidget's offscreen render target.
+     *
+     * Tradeoff: CPU→GPU upload (glTexSubImage2D) on webview side.
+     * Benefit: compositor (in game process) does zero-copy dmabuf import
+     * instead of CPU→GPU upload via glTexImage2D. */
+    QImage img = qw->grabFramebuffer();
+    if (img.isNull()) {
+        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: grabFramebuffer returned null\n");
         return false;
     }
 
-    auto desc = rhiRt->description();
-    if (desc.colorAttachmentCount() == 0) return false;
-    const QRhiColorAttachment *ca = desc.colorAttachmentAt(0);
-    if (!ca || !ca->texture()) return false;
+    /* Convert to RGBA8888 format (grabFramebuffer returns RGBA8888_Premultiplied) */
+    if (img.format() != QImage::Format_RGBA8888 && img.format() != QImage::Format_RGBA8888_Premultiplied) {
+        img = img.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    }
 
-    QRhiTexture::NativeTexture native = ca->texture()->nativeTexture();
-    GLuint texId = static_cast<GLuint>(native.object);
-    if (!texId) return false;
+    int w = img.width();
+    int h = img.height();
 
     /* Save & restore the caller's EGL context */
     EGLDisplay savedDpy = eglGetCurrentDisplay();
@@ -692,26 +697,50 @@ bool WebView::tryExportDMABufOpenGL()
 
     bool ok = false;
 
-    /* Make our shared context current; the texture belongs to Qt's context
-       but is accessible through our shared context's namespace. */
+    /* ── Step 2: Make our shared context current ── */
     if (eglMakeCurrent(m_eglDpy, m_eglSurf, m_eglSurf, m_eglCtx)) {
-        /* Force Qt's pending GL commands to complete before we export the
-         * texture as a dmabuf. Without this, the exported dmabuf may
-         * contain stale/uninitialized memory (appears as WHITE for opaque
-         * content) because Qt RHI's render commands haven't been flushed
-         * to the GPU yet. Shared contexts on Mesa share a command queue,
-         * so glFinish() here waits for Qt's rendering to complete. */
+
+        /* ── Step 3: Create or resize our own GL texture ── */
+        if (m_dmaTex == 0 || m_dmaTexW != w || m_dmaTexH != h) {
+            if (m_dmaTex) glDeleteTextures(1, &m_dmaTex);
+            glGenTextures(1, &m_dmaTex);
+            glBindTexture(GL_TEXTURE_2D, m_dmaTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            m_dmaTexW = w;
+            m_dmaTexH = h;
+            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: created dmabuf texture %dx%d tex=%u\n",
+                    w, h, m_dmaTex);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, m_dmaTex);
+        }
+
+        /* ── Step 4: Upload QImage to our texture ──
+         * grabFramebuffer returns flipped (Y-up in framebuffer), so
+         * upload rows in reverse order to get correct orientation. */
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        int bpr = img.bytesPerLine();
+        int targetBpr = w * 4;
+        int rowBytes = qMin(bpr, targetBpr);
+        for (int y = 0; y < h; y++) {
+            const uchar *srcRow = img.constScanLine(h - 1 - y);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, w, 1,
+                            GL_RGBA, GL_UNSIGNED_BYTE, srcRow);
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glFinish();
 
-        glBindTexture(GL_TEXTURE_2D, texId);
-
+        /* ── Step 5: Export our texture as dmabuf ── */
         EGLImageKHR eglImg = eglCreateImage(
             m_eglDpy, m_eglCtx, EGL_GL_TEXTURE_2D,
-            reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(texId)),
+            reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(m_dmaTex)),
             nullptr);
 
         if (eglImg) {
-            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage OK\n");
             EGLint fourcc = 0, nfd = 0;
             EGLuint64KHR modifier = 0;
             int fds[4] = {-1, -1, -1, -1};
@@ -725,12 +754,12 @@ bool WebView::tryExportDMABufOpenGL()
                 qFn(m_eglDpy, eglImg, &fourcc, &nfd, &modifier) &&
                 eFn(m_eglDpy, eglImg, fds, strides, offsets))
             {
-                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query OK (fourcc=0x%x nfd=%d modifier=0x%llx)\n",
+                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export OK (fourcc=0x%x nfd=%d modifier=0x%llx)\n",
                         fourcc, nfd, (unsigned long long)modifier);
                 idk_fs_frame_t frame;
                 memset(&frame, 0, sizeof(frame));
-                frame.width   = static_cast<uint32_t>(m_renderW);
-                frame.height  = static_cast<uint32_t>(m_renderH);
+                frame.width   = static_cast<uint32_t>(w);
+                frame.height  = static_cast<uint32_t>(h);
                 frame.id      = m_buffer;
                 frame.visible = 1;
                 frame.nfd     = static_cast<uint8_t>(nfd);
@@ -745,7 +774,7 @@ bool WebView::tryExportDMABufOpenGL()
 
                 if (rc == 0) {
                     IDK_LOG("webview-qt", "frame sent OK (%dx%d type=DMABUF fd=%d stride=%u fourcc=0x%x)\n",
-                            frame.width, frame.height, fds[0], frame.stride, frame.format);
+                            w, h, fds[0], frame.stride, frame.format);
                     m_buffer = (m_buffer + 1) % 2;
                     m_pending = true;
                     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
@@ -755,12 +784,14 @@ bool WebView::tryExportDMABufOpenGL()
                     IDK_LOG("webview-qt", "tryExportDMABufOpenGL: idk_fs_send_dma_buf failed rc=%d\n", rc);
                 }
             } else {
-                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query/export call failed\n");
+                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query failed\n");
             }
             eglDestroyImage(m_eglDpy, eglImg);
         } else {
-            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage failed\n");
+            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage failed (0x%x)\n", eglGetError());
         }
+
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     if (savedDpy != EGL_NO_DISPLAY)

@@ -1,5 +1,5 @@
 #pragma once
-
+#include <QOpenGLFunctions>
 #include <QWebEngineView>
 #include <QTimer>
 
@@ -98,6 +98,12 @@ private:
     bool       m_dmabufResolved = false;
     void     (*m_queryFn)(void);       // eglExportDMABUFImageQueryMESA/EXT (MESA-ext signature)
     void     (*m_exportFn)(void);      // eglExportDMABUFImageMESA/EXT
+    /* Our own GL texture for hybrid DMABUF path — grabFramebuffer() →
+     * glTexSubImage2D → export as dmabuf. Bypasses Qt RHI's texture
+     * which has stale/white content when exported directly. */
+    GLuint m_dmaTex = 0;
+    int m_dmaTexW = 0;
+    int m_dmaTexH = 0;
 
     // Vulkan DMABUF export state
 #ifdef IDK_HAVE_VULKAN
