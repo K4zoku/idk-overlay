@@ -77,6 +77,7 @@ enum idk_input_type {
     IDK_INPUT_MOTION  = 3,  /* mouse motion (absolute, surface-local) */
     IDK_INPUT_AXIS    = 4,  /* mouse scroll */
     IDK_INPUT_STATE   = 5,  /* capture state changed (only `capture` field matters) */
+    IDK_INPUT_REPEAT  = 6,  /* keyboard repeat info: x=rate (cps), y=delay (ms) */
 };
 
 /* Modifier flags (XKB-style bitmask, can be combined) */

@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QSocketNotifier>
 #include <QString>
+#include <QTimer>
 
 class QIODevice;
 class QWebEngineView;
@@ -28,6 +29,7 @@ signals:
 
 private slots:
     void onReadyRead();
+    void onRepeatTimeout();
 
 private:
     void closeFd();
@@ -36,6 +38,9 @@ private:
     void injectWheelEvent(const struct InputEvent &ev);
     QWidget *focusProxy();                  /* lazily resolved */
     void sendFocusIn();
+    void startRepeatTimer(uint32_t keycode, uint32_t keysym, uint32_t mods,
+                          const QString &text);
+    void stopRepeatTimer();
 
     QString m_socketPath;
     int m_fd = -1;
@@ -48,6 +53,18 @@ private:
     int m_mouseY = 0;
     Qt::MouseButtons m_buttons;
     bool m_focusSent = false;          /* Chromium focus has been pushed */
+
+    /* Key repeat state — Wayland key repeat is client-side. When captured,
+     * the game's SDL3 repeat timer never starts (we swallow key presses).
+     * We implement repeat here using the rate/delay from wl_keyboard.repeat_info. */
+    QTimer *m_repeatTimer = nullptr;
+    int m_repeatRate = 25;             /* characters per second (default) */
+    int m_repeatDelay = 500;           /* ms before first repeat (default) */
+    bool m_repeatArmed = false;        /* true = initial delay, false = repeating */
+    uint32_t m_repeatKeycode = 0;
+    uint32_t m_repeatKeysym = 0;
+    uint32_t m_repeatMods = 0;
+    QString m_repeatText;
 };
 
 struct InputEvent {

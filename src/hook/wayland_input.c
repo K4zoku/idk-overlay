@@ -306,6 +306,10 @@ static int g_hotkey_pressed = 0;
 static uint32_t g_hotkey_keysym = 0;
 static uint32_t g_hotkey_scancode = 0;
 
+/* Keyboard repeat info (from wl_keyboard.repeat_info) */
+static int32_t g_repeat_rate = 25;   /* characters per second (default) */
+static int32_t g_repeat_delay = 500; /* milliseconds before first repeat (default) */
+
 
 static struct xkb_keymap *g_xkb_keymap = NULL;
 static struct xkb_state  *g_xkb_state  = NULL;
@@ -532,6 +536,17 @@ static void send_capture_state(uint32_t capture) {
     send_event_to_webview(&ev);
 }
 
+/* Send keyboard repeat info to webview so it can implement client-side
+ * repeat when captured (game's SDL3 repeat timer never starts because
+ * we swallow key press events). */
+static void send_repeat_info(void) {
+    idk_ipc_input_event_t ev = { 0 };
+    ev.type = IDK_INPUT_REPEAT;
+    ev.x    = g_repeat_rate;   /* rate in characters per second */
+    ev.y    = g_repeat_delay;  /* delay in milliseconds before first repeat */
+    send_event_to_webview(&ev);
+}
+
 struct ptr_state {
     const struct wl_pointer_listener *game;
     void *game_data;
@@ -607,6 +622,11 @@ void idk_wayland_input_set_capture(int enable) {
 
     WLOG("input capture %s", new_state ? "ENABLED" : "DISABLED");
     send_capture_state((uint32_t)new_state);
+
+    /* Send repeat info when capture goes ON so webview can start
+     * its client-side repeat timer with the correct rate/delay. */
+    if (new_state)
+        send_repeat_info();
 }
 
 static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
@@ -971,7 +991,16 @@ static void wkb_modifiers(void *d, struct wl_keyboard *kb, uint32_t serial,
 
 static void wkb_repeat_info(void *d, struct wl_keyboard *kb, int32_t rate, int32_t delay) {
     struct kb_state *st = (struct kb_state *)d;
-    if (g_captured) return;
+
+    /* Store repeat info even when captured — webview needs it for
+     * client-side key repeat (game's SDL3 timer never starts because
+     * we swallow key press events). */
+    g_repeat_rate = rate;
+    g_repeat_delay = delay;
+    WLOG("repeat_info: rate=%d cps delay=%d ms", rate, delay);
+    send_repeat_info();
+
+    /* Forward to game's listener (always, not just when !captured) */
     if (st->game && st->game->repeat_info)
         st->game->repeat_info(st->game_data, kb, rate, delay);
 }
@@ -1443,7 +1472,13 @@ static void sidecar_kb_modifiers(void *d, struct wl_keyboard *kb, uint32_t seria
 
 static void sidecar_kb_repeat_info(void *d, struct wl_keyboard *kb,
                                    int32_t rate, int32_t delay) {
-    (void)d; (void)kb; (void)rate; (void)delay;
+    (void)d; (void)kb;
+    /* Sidecar gets its own repeat_info from the compositor.
+     * Store and forward to webview (same as game's wkb_repeat_info). */
+    g_repeat_rate = rate;
+    g_repeat_delay = delay;
+    WLOG("sidecar repeat_info: rate=%d cps delay=%d ms", rate, delay);
+    send_repeat_info();
 }
 
 static const struct wl_keyboard_listener g_sidecar_kb_listener = {

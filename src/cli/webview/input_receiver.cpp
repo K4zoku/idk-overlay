@@ -230,6 +230,9 @@ void InputReceiver::onReadyRead()
             if (nowCaptured != m_captureState) {
                 m_captureState = nowCaptured;
                 m_focusSent = false;
+                /* Stop key repeat when capture goes OFF */
+                if (!nowCaptured)
+                    stopRepeatTimer();
                 emit inputCaptureChanged(nowCaptured);
                 IDK_LOG("input-rx", "capture %s\n", nowCaptured ? "ENABLED" : "DISABLED");
                 /* When capture goes ON, give Chromium focus so subsequent
@@ -254,6 +257,14 @@ void InputReceiver::onReadyRead()
             case IDK_INPUT_MOTION:
             case IDK_INPUT_AXIS:
                 injectMouseEvent(ie);
+                break;
+            case IDK_INPUT_REPEAT:
+                /* wl_keyboard.repeat_info from compositor:
+                 * x = rate (characters per second), y = delay (ms before first repeat) */
+                m_repeatRate = ev.x > 0 ? ev.x : 25;
+                m_repeatDelay = ev.y > 0 ? ev.y : 500;
+                IDK_LOG("input-rx", "repeat info: rate=%d cps delay=%d ms\n",
+                        m_repeatRate, m_repeatDelay);
                 break;
             }
         } else if (n < 0) {
@@ -299,11 +310,90 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
         QKeyEvent p(QEvent::KeyPress, qtKey, mods, text, /*autorepeat=*/false);
         p.setTimestamp(t);
         qApp->sendEvent(fp, &p);
+
+        /* Start repeat timer for this key (unless it's a modifier or
+         * other non-repeatable key). Wayland repeat is client-side,
+         * and since we swallowed the press from the game, the game's
+         * SDL3 repeat timer never starts — we must do it ourselves. */
+        if (ev.keycode != 0 && m_captureState)
+            startRepeatTimer(ev.keycode, ev.keysym, ev.mods, text);
     } else {                                       /* release */
         QKeyEvent r(QEvent::KeyRelease, qtKey, mods, text, /*autorepeat=*/false);
         r.setTimestamp(t);
         qApp->sendEvent(fp, &r);
+
+        /* Stop any active repeat for this key */
+        if (m_repeatKeycode == ev.keycode)
+            stopRepeatTimer();
     }
+}
+
+/* ─── Key repeat ───────────────────────────────────────────────────────── */
+
+void InputReceiver::startRepeatTimer(uint32_t keycode, uint32_t keysym,
+                                      uint32_t mods, const QString &text)
+{
+    if (!m_repeatTimer) {
+        m_repeatTimer = new QTimer(this);
+        m_repeatTimer->setSingleShot(true);
+        connect(m_repeatTimer, &QTimer::timeout, this, &InputReceiver::onRepeatTimeout);
+    }
+
+    /* If a different key was repeating, stop it first */
+    if (m_repeatKeycode != 0 && m_repeatKeycode != keycode)
+        stopRepeatTimer();
+
+    m_repeatKeycode = keycode;
+    m_repeatKeysym = keysym;
+    m_repeatMods = mods;
+    m_repeatText = text;
+    m_repeatArmed = true;  /* first tick = initial delay, then switch to repeat interval */
+
+    /* Initial delay before first repeat */
+    m_repeatTimer->start(m_repeatDelay);
+}
+
+void InputReceiver::stopRepeatTimer()
+{
+    if (m_repeatTimer)
+        m_repeatTimer->stop();
+    m_repeatKeycode = 0;
+    m_repeatKeysym = 0;
+    m_repeatArmed = false;
+}
+
+void InputReceiver::onRepeatTimeout()
+{
+    if (!m_captureState || m_repeatKeycode == 0) {
+        stopRepeatTimer();
+        return;
+    }
+
+    QWidget *fp = focusProxy();
+    if (!fp) {
+        stopRepeatTimer();
+        return;
+    }
+
+    int qtKey = keysymToQtKey(m_repeatKeysym);
+    if (!qtKey) return;
+
+    Qt::KeyboardModifiers mods = idkModsToQt(m_repeatMods);
+    quint64 t = nowMs();
+
+    /* Send autorepeat KeyPress */
+    QKeyEvent p(QEvent::KeyPress, qtKey, mods, m_repeatText, /*autorepeat=*/true);
+    p.setTimestamp(t);
+    qApp->sendEvent(fp, &p);
+
+    if (m_repeatArmed) {
+        /* First repeat fired — switch to repeat interval (1000/rate ms) */
+        m_repeatArmed = false;
+        int interval = m_repeatRate > 0 ? (1000 / m_repeatRate) : 40;
+        m_repeatTimer->setSingleShot(false);
+        m_repeatTimer->start(interval);
+    }
+    /* Subsequent ticks: QTimer fires repeatedly at repeat interval */
 }
 
 /* ─── Mouse ─────────────────────────────────────────────────────────────── */
