@@ -304,7 +304,12 @@ void WebView::doRenderAndSend()
 
     static int s_consecutive_failures = 0;
 
-    int rc = idk_fs_send_dma_buf(&m_memfd, &frame);
+    /* SHM frame — use idk_fs_send_frame (NOT send_dma_buf) so the
+     * DMABUF flag is NOT set. Using send_dma_buf here was a bug:
+     * it unconditionally sets IDK_FRAME_FLAG_DMABUF, causing the
+     * compositor to try EGL/GL_EXT_memory_object import on a memfd
+     * (which is not a dmabuf) → import fails every frame → black screen. */
+    int rc = idk_fs_send_frame(m_memfd, &frame);
     if (rc < 0) {
         s_consecutive_failures++;
         if (s_consecutive_failures <= 3 || s_consecutive_failures % 60 == 0) {

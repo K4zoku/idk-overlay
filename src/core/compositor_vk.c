@@ -800,11 +800,14 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
         vk_overlay_view = vk_dmabuf_view;
         /* Fall through to layout transition below. */
     } else {
-        /* Tear down old import. */
+        /* Tear down old import.
+         * NOTE: vkFreeMemory closes the imported fd (ICD took ownership
+         * via VkImportMemoryFdInfoKHR on successful vkAllocateMemory).
+         * Do NOT close(vk_dmabuf_fd) — that would double-close. */
         if (vk_dmabuf_view) { vkDestroyImageView(vk_dev, vk_dmabuf_view, NULL); vk_dmabuf_view = VK_NULL_HANDLE; }
         if (vk_dmabuf_img)  { vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);  vk_dmabuf_img  = VK_NULL_HANDLE; }
         if (vk_dmabuf_img_mem) { vkFreeMemory(vk_dev, vk_dmabuf_img_mem, NULL); vk_dmabuf_img_mem = VK_NULL_HANDLE; }
-        if (vk_dmabuf_fd >= 0) { close(vk_dmabuf_fd); vk_dmabuf_fd = -1; }
+        vk_dmabuf_fd = -1;  /* ICD already closed it via vkFreeMemory */
 
         VkFormat vk_fmt = drm_fourcc_to_vk_format(fourcc);
 
@@ -1250,7 +1253,10 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
     VkImageView swapchain_view;
-    if (vkCreateImageView(vk_dev, &vci, NULL, &swapchain_view) != VK_SUCCESS) return;
+    if (vkCreateImageView(vk_dev, &vci, NULL, &swapchain_view) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
+        return;
+    }
 
     VkFramebufferCreateInfo fbci = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -1264,6 +1270,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
     VkFramebuffer fb;
     if (vkCreateFramebuffer(vk_dev, &fbci, NULL, &fb) != VK_SUCCESS) {
         vkDestroyImageView(vk_dev, swapchain_view, NULL);
+        vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
         return;
     }
 
