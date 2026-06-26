@@ -170,7 +170,18 @@ void InputReceiver::closeFd()
 QWidget *InputReceiver::focusProxy()
 {
     if (!m_webview) return nullptr;
-    if (m_focusProxy) return m_focusProxy;
+    if (m_focusProxy) {
+        /* Check if the cached proxy is still valid (not destroyed).
+         * Qt may delete the focusProxy widget during page navigation
+         * or when the QWebEngineView is reparented. Using a destroyed
+         * widget as event target causes SIGSEGV in QCoreApplication::notify. */
+        if (m_focusProxy->testAttribute(Qt::WA_WDestructiveClose) ||
+            !m_focusProxy->parentWidget()) {
+            m_focusProxy = nullptr;
+        } else {
+            return m_focusProxy;
+        }
+    }
     /* focusProxy is created lazily after the page finishes loading */
     m_focusProxy = m_webview->focusProxy();
     return m_focusProxy;
