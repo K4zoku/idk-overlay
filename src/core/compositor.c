@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -98,6 +99,100 @@ static void resolve_egl_functions(void) {
 
     IDK_LOG("comp", "EGL functions: eglGetDisplay=%p eglCreateImageKHR=%p\n",
             (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
+}
+
+/* ── GL_EXT_memory_object dmabuf import (GLX path, no EGL needed) ─────── */
+
+/* GL handle types for EXT_external_memory */
+#define GL_HANDLE_TYPE_DMA_BUF_EXT 0x330E
+
+/* PFN types */
+typedef unsigned long long GLu64;
+typedef void (*PFN_glCreateMemoryObjectsEXT)(GLsizei, GLuint*);
+typedef void (*PFN_glDeleteMemoryObjectsEXT)(GLsizei, const GLuint*);
+typedef void (*PFN_glImportMemoryFdEXT)(GLuint, GLu64, GLenum, GLint);
+typedef void (*PFN_glTexStorageMem2DEXT)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLu64);
+
+static PFN_glCreateMemoryObjectsEXT fn_glCreateMemoryObjectsEXT = NULL;
+static PFN_glDeleteMemoryObjectsEXT fn_glDeleteMemoryObjectsEXT = NULL;
+static PFN_glImportMemoryFdEXT      fn_glImportMemoryFdEXT      = NULL;
+static PFN_glTexStorageMem2DEXT     fn_glTexStorageMem2DEXT     = NULL;
+static int g_gl_mem_resolved = 0;
+static int g_gl_mem_available = 0;
+
+static void resolve_gl_memory_functions(void) {
+    if (g_gl_mem_resolved) return;
+    g_gl_mem_resolved = 1;
+
+    /* Check extensions string */
+    if (!idk_fn_glGetString) return;
+    const GLubyte *exts = idk_fn_glGetString(0x1F03 /* GL_EXTENSIONS */);
+    if (!exts) return;
+
+    /* Need both GL_EXT_memory_object and GL_EXT_memory_object_fd */
+    if (!strstr((const char *)exts, "GL_EXT_memory_object") ||
+        !strstr((const char *)exts, "GL_EXT_memory_object_fd")) {
+        IDK_LOG("comp", "GL_EXT_memory_object(_fd) not available\n");
+        return;
+    }
+
+    /* Resolve via dlsym from libGL */
+    void *lib = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+    if (!lib) lib = dlopen("libGL.so.1", RTLD_NOW);
+    if (!lib) lib = dlopen("libGL.so", RTLD_NOW);
+    if (!lib) return;
+
+    fn_glCreateMemoryObjectsEXT = (PFN_glCreateMemoryObjectsEXT)dlsym(lib, "glCreateMemoryObjectsEXT");
+    fn_glDeleteMemoryObjectsEXT = (PFN_glDeleteMemoryObjectsEXT)dlsym(lib, "glDeleteMemoryObjectsEXT");
+    fn_glImportMemoryFdEXT      = (PFN_glImportMemoryFdEXT)dlsym(lib, "glImportMemoryFdEXT");
+    fn_glTexStorageMem2DEXT     = (PFN_glTexStorageMem2DEXT)dlsym(lib, "glTexStorageMem2DEXT");
+
+    if (fn_glCreateMemoryObjectsEXT && fn_glImportMemoryFdEXT && fn_glTexStorageMem2DEXT) {
+        g_gl_mem_available = 1;
+        IDK_LOG("comp", "GL_EXT_memory_object: available (CreateMem=%p ImportFd=%p TexStorageMem=%p)\n",
+                (void*)fn_glCreateMemoryObjectsEXT, (void*)fn_glImportMemoryFdEXT,
+                (void*)fn_glTexStorageMem2DEXT);
+    } else {
+        IDK_LOG("comp", "GL_EXT_memory_object: extension present but functions not resolved\n");
+    }
+}
+
+/* Import dmabuf as GL texture via GL_EXT_memory_object (no EGL needed).
+ * Returns texture ID on success, 0 on failure. Caller keeps fd ownership. */
+static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
+                                    uint32_t stride, uint32_t fourcc,
+                                    uint64_t modifier) {
+    resolve_gl_memory_functions();
+    if (!g_gl_mem_available) return 0;
+
+    /* Create memory object + import fd */
+    GLuint mem = 0;
+    fn_glCreateMemoryObjectsEXT(1, &mem);
+    if (!mem) return 0;
+
+    GLu64 size = (GLu64)stride * (GLu64)h;
+    fn_glImportMemoryFdEXT(mem, size, GL_HANDLE_TYPE_DMA_BUF_EXT, dmabuf_fd);
+    /* After import, the fd is owned by the GL driver — caller must NOT close it */
+
+    /* Create texture backed by the memory object */
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F /* GL_CLAMP_TO_EDGE */);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
+
+    /* GL_RGBA8 = 0x8058, internalformat for TexStorageMem2DEXT */
+    fn_glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, 0x8058, w, h, mem, 0);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    /* Memory object can be deleted after texture storage is allocated */
+    fn_glDeleteMemoryObjectsEXT(1, &mem);
+
+    IDK_LOG("comp", "GL dmabuf import OK: %ux%u tex=%u\n", w, h, tex);
+    return tex;
 }
 
 static GLuint g_program = 0;
@@ -366,29 +461,57 @@ int idk_compositor_render(void) {
             processed = 1;
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
-            /* DMABUF frame — import via EGL.
-             * fourcc from header tells EGL the pixel format (ABGR8888,
-             * ARGB8888, etc). Without it, EGL can't match the dmabuf
-             * layout and returns EGL_BAD_MATCH (0x3003). */
+            /* DMABUF frame — try EGL first, then GL_EXT_memory_object (GLX).
+             * Under GLX (e.g. glxgears), there's no EGL display, so
+             * eglCreateImageKHR can't work. Fall back to GL_EXT_memory_object
+             * which works with any GL context (GLX or EGL). */
+            EGLDisplay check_dpy = EGL_NO_DISPLAY;
+            if (fn_eglGetCurrentDisplay) {
+                check_dpy = fn_eglGetCurrentDisplay();
+            }
+
+            GLuint tex = 0;
             EGLImageKHR img = 0;
-            tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                         hdr.stride, hdr.fourcc,
-                                         hdr.modifier, &img);
-            if (tex == 0 || img == 0) {
-                /* Transient failure (e.g. Qt RHI reallocated the texture
-                 * mid-export, causing TexStorageEXT to fail with 0x0500).
-                 * Don't tell the webview to permanently fall back to SHM —
-                 * just drop this frame and let the webview send a new one.
-                 * ACK=0 means "frame received OK", so the webview will
-                 * retry DMABUF next frame instead of switching to SHM. */
-                IDK_LOG("comp", "DMABUF import failed (transient) — dropping frame, not falling back to SHM\n");
-                if (img && fn_eglDestroyImageKHR) {
-                    EGLDisplay dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
-                    if (dpy != EGL_NO_DISPLAY) fn_eglDestroyImageKHR(dpy, img);
+            int fd_consumed = 0;  /* set if GL driver took fd ownership */
+
+            if (check_dpy != EGL_NO_DISPLAY) {
+                /* EGL path — import via eglCreateImageKHR */
+                tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                             hdr.stride, hdr.fourcc,
+                                             hdr.modifier, &img);
+            }
+
+            if (tex == 0) {
+                /* EGL failed or unavailable — try GL_EXT_memory_object */
+                tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                            hdr.stride, hdr.fourcc,
+                                            hdr.modifier);
+                if (tex) {
+                    /* GL driver consumed the fd — don't close it */
+                    fd_consumed = 1;
                 }
-                close(dmabuf_fd);
-                /* ACK=0 (success) so webview retries DMABUF next frame */
-                processed = 1;
+            }
+
+            if (tex == 0) {
+                /* Both EGL and GL_EXT_memory_object failed.
+                 * If EGL was unavailable entirely (GLX-only), reject DMABUF
+                 * so webview falls back to SHM. If EGL was available but
+                 * import failed (transient), drop frame and retry. */
+                if (check_dpy == EGL_NO_DISPLAY && !g_gl_mem_available) {
+                    /* No EGL + no GL_EXT_memory_object — can't import DMABUF at all */
+                    IDK_LOG("comp", "no EGL display + no GL_EXT_memory_object — rejecting DMABUF, forcing SHM\n");
+                    close(dmabuf_fd);
+                    processed = -1;  /* ACK=1 → webview falls back to SHM */
+                } else {
+                    /* Transient failure — drop frame, ACK=0 to retry */
+                    IDK_LOG("comp", "DMABUF import failed (transient) — dropping frame\n");
+                    if (img && fn_eglDestroyImageKHR) {
+                        EGLDisplay dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
+                        if (dpy != EGL_NO_DISPLAY) fn_eglDestroyImageKHR(dpy, img);
+                    }
+                    close(dmabuf_fd);
+                    processed = 1;
+                }
             } else {
                 int back = 1 - g_tex_idx;
                 /* Replacing previous slot: delete its texture AND any
@@ -398,7 +521,7 @@ int idk_compositor_render(void) {
                 /* Install new texture + keep its backing alive. */
                 g_tex[back] = tex;
                 g_tex_img[back] = img;
-                g_tex_dmabuf_fd[back] = dmabuf_fd;  /* keep fd open! */
+                g_tex_dmabuf_fd[back] = fd_consumed ? -1 : dmabuf_fd;  /* -1 if GL consumed fd */
                 g_tex_w[back] = (GLsizei)hdr.width;
                 g_tex_h[back] = (GLsizei)hdr.height;
                 g_tex_idx = back;

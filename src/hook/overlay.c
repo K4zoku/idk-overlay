@@ -60,12 +60,15 @@ static void *hook_install_thread(void *arg) {
     int glx_done = 0;
     int vk_done = 0;
 
+    DBG("hook_install_thread started (gl=%d vk=%d)", g_enable_gl, g_enable_vk);
+
     for (int i = 0; i < 150; i++) {
         if (g_enable_gl && !egl_done) {
             void *h = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
             if (!h) h = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
             if (h) {
                 dlclose(h);
+                DBG("EGL: libEGL found, installing hook");
                 int r = idk_egl_init();
                 if (r == 0) {
                     egl_done = 1;
@@ -86,10 +89,12 @@ static void *hook_install_thread(void *arg) {
             if (!h) h = dlopen("libGL.so", RTLD_NOW | RTLD_NOLOAD);
             if (h) {
                 dlclose(h);
+                DBG("GLX: libGL found, installing hook");
                 int r = idk_glx_init();
                 if (r == 0) {
                     glx_done = 1;
                     g_hooks_installed = 1;
+                    DBG("GLX: hook installed OK");
                 } else {
                     DBG("GLX hook install failed, will retry");
                 }
