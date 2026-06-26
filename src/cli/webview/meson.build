@@ -14,7 +14,6 @@ if qt6_dep.found()
         'main.cpp',
         'manager.cpp',
         'config/groupconfig.cpp',
-        'config/utils.cpp',
         'input/input_receiver.cpp',
         'view/rhi_texture_extractor.cpp',
         'view/webview.cpp',

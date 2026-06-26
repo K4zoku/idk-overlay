@@ -17,17 +17,12 @@ class QQuickWindow;
 #include "groupconfig.h"
 #include "manager.h"
 
-/**
- * WebView — renders web content and sends frames to idk-overlay.
- *
- * Two render paths:
- *   1. Zero-copy DMABUF — exports Qt Quick's native GL texture as DMABUF fd
- *      (requires EGL context sharing with Qt + Mesa/EXT export extensions).
- *   2. SHM fallback — grabFramebuffer() → memcpy → send memfd.
- */
+class RhiTextureExtractor;
+
 class WebView : public QWebEngineView
 {
     Q_OBJECT
+    friend class RhiTextureExtractor;
 
 public:
     WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noDmaBuf = false, QWidget *parent = nullptr);
@@ -47,13 +42,10 @@ private slots:
 private:
     void initMemory();
     void doRenderAndSend();
-    bool tryExportDMABuf();             // dispatcher — detects backend
-    bool tryExportDMABufOpenGL();
-    bool tryExportDMABufVulkan();
-    bool ensureDmaBufSharedCtx();
-    bool tryReadPixelsToSHM(uchar *shm, int w, int h);  // 0-copy SHM via glReadPixels
 
     void resizeForGame(int w, int h);
+
+public:
     void initVulkan(QSGRendererInterface *rif, QQuickWindow *window);
 
     uint8_t m_id;
@@ -137,6 +129,8 @@ private:
 
     // Heartbeat timer to poll ACKs when Chromium stops generating paint events
     QTimer *m_heartbeat = nullptr;
+
+    RhiTextureExtractor *m_extractor = nullptr;
 
     // Event filter for paint events
     bool eventFilter(QObject *obj, QEvent *event) override;

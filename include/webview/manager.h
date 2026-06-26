@@ -44,8 +44,6 @@ signals:
     void inputCaptureChanged(bool captured);
 
 private slots:
-    void onSocketReadyRead();
-    void onReconnectTimer();
     void onInputCaptureChanged(bool captured);
 
 private:

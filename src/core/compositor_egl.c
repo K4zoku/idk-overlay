@@ -23,10 +23,7 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* Frame protocol definitions are in compositor_common.h (via idk_ipc.h).
- * idk_frame_header_t (28 bytes) replaces the old 40-byte struct frame_hdr.
- * Frame type is now a flag bit (IDK_FRAME_FLAG_DMABUF) instead of a
- * separate field, and premultiplied/visible are also flag bits. */
+/* Frame protocol via idk_ipc.h (28B header, flag bits for type/alpha). */
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
@@ -232,10 +229,6 @@ static void release_dmabuf_backing(int i) {
 /* Draw error counter — reset on new frame upload, invalidate tex at 5 */
 static int g_draw_err_count = 0;
 
-static int    g_shm_fd = -1;
-static void  *g_shm_map = NULL;
-static size_t g_shm_map_size = 0;
-
 static bool g_is_gles = false;
 static int g_gl_version = 0;  /* major*100 + minor*10, e.g. 330 for GL 3.3 */
 
@@ -304,49 +297,26 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     }
 
     if (w == 0 || h == 0) {
-        fprintf(stderr,
-            "[idk-comp] shm_to_texture: rejecting zero-dim frame w=%u h=%u\n",
-            w, h);
+        IDK_ERR("comp", "shm_to_texture: rejecting zero-dim frame w=%u h=%u\n", w, h);
         return 0;
     }
-    uint32_t expected = w * h * 4;  /* RGBA8888 = 4 bytes/pixel */
+    uint32_t expected = w * h * 4;
     if (pixel_size < expected) {
-        fprintf(stderr,
-            "[idk-comp] shm_to_texture: size mismatch w=%u h=%u pixel_size=%u expected=%u\n",
-            w, h, pixel_size, expected);
+        IDK_ERR("comp", "shm_to_texture: size mismatch w=%u h=%u pixel_size=%u expected=%u\n",
+                w, h, pixel_size, expected);
         return 0;
     }
-    struct stat st;
-    if (fstat(shm_fd, &st) < 0) {
-        IDK_ERR("comp", "SHM fstat failed: %s\n", strerror(errno));
-        return 0;
-    }
-    static ino_t s_shm_ino = 0;
-    static dev_t s_shm_dev = 0;
+    static idk_shm_cache_t s_shm_cache;
+    static int s_cached_fd = -1;
 
-    if (st.st_ino != s_shm_ino || st.st_dev != s_shm_dev) {
-        if (g_shm_map) {
-            munmap(g_shm_map, g_shm_map_size);
-            g_shm_map = NULL;
-        }
-        off_t total = lseek(shm_fd, 0, SEEK_END);
-        if (total <= 0) total = (off_t)pixel_size;
-
-        g_shm_map_size = (size_t)total;
-        g_shm_map = mmap(NULL, g_shm_map_size, PROT_READ, MAP_SHARED, shm_fd, 0);
-        if (g_shm_map == MAP_FAILED) {
-            IDK_ERR("comp", "SHM mmap failed: %s\n", strerror(errno));
-            g_shm_map = NULL;
-            return 0;
-        }
-        s_shm_ino = st.st_ino;
-        s_shm_dev = st.st_dev;
-        if (g_shm_fd >= 0) close(g_shm_fd);
-        g_shm_fd = shm_fd;  /* keep open so mmap stays alive */
+    if (shm_fd != s_cached_fd) {
+        idk_shm_cache_map(&s_shm_cache, shm_fd);
+        if (s_cached_fd >= 0) close(s_cached_fd);
+        s_cached_fd = shm_fd;
     }
 
     uint32_t buf_size = pixel_size;
-    uint8_t *buf = (uint8_t*)g_shm_map + (buffer_idx * buf_size);
+    uint8_t *buf = (uint8_t*)s_shm_cache.map + (buffer_idx * buf_size);
 
     GLint last_unpack_align = 4;
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &last_unpack_align);
@@ -374,11 +344,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         if (idk_fn_glPixelStorei) {
             idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         }
-        /* Use GL_RGBA8 for straight, GL_RGBA8 for premultiplied too —
-         * the difference is in the blend mode at render time, not the
-         * internal format. The data layout is identical (4 bytes RGBA).
-         * Premultiplied flag is stored for the render pass to set
-         * the correct blend equation. */
+    /* RGBA8 for both straight/premultiplied — blend mode differs at render time */
         idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                             (GLsizei)w, (GLsizei)h, 0,
                             GL_RGBA, GL_UNSIGNED_BYTE, buf);
@@ -412,12 +378,6 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
             (unsigned)w, (unsigned)h, back, g_tex[back],
             (int)g_frame_premultiplied, (unsigned)buffer_idx);
 
-    /* Don't close shm_fd if we stored it as g_shm_fd — the mmap relies on
-     * the fd staying open. If it's a different fd (not stored), close it. */
-    if (shm_fd != g_shm_fd) {
-        close(shm_fd);
-    }
-
     return g_tex[g_tex_idx];
 }
 
@@ -434,9 +394,7 @@ int idk_compositor_egl_render(void) {
         int rc = idk_comp_recv_frame(g_client_fd, &hdr, &dmabuf_fd, "comp");
         if (rc <= 0) {
             if (rc < 0) {
-                fprintf(stderr,
-                    "[idk-comp] client disconnected (fd=%d), resetting\n",
-                    g_client_fd);
+                IDK_LOG("comp", "client disconnected (fd=%d), resetting\n", g_client_fd);
                 close(g_client_fd);
                 g_client_fd = -1;
             }
@@ -627,7 +585,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
 
-    /* Resolve both EGL image binding functions up front */
+    /* Resolve EGL image binding functions up front */
     if (!fn_glEGLImageTargetTexture2DOES) {
         void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
         if (!lib) lib = dlopen("libOpenGL.so.0", RTLD_NOW);
@@ -653,15 +611,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
-    IDK_LOG("comp", "EGL image bind funcs: TexStorage=%p Texture2DOES=%p (w=%u h=%u stride=%u fourcc=0x%x)\n",
-            (void*)fn_glEGLImageTargetTexStorageEXT,
-            (void*)fn_glEGLImageTargetTexture2DOES,
-            (unsigned)w, (unsigned)h, (unsigned)stride, (unsigned)drm_fmt);
-
-    /* Try glEGLImageTargetTexStorageEXT FIRST — correct for desktop GL.
-     * It allocates texture storage from the EGLImage.
-     * glEGLImageTargetTexture2DOES is GLES-only; on desktop GL it may
-     * silently "succeed" (GL_NO_ERROR) but leave texture unallocated (= white). */
+    /* TexStorageEXT first (desktop GL), fall back to Texture2DOES (GLES) */
     GLboolean ok = GL_FALSE;
     GLenum err = GL_NO_ERROR;
     static int s_texstorage_success_logged = 0;
@@ -706,13 +656,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    /* DO NOT destroy the EGLImage here — Mesa's TexStorageEXT does NOT
-     * retain a reference to the dmabuf storage; if we destroy the image
-     * (or the caller closes the dmabuf fd), the texture's backing memory
-     * gets freed/reused and the texture renders as empty/white.
-     * The caller is responsible for keeping *out_img (and the dmabuf fd)
-     * alive for the texture's lifetime, and destroying them when the
-     * texture is replaced/deleted. */
+    /* Keep EGLImage alive — Mesa's TexStorageEXT doesn't retain a ref */
     if (out_img) *out_img = img;
 
     return tex;
@@ -730,9 +674,8 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         if (!is_prog || !link_status) {
             static int s_reinit_count = 0;
             s_reinit_count++;
-            fprintf(stderr,
-                "[idk-comp] program %u invalidated (is_prog=%d link=%d) — re-initializing shaders (attempt %d)\n",
-                g_program, (int)is_prog, (int)link_status, s_reinit_count);
+            IDK_LOG("comp", "program %u invalidated (is_prog=%d link=%d) — re-initializing shaders (attempt %d)\n",
+                    g_program, (int)is_prog, (int)link_status, s_reinit_count);
             /* Clear g_program so init creates a fresh one.
              * Don't call glDeleteProgram — the ID may belong to the host. */
             g_program = 0;
@@ -876,11 +819,9 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         GLboolean tex_valid = cur_tex ? glIsTexture(cur_tex) : GL_FALSE;
         GLint prog_link = 0;
         glGetProgramiv(g_program, GL_LINK_STATUS, &prog_link);
-        fprintf(stderr,
-            "[idk-comp] pre-draw diag: tex[%d]=%u valid=%d prog=%u link=%d "
-            "frame=%ux%u fb=%dx%d\n",
-            g_tex_idx, cur_tex, (int)tex_valid, g_program, (int)prog_link,
-            g_frame_w, g_frame_h, fb_w, fb_h);
+        IDK_LOG("comp", "pre-draw diag: tex[%d]=%u valid=%d prog=%u link=%d frame=%ux%u fb=%dx%d\n",
+                g_tex_idx, cur_tex, (int)tex_valid, g_program, (int)prog_link,
+                g_frame_w, g_frame_h, fb_w, fb_h);
     }
 
     glUseProgram(g_program);           GLCHECK("glUseProgram");
@@ -899,17 +840,15 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
             g_draw_err_count++;
             /* Throttle: log first 5, then every 300th */
             if (g_draw_err_count <= 5 || g_draw_err_count % 300 == 0) {
-                fprintf(stderr,
-                    "[idk-comp] GL error after draw: 0x%x (tex[%d]=%u fb=%dx%d frame=%ux%u, occurrence %d)\n",
-                    err, g_tex_idx, g_tex[g_tex_idx], fb_w, fb_h,
-                    g_frame_w, g_frame_h, g_draw_err_count);
+                IDK_ERR("comp", "GL error after draw: 0x%x (tex[%d]=%u fb=%dx%d frame=%ux%u, occurrence %d)\n",
+                        err, g_tex_idx, g_tex[g_tex_idx], fb_w, fb_h,
+                        g_frame_w, g_frame_h, g_draw_err_count);
             }
             /* Invalidate texture after 5 consecutive errors */
             if (g_draw_err_count == 5) {
                 GLuint dead = g_tex[g_tex_idx];
-                fprintf(stderr,
-                    "[idk-comp] tex[%d]=%u failing repeatedly — deleting + marking invalid\n",
-                    g_tex_idx, dead);
+                IDK_ERR("comp", "tex[%d]=%u failing repeatedly — deleting + marking invalid\n",
+                        g_tex_idx, dead);
                 if (dead > 0) glDeleteTextures(1, &dead);
                 g_tex[g_tex_idx] = 0;
                 release_dmabuf_backing(g_tex_idx);
@@ -970,30 +909,8 @@ int idk_compositor_egl_has_overlay(void) {
     return g_has_frame;
 }
 
-int idk_compositor_egl_set_overlay(int dmabuf_fd, uint32_t w, uint32_t h,
-                                 uint32_t stride, uint32_t format) {
-    (void)stride; (void)format;
-    /* This is a legacy API — use idk_compositor_egl_render() instead */
-    /* For backward compat, just store and let render() pick it up */
-    if (dmabuf_fd >= 0) {
-        g_dmabuf_fd = dmabuf_fd;
-        g_frame_w = w;
-        g_frame_h = h;
-        return 0;
-    }
-    return -1;
-}
-
 void idk_compositor_egl_shutdown(void) {
-    if (g_shm_map) {
-        munmap(g_shm_map, g_shm_map_size);
-        g_shm_map = NULL;
-    }
-    if (g_shm_fd >= 0) {
-        close(g_shm_fd);
-        g_shm_fd = -1;
-    }
-
+    /* SHM cache is function-scoped static in shm_to_texture — OS reclaims */
     if (g_dmabuf_fd >= 0) {
         close(g_dmabuf_fd);
         g_dmabuf_fd = -1;

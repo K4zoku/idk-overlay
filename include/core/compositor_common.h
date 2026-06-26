@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <time.h>
 #include <stdbool.h>
+#include <sys/types.h>
 
 #include "public/idk_ipc.h"  /* idk_frame_header_t, IDK_FRAME_FLAG_* */
 
@@ -81,6 +82,26 @@ void idk_comp_send_ack(int client_fd, uint8_t ack,
                        bool *size_pending,
                        const struct timespec *last_resize_ts,
                        int debounce_ms, const char *log_tag);
+
+/* ── SHM mmap cache ───────────────────────────────────────────────────── */
+/* Caches mmap'd SHM buffers by inode to avoid remapping identical fds. */
+
+typedef struct {
+    void   *map;
+    size_t  size;
+    ino_t   ino;
+    dev_t   dev;
+} idk_shm_cache_t;
+
+static inline void idk_shm_cache_init(idk_shm_cache_t *c) {
+    c->map = NULL; c->size = 0; c->ino = 0; c->dev = 0;
+}
+
+/* Map fd, reusing cached mapping if inode unchanged. */
+void *idk_shm_cache_map(idk_shm_cache_t *c, int fd);
+
+/* Unmap and reset cache. */
+void idk_shm_cache_cleanup(idk_shm_cache_t *c);
 
 /* ── Cross-GPU dmabuf vendor detection ────────────────────────────────── */
 

@@ -1,38 +1,37 @@
 #pragma once
 
 #include <QQuickWindow>
+#include <QQuickWidget>
+#include <QSGRendererInterface>
 
-/**
- * Extract DMA-BUF texture info from Qt6 RHI.
- * Uses private Qt API to access the render target's underlying DMA-BUF.
- */
+class WebView;
+
 class RhiTextureExtractor
 {
 public:
-    struct TextureInfo {
-        bool valid = false;
-        unsigned int textureId = 0;
-        int format = 0;  // EGL/GL format (int, matches eglExportDMABUFImageQueryMESA)
-        int nfd = 0;
-        unsigned long modifier = 0;
-        int dmabufs[4] = {};
-        int strides[4] = {};
-        int offsets[4] = {};
-    };
+    explicit RhiTextureExtractor(WebView *view);
+    ~RhiTextureExtractor();
 
-    /**
-     * Extract DMA-BUF texture info from a QtQuick window.
-     * 
-     * @param window    QtQuick window (QQuickWindow*)
-     * @param texInfo   Output structure filled with DMA-BUF info
-     * @return          true if extraction succeeded
-     */
-    static bool extractTextureInfo(QQuickWindow *window, TextureInfo &texInfo);
+    bool tryExportDMABuf();
+    bool tryReadPixelsToSHM(unsigned char *shm, int w, int h);
+    bool ensureDmaBufSharedCtx();
 
-    /**
-     * Clean up EGL resources.
-     */
-    static void cleanup();
+private:
+    bool tryExportDMABufOpenGL();
+    bool tryExportDMABufVulkan();
 
-    static void *s_eglImage;  // Defined in rhi_texture_extractor.cpp
+    static bool fenceSyncGL();
+    static void resolveFenceGL();
+    static void resolveFBOGL();
+    static void *s_fn_glFenceSync;
+    static void *s_fn_glClientWaitSync;
+    static void *s_fn_glDeleteSync;
+    static void *s_fn_glGenFramebuffers;
+    static void *s_fn_glBindFramebuffer;
+    static void *s_fn_glFramebufferTexture2D;
+    static void *s_fn_glBlitFramebuffer;
+    static void *s_fn_glReadPixels;
+    static void *s_fn_glDeleteFramebuffers;
+
+    WebView *m_view;
 };

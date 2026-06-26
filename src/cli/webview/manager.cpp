@@ -189,14 +189,6 @@ bool Manager::isConnected() const
     return idk_fs_get_fd() >= 0;
 }
 
-void Manager::onSocketReadyRead()
-{
-}
-
-void Manager::onReconnectTimer()
-{
-}
-
 void Manager::initWebViews()
 {
     uint8_t i = 1;

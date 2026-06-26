@@ -1,20 +1,17 @@
 # idk-overlay
 
-**Open-source, Wayland-native game overlay platform for Linux.**
+**Wayland-native game overlay platform for Linux.**
 
 Injects into a target process via [syringe](https://github.com/K4zoku/syringe) (ptrace / LD_PRELOAD / .NET diagnostic IPC), hooks graphics present functions, and composites a webview-rendered overlay on top of the game's framebuffer.
 
 ## Features
 
 - **3 injection paths**: LD_PRELOAD (universal), ptrace (live process), .NET diagnostic IPC (bypasses anti-debug)
-- **Late inject detection**: auto-detects LD_PRELOAD vs syringe injection, skips GOT patching when not needed
 - **Wayland-native**: works on Wayland without X11 fallback
-- **Live process injection**: inject into already-running games (not just LD_PRELOAD)
-- **.NET support**: injects into osu! lazer via diagnostic IPC — no ptrace, no root, no anti-debug bypass
 - **Qt6 WebEngine webview**: render HTML/CSS/JS overlays
-- **DMABUF import**: zero-copy texture import via EGL (EGL_EXT_image_dma_buf) or GL_EXT_memory_object (GLX fallback)
+- **DMABUF import**: zero-copy texture import via EGL (`EGL_EXT_image_dma_buf`) or `GL_EXT_memory_object` (GLX fallback)
 - **Wayland input hooking**: toggle input capture (default: F8) to redirect keyboard + mouse to the overlay UI
-- **Plugin architecture**: per-API hooks register via `idk_hook_plugin_t`, overlay.c discovers them generically
+- **Plugin architecture**: per-API hooks register via `idk_hook_plugin_t`, auto-discovered
 - **Double-buffered GL textures**: no flickering, no tearing
 - **ACK flow control**: webview frame rate synced to game swap rate
 - **GL state save/restore**: comprehensive, based on MangoHud approach
@@ -104,19 +101,16 @@ IDK_SOCKET=/tmp/idk-overlay-$(pgrep osu!) ./build/src/cli/webview/idk-webview
 
 ## Wayland input hooking
 
-The overlay can capture keyboard and mouse input when toggled by a hotkey (default: **F8**). This lets the overlay UI receive text input, clicks, etc. without the game seeing them.
+The overlay can capture keyboard and mouse input when toggled by a hotkey (default: **F8**).
 
-### How it works
-
-1. `libidk-overlay.so` hooks `wl_proxy_add_listener` (exported by `libwayland-client.so.0`).
-2. When the game registers a `wl_pointer` or `wl_keyboard` listener, the hook substitutes a wrapper vtable that saves the game's listener + user_data.
-3. The wrapper forwards events to the game by default. When the user presses the hotkey, capture mode toggles on.
-4. While captured, the wrapper swallows events from the game and forwards them to the webview via a separate Unix socket (`${IDK_SOCKET}-input`).
-5. Press the hotkey again to release capture; events resume flowing to the game.
+1. Hooks `wl_proxy_add_listener` in `libwayland-client.so.0`
+2. Substitutes a wrapper vtable that saves the game's listener + user_data
+3. Forwards events to the game by default; toggling capture swallows them and forwards to the webview via `${IDK_SOCKET}-input`
+4. Hotkey again releases capture; events resume flowing to the game
 
 ### Input IPC protocol
 
-Separate socket from the frame socket, no `SCM_RIGHTS`. Path: `${IDK_SOCKET}-input`.
+Separate socket from the frame socket (no `SCM_RIGHTS`). Path: `${IDK_SOCKET}-input`.
 
 Each message is 20 bytes (`idk_input_event_t`):
 
@@ -138,33 +132,33 @@ Each message is 20 bytes (`idk_input_event_t`):
 
 ```
 src/
-├── compositor/         Compositor engine (EGL, VK + GL loader, shader loader)
-│   compositor_egl.c    EGL+GL compositor (DMABUF via EGL_EXT_image_dma_buf)
-│   compositor_vk.c     Pure Vulkan compositor (DMABUF via VK_EXT_external_memory)
-│   compositor_common.c Shared: socket init, ACK, resize debounce
-│   gl_loader.c         GL function pointer resolution at runtime
-│   shader_loader.c     Shader compile (SPIR-V GLSL fallback)
+├── core/               Compositor engine (EGL, VK, GL loader, shader loader)
+│   ├── compositor_common.c  Shared: socket init, ACK, resize debounce
+│   ├── compositor_egl.c     EGL+GL compositor (DMABUF via EGL_EXT_image_dma_buf)
+│   ├── compositor_vk.c      Vulkan compositor (DMABUF via VK_EXT_external_memory)
+│   ├── gl_loader.c          GL function pointer resolution at runtime
+│   └── shader_loader.c      Shader compile (SPIR-V + GLSL fallback)
 ├── hook/               Graphics + input hooks
-│   overlay.c           Orchestrator — background polling loop, plugin discovery
-│   egl_hook.c          EGL swap hook plugin
-│   glx_hook.c          GLX swap hook plugin
-│   vulkan_hook.c       Vulkan syringe hook plugin
-│   vulkan_layer.c      Vulkan layer (VK_LAYER_PATH) — official Vulkan layer
-│   wayland_input.c     Wayland input capture (display/keyboard/pointer hojooks)
+│   ├── overlay.c            Orchestrator — background polling, plugin discovery
+│   ├── egl_hook.c           EGL swap hook plugin
+│   ├── glx_hook.c           GLX swap hook plugin
+│   ├── vulkan_hook.c        Vulkan syringe hook plugin
+│   ├── vulkan_layer.c       Vulkan layer (VK_LAYER_PATH)
+│   └── wayland_input.c      Wayland input capture
 ├── ipc/                Wire protocol (frame header 28B, input event 20B)
 ├── lib/                libidk-framesource.so (frame sender for webview)
-├── shaders/            GLSL (120/130/300_es/410) + Vulkan SPIR-V shaders
+├── shaders/            GLSL + Vulkan SPIR-V shaders
 └── cli/
     ├── inject/         idk-inject CLI tool (wraps syringe_inject)
     └── webview/        Qt6 WebEngine client
         ├── main.cpp, manager.cpp
         ├── view/       webview.cpp, rhi_texture_extractor.cpp
         ├── input/      input_receiver.cpp
-        └── config/     groupconfig.cpp, utils.cpp
+        └── config/     groupconfig.cpp
 
 include/
 ├── public/             Public API headers (idk_fs.h, idk_ipc.h)
-├── compositor/         Compositor + GL loader + shader + log
+├── core/               Compositor + GL loader + shader + log
 ├── hook/               Plugin interface, hook utilities, overlay, wayland_input
 ├── shaders/            VK shader symbols (SPIR-V embedded)
 └── webview/            Webview private headers (manager, input_receiver, etc.)

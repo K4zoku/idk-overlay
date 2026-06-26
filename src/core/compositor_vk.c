@@ -46,9 +46,7 @@
  * Vertex: fullscreen triangle (3 vertices, no VBO needed)
  * Fragment: sample texture, output premultiplied RGBA */
 
-/* Frame protocol definitions (idk_frame_header_t, IDK_FRAME_FLAG_*) are in
- * compositor_common.h (via idk_ipc.h). The old 40-byte struct frame_hdr has
- * been replaced by the 28-byte idk_frame_header_t. */
+/* Frame protocol via compositor_common.h (idk_ipc.h). */
 
 /* ── Socket state ──────────────────────────────────────────────────────── */
 
@@ -164,8 +162,6 @@ static VkImageView     vk_shm_view = VK_NULL_HANDLE;
 
 /* SHM mmap (for reading frame data) */
 static int    vk_shm_fd = -1;
-static void  *vk_shm_map = NULL;
-static size_t vk_shm_map_size = 0;
 
 /* DMABUF import state.
  * Unlike SHM (which is uploaded every frame via staging buffer),
@@ -509,31 +505,11 @@ static int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size,
     }
 
 
-    /* mmap the SHM fd (cache by inode so re-received frames with the same
-     * SHM file don't trigger a remmap). NOTE: we do NOT close `fd` here —
-     * the fd lifecycle is managed by idk_vk_compositor_render(), which
-     * closes the previous vk_shm_fd when a new frame arrives. The `fd`
-     * parameter passed to us IS vk_shm_fd, so closing it would invalidate
-     * the global and break every subsequent render_overlay call. */
-    struct stat st;
-    if (fstat(fd, &st) < 0) {
-        IDK_ERR("comp-vk", "upload: fstat failed: %s\n", strerror(errno));
+    static idk_shm_cache_t s_vk_shm_cache;
+    if (!idk_shm_cache_map(&s_vk_shm_cache, fd))
         return -1;
-    }
-    static ino_t s_ino = 0;
-    static dev_t s_dev = 0;
-    if (st.st_ino != s_ino || st.st_dev != s_dev) {
-        if (vk_shm_map) { munmap(vk_shm_map, vk_shm_map_size); vk_shm_map = NULL; }
-        off_t total = lseek(fd, 0, SEEK_END);
-        if (total <= 0) total = pixel_size;
-        vk_shm_map_size = total;
-        vk_shm_map = mmap(NULL, vk_shm_map_size, PROT_READ, MAP_SHARED, fd, 0);
-        if (vk_shm_map == MAP_FAILED) { vk_shm_map = NULL; return -1; }
-        s_ino = st.st_ino;
-        s_dev = st.st_dev;
-    }
 
-    uint8_t *data = (uint8_t *)vk_shm_map + (buf_idx * pixel_size);
+    uint8_t *data = (uint8_t *)s_vk_shm_cache.map + (buf_idx * pixel_size);
     VkDeviceSize buf_size = (VkDeviceSize)pixel_size;
 
     /* Create staging buffer */

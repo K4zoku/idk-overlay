@@ -1,5 +1,4 @@
 #include "groupconfig.h"
-#include "utils.h"
 
 #include <QFile>
 #include <QSettings>
