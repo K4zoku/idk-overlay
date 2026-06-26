@@ -1,0 +1,119 @@
+#include "hook/wayland_internal.h"
+
+int g_input_listen_fd = -1;
+int g_client_fd = -1;
+static pthread_t g_accept_thread;
+int g_accept_thread_started = 0;
+static pthread_mutex_t g_client_fd_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *accept_thread_main(void *arg) {
+    (void)arg;
+    int listen_fd = g_input_listen_fd;
+    while (1) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        pthread_mutex_lock(&g_client_fd_lock);
+        if (g_client_fd >= 0)
+            close(g_client_fd);
+        g_client_fd = fd;
+        pthread_mutex_unlock(&g_client_fd_lock);
+        WLOG("webview connected to input socket (fd=%d)", fd);
+    }
+    return NULL;
+}
+
+int init_input_socket(void) {
+    char path[128];
+    const char *base = getenv("IDK_SOCKET");
+    if (base && base[0])
+        snprintf(path, sizeof(path), "%.107s-input", base);
+    else
+        snprintf(path, sizeof(path), "/tmp/idk-overlay-%d-input", (int)getpid());
+
+    unlink(path);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        WERR("input socket() failed: %s", strerror(errno));
+        return -1;
+    }
+
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", path);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        WERR("input bind(%s) failed: %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 1) < 0) {
+        WERR("input listen() failed: %s", strerror(errno));
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+
+    g_input_listen_fd = fd;
+    if (pthread_create(&g_accept_thread, NULL, accept_thread_main, NULL) != 0) {
+        WERR("pthread_create failed");
+        close(fd);
+        unlink(path);
+        g_input_listen_fd = -1;
+        return -1;
+    }
+    g_accept_thread_started = 1;
+
+    WLOG("input socket listening on %s", path);
+    return 0;
+}
+
+void send_event_to_webview(const idk_input_event_t *ev) {
+    pthread_mutex_lock(&g_client_fd_lock);
+    int fd = g_client_fd;
+    pthread_mutex_unlock(&g_client_fd_lock);
+    if (fd < 0) {
+        WLOG("send_event_to_webview: DROPPED (no webview connected, fd=-1)");
+        return;
+    }
+    int rc = idk_ipc_send_input(fd, ev);
+    if (rc != 0)
+        WLOG("send_event_to_webview: send failed (fd=%d, rc=%d, errno=%d)", fd, rc, errno);
+}
+
+void send_capture_state(uint32_t capture) {
+    idk_input_event_t ev = { 0 };
+    ev.type  = IDK_INPUT_STATE;
+    ev.flags = capture ? IDK_INPUT_FLAG_CAPTURE : 0;
+    ev.mods  = (uint16_t)g_mods;
+    send_event_to_webview(&ev);
+}
+
+void send_repeat_info(void) {
+    idk_input_event_t ev = { 0 };
+    ev.type = IDK_INPUT_REPEAT;
+    ev.u.repeat.rate  = (uint16_t)g_repeat_rate;
+    ev.u.repeat.delay = (uint16_t)g_repeat_delay;
+    ev.u.repeat._p1 = 0;
+    send_event_to_webview(&ev);
+}
+
+void teardown_input_socket(void) {
+    if (g_accept_thread_started) {
+        if (g_input_listen_fd >= 0) {
+            shutdown(g_input_listen_fd, SHUT_RDWR);
+            close(g_input_listen_fd);
+            g_input_listen_fd = -1;
+        }
+        pthread_join(g_accept_thread, NULL);
+        g_accept_thread_started = 0;
+    }
+
+    pthread_mutex_lock(&g_client_fd_lock);
+    if (g_client_fd >= 0) {
+        close(g_client_fd);
+        g_client_fd = -1;
+    }
+    pthread_mutex_unlock(&g_client_fd_lock);
+}
