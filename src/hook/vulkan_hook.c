@@ -96,13 +96,6 @@ static VkResult vkCreateSwapchainKHR(VkDevice device,
 static int install_vk_hook(void) {
     if (g_hook_installed) return 0;
 
-    if (hook_is_ld_preload("vkQueuePresentKHR", (void *)vkQueuePresentKHR)) {
-        IDK_LOG("vk", "LD_PRELOAD detected — no syringe hook needed\n");
-        orig_QueuePresentKHR = (PFN_vkQueuePresentKHR)hook_orig("vkQueuePresentKHR");
-        g_hook_installed = 1;
-        return 0;
-    }
-
     int n = syringe_hook_install("vkQueuePresentKHR",
                                   (void *)vkQueuePresentKHR,
                                   (void **)&orig_QueuePresentKHR);
@@ -115,13 +108,6 @@ static int install_vk_hook(void) {
 
 static int install_vk_swapchain_hook(void) {
     if (g_vk_swapchain_hook_installed) return 0;
-
-    if (hook_is_ld_preload("vkCreateSwapchainKHR", (void *)vkCreateSwapchainKHR)) {
-        IDK_LOG("vk", "LD_PRELOAD for swapchain\n");
-        orig_CreateSwapchainKHR = (PFN_vkCreateSwapchainKHR)hook_orig("vkCreateSwapchainKHR");
-        g_vk_swapchain_hook_installed = 1;
-        return 0;
-    }
 
     int n = syringe_hook_install("vkCreateSwapchainKHR",
                                   (void *)vkCreateSwapchainKHR,

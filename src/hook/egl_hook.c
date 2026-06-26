@@ -70,20 +70,12 @@ static int install_egl_hook(void) {
         return 0;
     }
 
-    /* LD_PRELOAD: our symbol is already the one the linker resolves to. */
-    if (hook_is_ld_preload("eglSwapBuffers", (void *)eglSwapBuffers)) {
-        IDK_LOG("egl", "LD_PRELOAD detected — no syringe hook needed\n");
-        orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))
-            hook_orig("eglSwapBuffers");
-        g_hook_installed = 1;
-        pthread_mutex_unlock(&g_hook_mutex);
-        return 0;
-    }
-
-    /* Late inject: patch GOT/PLT via syringe */
     if (idk_compositor_egl_init() != 0)
         IDK_LOG("egl", "compositor init queued (no GL context yet)\n");
 
+    /* Try syringe GOT/PLT patching first (covers late inject).
+     * With LD_PRELOAD all GOT entries already point to our function,
+     * so syringe finds nothing to patch and returns 0. */
     int n = syringe_hook_install("eglSwapBuffers",
                                   (void *)eglSwapBuffers,
                                   (void **)&orig_eglSwapBuffers);
@@ -94,7 +86,17 @@ static int install_egl_hook(void) {
         return 0;
     }
 
-    IDK_LOG("egl", "syringe hook install failed\n");
+    /* Nothing to patch — LD_PRELOAD already resolved calls to us. */
+    orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))
+        hook_orig("eglSwapBuffers");
+    if (orig_eglSwapBuffers && orig_eglSwapBuffers != (void *)eglSwapBuffers) {
+        g_hook_installed = 1;
+        IDK_LOG("egl", "LD_PRELOAD mode (syringe not needed)\n");
+        pthread_mutex_unlock(&g_hook_mutex);
+        return 0;
+    }
+
+    IDK_LOG("egl", "hook install failed\n");
     pthread_mutex_unlock(&g_hook_mutex);
     return -1;
 }

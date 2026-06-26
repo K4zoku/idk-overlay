@@ -62,15 +62,9 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
 static int install_glx_hook(void) {
     if (g_hook_installed) return 0;
 
-    /* LD_PRELOAD: our symbol already wins linker resolution. */
-    if (hook_is_ld_preload("glXSwapBuffers", (void *)glXSwapBuffers)) {
-        IDK_LOG("glx", "LD_PRELOAD detected — no syringe hook needed\n");
-        orig_glXSwapBuffers = (GlXSwapBuffersFn)hook_orig("glXSwapBuffers");
-        g_hook_installed = 1;
-        return 0;
-    }
-
-    /* Late inject: patch GOT/PLT via syringe */
+    /* Try syringe GOT/PLT patching first (covers late inject).
+     * With LD_PRELOAD all GOT entries already point to our function,
+     * so syringe finds nothing to patch and returns 0. */
     int n = syringe_hook_install("glXSwapBuffers",
                                   (void *)glXSwapBuffers,
                                   (void **)&orig_glXSwapBuffers);
@@ -80,7 +74,15 @@ static int install_glx_hook(void) {
         return 0;
     }
 
-    IDK_LOG("glx", "syringe hook install failed\n");
+    /* Nothing to patch — LD_PRELOAD already resolved calls to us. */
+    orig_glXSwapBuffers = (GlXSwapBuffersFn)hook_orig("glXSwapBuffers");
+    if (orig_glXSwapBuffers && orig_glXSwapBuffers != (void *)glXSwapBuffers) {
+        g_hook_installed = 1;
+        IDK_LOG("glx", "LD_PRELOAD mode (syringe not needed)\n");
+        return 0;
+    }
+
+    IDK_LOG("glx", "hook install failed\n");
     return -1;
 }
 
