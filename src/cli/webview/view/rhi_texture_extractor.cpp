@@ -398,7 +398,18 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
             m_view->m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
             emit m_view->frameSent();
         } else {
-            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: idk_fs_send_dma_buf failed rc=%d\n", rc);
+            /* Throttle log: only first failure + every 60th after.
+             * If transport disconnected, caller (doRenderAndSend SHM path)
+             * will detect via idk_fs_is_connected() and stop heartbeat. */
+            static int s_dmabuf_send_fail = 0;
+            s_dmabuf_send_fail++;
+            if (s_dmabuf_send_fail == 1 || s_dmabuf_send_fail % 60 == 0) {
+                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: idk_fs_send_dma_buf failed rc=%d (attempt %d, errno=%d: %s)\n",
+                        rc, s_dmabuf_send_fail, errno, strerror(errno));
+            }
+            if (s_dmabuf_send_fail > 5 && !idk_fs_is_connected()) {
+                s_dmabuf_send_fail = 0;
+            }
             glBindTexture(GL_TEXTURE_2D, 0);
             if (savedDpy != EGL_NO_DISPLAY)
                 eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);

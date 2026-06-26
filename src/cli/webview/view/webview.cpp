@@ -285,6 +285,16 @@ void WebView::doRenderAndSend()
      * (which is not a dmabuf) → import fails every frame → black screen. */
     int rc = idk_fs_send_frame(m_memfd, &frame);
     if (rc < 0) {
+        /* If the transport is disconnected (EPIPE/ECONNRESET/EAGAIN-persistent),
+         * stop the heartbeat and DON'T reschedule doRenderAndSend. The
+         * Manager's 1s reconnect timer will call idk_fs_init2 again, which
+         * restarts the heartbeat via startInputReceiver → frameSent path. */
+        if (!idk_fs_is_connected()) {
+            if (m_heartbeat) m_heartbeat->stop();
+            s_consecutive_failures = 0;
+            IDK_LOG("webview-qt", "transport disconnected — stopping heartbeat, waiting for Manager reconnect\n");
+            return;
+        }
         s_consecutive_failures++;
         if (s_consecutive_failures <= 3 || s_consecutive_failures % 60 == 0) {
             qWarning("[idk-webview] send failed (attempt %d): %s",
@@ -295,6 +305,8 @@ void WebView::doRenderAndSend()
                     "forcing disconnect\n");
             idk_fs_shutdown();
             s_consecutive_failures = 0;
+            if (m_heartbeat) m_heartbeat->stop();
+            return;
         }
         QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
         return;

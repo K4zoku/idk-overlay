@@ -237,8 +237,20 @@ void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
 
     int fl = fcntl(tp->_client_fd, F_GETFL, 0);
     if (fl >= 0) fcntl(tp->_client_fd, F_SETFL, fl | O_NONBLOCK);
-    write(tp->_client_fd, ack, sizeof(*ack));
+    ssize_t n = write(tp->_client_fd, ack, sizeof(*ack));
     if (fl >= 0) fcntl(tp->_client_fd, F_SETFL, fl);
+
+    /* On EPIPE/ECONNRESET, the peer is gone — close our side and mark
+     * disconnected so idk_fs_is_connected() returns false and the
+     * webview's Manager reconnect timer can kick in. Don't spam logs. */
+    if (n < 0 && (errno == EPIPE || errno == ECONNRESET ||
+                  errno == ESHUTDOWN || errno == ECONNABORTED)) {
+        if (tp->ready) {
+            tp->ready = false;
+            close(tp->_client_fd);
+            tp->_client_fd = -1;
+        }
+    }
 }
 
 int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
@@ -266,6 +278,17 @@ int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
     ssize_t n = sendmsg(tp->_client_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) return -1;
+        /* Fatal peer errors — disconnect immediately, no retry.
+         * The webview Manager will reconnect via its 1s timer. */
+        if (errno == EPIPE || errno == ECONNRESET ||
+            errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF) {
+            if (tp->ready) {
+                tp->ready = false;
+                close(tp->_client_fd);
+                tp->_client_fd = -1;
+            }
+            return -1;
+        }
         IDK_ERR("tp", "sendmsg failed: %s\n", strerror(errno));
         return -1;
     }

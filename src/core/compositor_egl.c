@@ -47,6 +47,22 @@ typedef intptr_t EGLNativeDisplayType;
 #define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT  0x3444
 #define DRM_FORMAT_MOD_INVALID 0x00FFFFFFFFFFFFFFULL
 
+/* EGL constants for hidden context creation */
+#define EGL_OPENGL_API          0x30A2
+#define EGL_OPENGL_BIT          0x0008
+#define EGL_PBUFFER_BIT         0x0001
+#define EGL_SURFACE_TYPE        0x3033
+#define EGL_RENDERABLE_TYPE     0x3040
+#define EGL_RED_SIZE            0x3024
+#define EGL_GREEN_SIZE          0x3023
+#define EGL_BLUE_SIZE           0x3022
+#define EGL_ALPHA_SIZE          0x3021
+#define EGL_CONTEXT_MAJOR_VERSION 0x3098
+#define EGL_CONTEXT_MINOR_VERSION 0x30FB
+#define EGL_LUMINANCE_SIZE      0x303D
+#define EGL_COLOR_BUFFER_TYPE   0x303F
+#define EGL_RGB_BUFFER          0x308E
+
 typedef EGLDisplay (*PFN_eglGetDisplay_fn)(EGLNativeDisplayType);
 typedef EGLDisplay (*PFN_eglGetCurrentDisplay_fn)(void);
 typedef EGLint (*PFN_eglGetError_fn)(void);
@@ -56,6 +72,20 @@ typedef EGLImageKHR (*PFN_eglCreateImageKHR_fn)(EGLDisplay dpy, EGLContext ctx,
                                                  void *buffer,
                                                  const EGLint *attrs);
 typedef EGLBoolean (*PFN_eglDestroyImageKHR_fn)(EGLDisplay dpy, EGLImageKHR image);
+typedef EGLBoolean (*PFN_eglInitialize_fn)(EGLDisplay dpy, EGLint *major, EGLint *minor);
+typedef EGLBoolean (*PFN_eglChooseConfig_fn)(EGLDisplay dpy, const EGLint *attribs,
+                                              EGLSurface *configs, EGLint config_size,
+                                              EGLint *num_config);
+typedef EGLSurface (*PFN_eglCreatePbufferSurface_fn)(EGLDisplay dpy, EGLSurface config,
+                                                      const EGLint *attribs);
+typedef EGLContext (*PFN_eglCreateContext_fn)(EGLDisplay dpy, EGLSurface config,
+                                               EGLContext share, const EGLint *attribs);
+typedef EGLBoolean (*PFN_eglMakeCurrent_fn)(EGLDisplay dpy, EGLSurface draw,
+                                             EGLSurface read, EGLContext ctx);
+typedef EGLBoolean (*PFN_eglDestroyContext_fn)(EGLDisplay dpy, EGLContext ctx);
+typedef EGLBoolean (*PFN_eglDestroySurface_fn)(EGLDisplay dpy, EGLSurface surf);
+typedef EGLBoolean (*PFN_eglBindAPI_fn)(EGLenum api);
+
 
 static PFN_eglGetDisplay_fn          fn_eglGetDisplay          = NULL;
 static PFN_eglGetCurrentDisplay_fn   fn_eglGetCurrentDisplay   = NULL;
@@ -63,6 +93,23 @@ static PFN_eglGetError_fn            fn_eglGetError            = NULL;
 static PFN_eglGetProcAddress_fn      fn_eglGetProcAddress      = NULL;
 static PFN_eglCreateImageKHR_fn      fn_eglCreateImageKHR      = NULL;
 static PFN_eglDestroyImageKHR_fn     fn_eglDestroyImageKHR     = NULL;
+static PFN_eglInitialize_fn          fn_eglInitialize          = NULL;
+static PFN_eglChooseConfig_fn        fn_eglChooseConfig        = NULL;
+static PFN_eglCreatePbufferSurface_fn fn_eglCreatePbufferSurface = NULL;
+static PFN_eglCreateContext_fn       fn_eglCreateContext       = NULL;
+static PFN_eglMakeCurrent_fn         fn_eglMakeCurrent         = NULL;
+static PFN_eglDestroyContext_fn      fn_eglDestroyContext      = NULL;
+static PFN_eglDestroySurface_fn      fn_eglDestroySurface      = NULL;
+static PFN_eglBindAPI_fn             fn_eglBindAPI             = NULL;
+
+/* Hidden compositor EGL context state — UNUSED after GLX→SHM fallback fix.
+ * See ensure_compositor_egl_context() (also #if 0'd) for context. */
+#if 0
+static EGLDisplay g_compositor_dpy   = NULL;
+static EGLSurface g_compositor_surf  = NULL;
+static EGLContext g_compositor_ctx   = NULL;
+static int g_compositor_egl_inited   = 0;
+#endif
 
 static void resolve_egl_functions(void) {
     if (fn_eglGetDisplay) return;
@@ -77,6 +124,14 @@ static void resolve_egl_functions(void) {
     fn_eglGetCurrentDisplay = (PFN_eglGetCurrentDisplay_fn)  dlsym(lib, "eglGetCurrentDisplay");
     fn_eglGetError          = (PFN_eglGetError_fn)           dlsym(lib, "eglGetError");
     fn_eglGetProcAddress    = (PFN_eglGetProcAddress_fn)     dlsym(lib, "eglGetProcAddress");
+    fn_eglInitialize        = (PFN_eglInitialize_fn)         dlsym(lib, "eglInitialize");
+    fn_eglChooseConfig      = (PFN_eglChooseConfig_fn)       dlsym(lib, "eglChooseConfig");
+    fn_eglCreatePbufferSurface = (PFN_eglCreatePbufferSurface_fn) dlsym(lib, "eglCreatePbufferSurface");
+    fn_eglCreateContext     = (PFN_eglCreateContext_fn)      dlsym(lib, "eglCreateContext");
+    fn_eglMakeCurrent       = (PFN_eglMakeCurrent_fn)        dlsym(lib, "eglMakeCurrent");
+    fn_eglDestroyContext    = (PFN_eglDestroyContext_fn)     dlsym(lib, "eglDestroyContext");
+    fn_eglDestroySurface    = (PFN_eglDestroySurface_fn)     dlsym(lib, "eglDestroySurface");
+    fn_eglBindAPI           = (PFN_eglBindAPI_fn)            dlsym(lib, "eglBindAPI");
 
     /* eglCreateImageKHR / eglDestroyImageKHR are extension functions —
      * must use eglGetProcAddress, they may not be exported from libEGL.so */
@@ -95,22 +150,137 @@ static void resolve_egl_functions(void) {
             (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
 }
 
-/* ── GL_EXT_memory_object dmabuf import (GLX path, no EGL needed) ─────── */
+/* Hidden compositor-side EGL context — UNUSED after GLX→SHM fallback fix.
+ *
+ * Previously created to enable DMABUF import for GLX apps (which have no
+ * current EGL display). But Mesa's glEGLImageTargetTexStorageEXT crashes
+ * when binding an EGLImage from one EGLDisplay to a texture in a GLX-backed
+ * GL context (the EGLImage's display must match the current context's
+ * display). For GLX apps, we now reject DMABUF and use the SHM path.
+ *
+ * Kept here for reference — re-enable if Mesa ever adds cross-display
+ * EGLImage sharing, or if we implement a CPU-copy fallback path.
+ */
+#if 0
+static EGLDisplay ensure_compositor_egl_context(void) {
+    if (g_compositor_egl_inited) return g_compositor_dpy;
+    g_compositor_egl_inited = 1;
 
-/* GL handle types for EXT_external_memory */
-#define GL_HANDLE_TYPE_DMA_BUF_EXT 0x330E
+    if (!fn_eglGetDisplay) resolve_egl_functions();
+    if (!fn_eglGetDisplay || !fn_eglInitialize || !fn_eglChooseConfig ||
+        !fn_eglCreateContext || !fn_eglCreatePbufferSurface ||
+        !fn_eglBindAPI || !fn_eglMakeCurrent) {
+        IDK_ERR("comp", "EGL context functions not resolved\n");
+        return NULL;
+    }
 
-/* PFN types */
+    g_compositor_dpy = fn_eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (!g_compositor_dpy) {
+        IDK_ERR("comp", "eglGetDisplay(default) failed: 0x%x\n",
+                fn_eglGetError ? fn_eglGetError() : 0);
+        return NULL;
+    }
+
+    EGLint major = 0, minor = 0;
+    if (!fn_eglInitialize(g_compositor_dpy, &major, &minor)) {
+        IDK_ERR("comp", "eglInitialize failed: 0x%x\n",
+                fn_eglGetError ? fn_eglGetError() : 0);
+        g_compositor_dpy = NULL;
+        return NULL;
+    }
+
+    if (!fn_eglBindAPI(EGL_OPENGL_API)) {
+        IDK_ERR("comp", "eglBindAPI(OpenGL) failed: 0x%x\n",
+                fn_eglGetError ? fn_eglGetError() : 0);
+        return NULL;
+    }
+
+    EGLint cfg_attrs[] = {
+        EGL_SURFACE_TYPE,    EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE,        8,
+        EGL_GREEN_SIZE,      8,
+        EGL_BLUE_SIZE,       8,
+        EGL_ALPHA_SIZE,      8,
+        EGL_NONE,
+    };
+    EGLSurface configs[8];
+    EGLint num_config = 0;
+    if (!fn_eglChooseConfig(g_compositor_dpy, cfg_attrs, configs, 8, &num_config) ||
+        num_config == 0) {
+        IDK_ERR("comp", "eglChooseConfig failed: 0x%x (num=%d)\n",
+                fn_eglGetError ? fn_eglGetError() : 0, num_config);
+        return NULL;
+    }
+    EGLSurface cfg = configs[0];
+
+    EGLint pbuf_attrs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+    g_compositor_surf = fn_eglCreatePbufferSurface(g_compositor_dpy, cfg, pbuf_attrs);
+    if (!g_compositor_surf) {
+        IDK_ERR("comp", "eglCreatePbufferSurface failed: 0x%x\n",
+                fn_eglGetError ? fn_eglGetError() : 0);
+        return NULL;
+    }
+
+    EGLint ctx_attrs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 2,
+        EGL_NONE,
+    };
+    g_compositor_ctx = fn_eglCreateContext(g_compositor_dpy, cfg, NULL, ctx_attrs);
+    if (!g_compositor_ctx) {
+        /* Retry with no version attrs (let driver pick default) */
+        g_compositor_ctx = fn_eglCreateContext(g_compositor_dpy, cfg, NULL, NULL);
+    }
+    if (!g_compositor_ctx) {
+        IDK_ERR("comp", "eglCreateContext failed: 0x%x\n",
+                fn_eglGetError ? fn_eglGetError() : 0);
+        return NULL;
+    }
+
+    IDK_LOG("comp", "compositor EGL context ready (dpy=%p surf=%p ctx=%p, EGL %d.%d)\n",
+            (void*)g_compositor_dpy, (void*)g_compositor_surf, (void*)g_compositor_ctx,
+            major, minor);
+    return g_compositor_dpy;
+}
+#endif
+
+/* ── GL_EXT_memory_object dmabuf import (MangoHud approach) ────────────
+ *
+ * Per GL_EXT_memory_object_fd spec, only GL_HANDLE_TYPE_OPAQUE_FD_EXT is
+ * defined — there is NO GL_HANDLE_TYPE_DMA_BUF_EXT. Spec says OPAQUE_FD is
+ * for fds created via glGetMemoryObjectFdEXT (GL→GL roundtrip).
+ *
+ * MangoHud's trick: pass dmabuf fds to glImportMemoryFdEXT with
+ * GL_HANDLE_TYPE_OPAQUE_FD_EXT. Mesa's driver accepts this and handles
+ * the dmabuf correctly based on the actual underlying fd type. This is
+ * technically not spec-compliant but works on all Mesa drivers.
+ *
+ * This is the GLX path (no EGL needed) — works on any GL context.
+ * EGL apps can still use the EGL_LINUX_DMA_BUF_EXT path above.
+ */
+
+#define GL_HANDLE_TYPE_OPAQUE_FD_EXT 0x22C1
+#define GL_RGBA8                     0x8058
+#define GL_TEXTURE_SWIZZLE_R         0x8E42
+#define GL_TEXTURE_SWIZZLE_G         0x8E43
+#define GL_TEXTURE_SWIZZLE_B         0x8E44
+#define GL_TEXTURE_SWIZZLE_A         0x8E45
+#define GL_ALPHA_ENUM                0x1906
+#define GL_BLUE                      0x1905
+#define GL_GREEN                     0x1904
+#define GL_RED                       0x1903
+
 typedef unsigned long long GLu64;
-typedef void (*PFN_glCreateMemoryObjectsEXT)(GLsizei, GLuint*);
-typedef void (*PFN_glDeleteMemoryObjectsEXT)(GLsizei, const GLuint*);
-typedef void (*PFN_glImportMemoryFdEXT)(GLuint, GLu64, GLenum, GLint);
-typedef void (*PFN_glTexStorageMem2DEXT)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLu64);
+typedef void (*PFN_glCreateMemoryObjectsEXT_fn)(GLsizei, GLuint*);
+typedef void (*PFN_glDeleteMemoryObjectsEXT_fn)(GLsizei, const GLuint*);
+typedef void (*PFN_glImportMemoryFdEXT_fn)(GLuint, GLu64, GLenum, GLint);
+typedef void (*PFN_glTexStorageMem2DEXT_fn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLuint, GLu64);
 
-static PFN_glCreateMemoryObjectsEXT fn_glCreateMemoryObjectsEXT = NULL;
-static PFN_glDeleteMemoryObjectsEXT fn_glDeleteMemoryObjectsEXT = NULL;
-static PFN_glImportMemoryFdEXT      fn_glImportMemoryFdEXT      = NULL;
-static PFN_glTexStorageMem2DEXT     fn_glTexStorageMem2DEXT     = NULL;
+static PFN_glCreateMemoryObjectsEXT_fn fn_glCreateMemoryObjectsEXT = NULL;
+static PFN_glDeleteMemoryObjectsEXT_fn fn_glDeleteMemoryObjectsEXT = NULL;
+static PFN_glImportMemoryFdEXT_fn      fn_glImportMemoryFdEXT      = NULL;
+static PFN_glTexStorageMem2DEXT_fn     fn_glTexStorageMem2DEXT     = NULL;
 static int g_gl_mem_resolved = 0;
 static int g_gl_mem_available = 0;
 
@@ -118,73 +288,127 @@ static void resolve_gl_memory_functions(void) {
     if (g_gl_mem_resolved) return;
     g_gl_mem_resolved = 1;
 
-    /* Check extensions string */
     if (!idk_fn_glGetString) return;
     const GLubyte *exts = idk_fn_glGetString(0x1F03 /* GL_EXTENSIONS */);
     if (!exts) return;
 
-    /* Need both GL_EXT_memory_object and GL_EXT_memory_object_fd */
     if (!strstr((const char *)exts, "GL_EXT_memory_object") ||
         !strstr((const char *)exts, "GL_EXT_memory_object_fd")) {
         IDK_LOG("comp", "GL_EXT_memory_object(_fd) not available\n");
         return;
     }
 
-    /* Resolve via dlsym from libGL */
     void *lib = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
     if (!lib) lib = dlopen("libGL.so.1", RTLD_NOW);
     if (!lib) lib = dlopen("libGL.so", RTLD_NOW);
     if (!lib) return;
 
-    fn_glCreateMemoryObjectsEXT = (PFN_glCreateMemoryObjectsEXT)dlsym(lib, "glCreateMemoryObjectsEXT");
-    fn_glDeleteMemoryObjectsEXT = (PFN_glDeleteMemoryObjectsEXT)dlsym(lib, "glDeleteMemoryObjectsEXT");
-    fn_glImportMemoryFdEXT      = (PFN_glImportMemoryFdEXT)dlsym(lib, "glImportMemoryFdEXT");
-    fn_glTexStorageMem2DEXT     = (PFN_glTexStorageMem2DEXT)dlsym(lib, "glTexStorageMem2DEXT");
+    fn_glCreateMemoryObjectsEXT = (PFN_glCreateMemoryObjectsEXT_fn)dlsym(lib, "glCreateMemoryObjectsEXT");
+    fn_glDeleteMemoryObjectsEXT = (PFN_glDeleteMemoryObjectsEXT_fn)dlsym(lib, "glDeleteMemoryObjectsEXT");
+    fn_glImportMemoryFdEXT      = (PFN_glImportMemoryFdEXT_fn)dlsym(lib, "glImportMemoryFdEXT");
+    fn_glTexStorageMem2DEXT     = (PFN_glTexStorageMem2DEXT_fn)dlsym(lib, "glTexStorageMem2DEXT");
 
     if (fn_glCreateMemoryObjectsEXT && fn_glImportMemoryFdEXT && fn_glTexStorageMem2DEXT) {
         g_gl_mem_available = 1;
-        IDK_LOG("comp", "GL_EXT_memory_object: available (CreateMem=%p ImportFd=%p TexStorageMem=%p)\n",
-                (void*)fn_glCreateMemoryObjectsEXT, (void*)fn_glImportMemoryFdEXT,
-                (void*)fn_glTexStorageMem2DEXT);
+        IDK_LOG("comp", "GL_EXT_memory_object: available (MangoHud-style dmabuf import)\n");
     } else {
         IDK_LOG("comp", "GL_EXT_memory_object: extension present but functions not resolved\n");
     }
 }
 
-/* Import dmabuf as GL texture via GL_EXT_memory_object (no EGL needed).
- * Returns texture ID on success, 0 on failure. Caller keeps fd ownership. */
+/* Import dmabuf as GL texture via GL_EXT_memory_object (MangoHud approach).
+ * Returns texture ID on success, 0 on failure. Caller keeps fd ownership.
+ *
+ * The GL driver takes ownership of the dup'd fd — caller's original fd
+ * must be kept alive separately (we track it in g_tex_dmabuf_fd[] for
+ * cache invalidation on resize). */
 static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
-                                    uint32_t stride) {
+                                    uint32_t stride, uint32_t fourcc) {
     resolve_gl_memory_functions();
     if (!g_gl_mem_available) return 0;
 
-    /* Create memory object + import fd */
+    /* Drain any stale GL errors so we can detect new ones cleanly */
+    while (idk_fn_glGetError && idk_fn_glGetError() != GL_NO_ERROR) {}
+
+    /* Create memory object */
     GLuint mem = 0;
     fn_glCreateMemoryObjectsEXT(1, &mem);
-    if (!mem) return 0;
+    if (!mem) {
+        IDK_ERR("comp", "glCreateMemoryObjectsEXT returned 0\n");
+        return 0;
+    }
 
+    /* dup() the fd — glImportMemoryFdEXT takes ownership of the passed fd */
+    int import_fd = dup(dmabuf_fd);
+    if (import_fd < 0) {
+        IDK_ERR("comp", "dup(dmabuf_fd=%d) failed: %s\n", dmabuf_fd, strerror(errno));
+        fn_glDeleteMemoryObjectsEXT(1, &mem);
+        return 0;
+    }
+
+    /* MangoHud trick: use GL_HANDLE_TYPE_OPAQUE_FD_EXT for dmabuf fds.
+     * Mesa's driver detects the actual fd type and handles dmabuf correctly.
+     * The spec only defines OPAQUE_FD for GL-exported fds, but Mesa extends
+     * this to accept dmabuf fds as well. */
     GLu64 size = (GLu64)stride * (GLu64)h;
-    fn_glImportMemoryFdEXT(mem, size, GL_HANDLE_TYPE_DMA_BUF_EXT, dmabuf_fd);
-    /* After import, the fd is owned by the GL driver — caller must NOT close it */
+    fn_glImportMemoryFdEXT(mem, size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, import_fd);
+    /* After ImportMemoryFdEXT (success), import_fd is owned by GL driver.
+     * On failure, we must close it ourselves. */
+
+    GLenum err = idk_fn_glGetError ? idk_fn_glGetError() : GL_NO_ERROR;
+    if (err != GL_NO_ERROR) {
+        IDK_ERR("comp", "glImportMemoryFdEXT failed: 0x%04x (fd=%d size=%llu)\n",
+                err, import_fd, (unsigned long long)size);
+        close(import_fd);
+        fn_glDeleteMemoryObjectsEXT(1, &mem);
+        return 0;
+    }
 
     /* Create texture backed by the memory object */
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
+
+    /* GL_RGBA8 matches 4-bytes-per-pixel BGRA/RGBA/ABGR dmabuf formats
+     * when combined with the swizzle below. */
+    fn_glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, GL_RGBA8, w, h, mem, 0);
+
+    err = idk_fn_glGetError ? idk_fn_glGetError() : GL_NO_ERROR;
+    if (err != GL_NO_ERROR) {
+        IDK_ERR("comp", "glTexStorageMem2DEXT failed: 0x%04x (w=%u h=%u)\n", err, w, h);
+        glDeleteTextures(1, &tex);
+        fn_glDeleteMemoryObjectsEXT(1, &mem);
+        return 0;
+    }
+
+    /* Swizzle for ABGR8888 / BGRA8888 dmabuf formats.
+     * Both have R and B channels swapped vs GL_RGBA8's expected layout.
+     * Swizzle R↔B to get correct color output.
+     * (MangoHud does the same.)
+     *
+     * If fourcc indicates RGBA8888 (0x34324752), skip swizzle.
+     * For everything else (AB24/AR24/BG24/ etc.), apply R↔B swap. */
+    if (fourcc != 0x34324752 /* DRM_FORMAT_RGBA8888 */) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ALPHA_ENUM);
+    }
+
+    /* Set basic filtering/wrap — caller will override if needed */
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F /* GL_CLAMP_TO_EDGE */);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
 
-    /* GL_RGBA8 = 0x8058, internalformat for TexStorageMem2DEXT */
-    fn_glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, 0x8058, w, h, mem, 0);
-
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    /* Memory object can be deleted after texture storage is allocated */
+    /* Memory object can be deleted after texture storage is allocated.
+     * The texture retains its own reference to the imported memory. */
     fn_glDeleteMemoryObjectsEXT(1, &mem);
 
-    IDK_LOG("comp", "GL dmabuf import OK: %ux%u tex=%u\n", w, h, tex);
+    IDK_LOG("comp", "GL dmabuf import OK (MangoHud-style): %ux%u tex=%u fourcc=0x%x\n",
+            w, h, tex, fourcc);
     return tex;
 }
 
@@ -241,8 +465,26 @@ static struct timespec g_last_resize_ts = {0};
 static struct timespec g_last_frame_ts = {0};
 
 void idk_compositor_egl_notify_resize(int w, int h) {
-    idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
-                           &g_last_resize_ts, w, h, "comp");
+    bool changed = idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
+                                          &g_last_resize_ts, w, h, "comp");
+    if (changed) {
+        /* Game viewport changed — invalidate ALL cached DMABUF textures.
+         * Stale EGLImage/fd from pre-resize frames can render as black
+         * or garbage if Qt RHI rebuilds its render-target texture with
+         * new dimensions/modifier. Forcing fresh import on next frame. */
+        for (int i = 0; i < 2; i++) {
+            if (g_tex[i]) {
+                glDeleteTextures(1, &g_tex[i]);
+                g_tex[i] = 0;
+            }
+            release_dmabuf_backing(i);
+            g_tex_w[i] = 0;
+            g_tex_h[i] = 0;
+        }
+        g_has_frame = false;
+        g_tex_idx = 0;
+        IDK_LOG("comp", "resize: invalidated DMABUF texture cache\n");
+    }
 }
 
 typedef void* GLeglImage;
@@ -421,63 +663,50 @@ int idk_compositor_egl_render(void) {
             processed = 1;
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
-            /* DMABUF frame — try EGL first, then GL_EXT_memory_object (GLX).
-             * Under GLX (e.g. glxgears), there's no EGL display, so
-             * eglCreateImageKHR can't work. Fall back to GL_EXT_memory_object
-             * which works with any GL context (GLX or EGL). */
+            /* DMABUF frame — try two import paths:
+             *   1. EGL (eglCreateImageKHR + glEGLImageTargetTexStorageEXT)
+             *      for EGL apps (host has current EGL display).
+             *   2. GL_EXT_memory_object (MangoHud-style, OPAQUE_FD trick)
+             *      for GLX apps (no current EGL display). Works on Mesa.
+             * If both fail, reject with ACK=1 → webview falls back to SHM. */
 
-            /* Ensure EGL functions are resolved before checking display.
-             * resolve_egl_functions() is lazy (called once, cached). */
+            /* Ensure EGL functions are resolved. */
             if (!fn_eglGetCurrentDisplay) {
                 resolve_egl_functions();
-            }
-
-            EGLDisplay check_dpy = EGL_NO_DISPLAY;
-            if (fn_eglGetCurrentDisplay) {
-                check_dpy = fn_eglGetCurrentDisplay();
             }
 
             GLuint tex = 0;
             EGLImageKHR img = 0;
             int fd_consumed = 0;  /* set if GL driver took fd ownership */
 
-            if (check_dpy != EGL_NO_DISPLAY) {
-                /* EGL path — import via eglCreateImageKHR */
-                tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                             hdr.stride, hdr.fourcc,
-                                             hdr.modifier, &img);
-            }
+            /* Try EGL path first (works for EGL apps via current display) */
+            tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                         hdr.stride, hdr.fourcc,
+                                         hdr.modifier, &img);
 
             if (tex == 0) {
-                /* EGL failed or unavailable — try GL_EXT_memory_object */
+                /* EGL path failed (likely GLX host with no current display).
+                 * Try GL_EXT_memory_object MangoHud-style fallback. */
                 tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                            hdr.stride);
+                                            hdr.stride, hdr.fourcc);
                 if (tex) {
-                    /* GL driver consumed the fd — don't close it */
-                    fd_consumed = 1;
+                    /* GL_EXT_memory_object dup'd the fd internally (driver
+                     * owns the dup'd fd). Original dmabuf_fd is no longer
+                     * needed — close it now. */
+                    close(dmabuf_fd);
+                    fd_consumed = 0;  /* fd already closed, don't track */
                 }
+            } else {
+                /* EGL path: eglCreateImageKHR kept fd alive via EGLImage,
+                 * so original dmabuf_fd must be kept open (tracked for cleanup). */
+                fd_consumed = 1;
             }
 
             if (tex == 0) {
-                /* Both EGL and GL_EXT_memory_object failed.
-                 * If EGL was unavailable entirely (GLX-only), reject DMABUF
-                 * so webview falls back to SHM. If EGL was available but
-                 * import failed (transient), drop frame and retry. */
-                if (check_dpy == EGL_NO_DISPLAY && !g_gl_mem_available) {
-                    /* No EGL + no GL_EXT_memory_object — can't import DMABUF at all */
-                    IDK_LOG("comp", "no EGL display + no GL_EXT_memory_object — rejecting DMABUF, forcing SHM\n");
-                    close(dmabuf_fd);
-                    processed = -1;  /* ACK=1 → webview falls back to SHM */
-                } else {
-                    /* Transient failure — drop frame, ACK=0 to retry */
-                    IDK_LOG("comp", "DMABUF import failed (transient) — dropping frame\n");
-                    if (img && fn_eglDestroyImageKHR) {
-                        EGLDisplay dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
-                        if (dpy != EGL_NO_DISPLAY) fn_eglDestroyImageKHR(dpy, img);
-                    }
-                    close(dmabuf_fd);
-                    processed = 1;
-                }
+                /* Both paths failed — reject, force SHM */
+                IDK_LOG("comp", "DMABUF import failed (EGL + GL_EXT_memory_object) — rejecting, forcing SHM\n");
+                close(dmabuf_fd);
+                processed = -1;  /* ACK=1 → webview falls back to SHM */
             } else {
                 int back = 1 - g_tex_idx;
                 /* Replacing previous slot: delete its texture AND any
@@ -487,7 +716,9 @@ int idk_compositor_egl_render(void) {
                 /* Install new texture + keep its backing alive. */
                 g_tex[back] = tex;
                 g_tex_img[back] = img;
-                g_tex_dmabuf_fd[back] = fd_consumed ? -1 : dmabuf_fd;  /* -1 if GL consumed fd */
+                /* For EGL path: keep fd open (EGLImage references it).
+                 * For GL_EXT_memory_object path: close fd (driver dup'd it). */
+                g_tex_dmabuf_fd[back] = fd_consumed ? dmabuf_fd : -1;
                 g_tex_w[back] = (GLsizei)hdr.width;
                 g_tex_h[back] = (GLsizei)hdr.height;
                 g_tex_idx = back;
@@ -529,12 +760,20 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
+    /* Determine display: prefer the host's current EGL display (for EGL apps).
+     * For GLX apps (no current EGL display), the caller should fall back to
+     * gl_dmabuf_to_texture (GL_EXT_memory_object MangoHud-style path).
+     * EGLImage created on a separate compositor EGLDisplay cannot be bound
+     * to a texture in the host's GLX context (Mesa driver crashes inside
+     * glEGLImageTargetTexStorageEXT when the EGLImage's display doesn't
+     * match the current context's display). */
     EGLDisplay egl_dpy = EGL_NO_DISPLAY;
     if (fn_eglGetCurrentDisplay) {
         egl_dpy = fn_eglGetCurrentDisplay();
     }
     if (egl_dpy == EGL_NO_DISPLAY) {
-        IDK_ERR("comp", "no current EGL display\n");
+        /* GLX host — caller handles via gl_dmabuf_to_texture fallback */
+        IDK_LOG("comp", "egl_dmabuf_to_texture: no current EGL display (GLX host?)\n");
         return 0;
     }
 
@@ -575,14 +814,18 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
 
     if (img == EGL_NO_IMAGE_KHR) {
-        IDK_ERR("comp", "eglCreateImageKHR failed: 0x%04X\n",
-                (unsigned int)(fn_eglGetError ? fn_eglGetError() : 0));
+        IDK_ERR("comp", "eglCreateImageKHR failed: 0x%04X (dpy=%p)\n",
+                (unsigned int)(fn_eglGetError ? fn_eglGetError() : 0),
+                (void*)egl_dpy);
         return 0;
     }
 
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
+    IDK_LOG("comp", "egl_dmabuf_to_texture: glGenTextures tex=%u (dpy=%p host_dpy=%p)\n",
+            tex, (void*)egl_dpy,
+            (void*)(fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : NULL));
 
     /* Resolve EGL image binding functions up front */
     if (!fn_glEGLImageTargetTexture2DOES) {
@@ -610,33 +853,40 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
-    /* TexStorageEXT first (desktop GL), fall back to Texture2DOES (GLES) */
+    /* TexStorageEXT first (desktop GL — proper EGL_image_storage path),
+     * fall back to Texture2DOES (GLES-compatible but may crash on some
+     * desktop GL drivers — only use as last resort). */
     GLboolean ok = GL_FALSE;
     GLenum err = GL_NO_ERROR;
     static int s_texstorage_success_logged = 0;
+    static int s_texstorage_failed = 0;
 
     if (fn_glEGLImageTargetTexStorageEXT) {
+        while (glGetError() != GL_NO_ERROR) {}  /* drain */
         fn_glEGLImageTargetTexStorageEXT(GL_TEXTURE_2D, (GLeglImage)img, NULL);
         err = glGetError();
         if (err == GL_NO_ERROR) {
             ok = GL_TRUE;
-            /* Log success only once to avoid per-frame spam */
             if (!s_texstorage_success_logged) {
                 IDK_LOG("comp", "EGL image bound via TexStorageEXT (will not re-log)\n");
                 s_texstorage_success_logged = 1;
             }
         } else {
+            s_texstorage_failed = 1;
             IDK_LOG("comp", "TexStorageEXT failed (0x%04X), trying Texture2DOES\n", err);
         }
     }
 
+    /* Texture2DOES fallback — only if TexStorageEXT unavailable or failed.
+     * On desktop GL, glEGLImageTargetTexture2DOES may not work correctly
+     * (it's a GLES extension); only use if we have no better option. */
     if (!ok && fn_glEGLImageTargetTexture2DOES) {
-        while (glGetError() != GL_NO_ERROR) {}
+        while (glGetError() != GL_NO_ERROR) {}  /* drain */
         fn_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImage)img);
         err = glGetError();
         if (err == GL_NO_ERROR) {
             ok = GL_TRUE;
-            IDK_LOG("comp", "EGL image bound via Texture2DOES\n");
+            IDK_LOG("comp", "EGL image bound via Texture2DOES (fallback)\n");
         }
     }
     if (err != GL_NO_ERROR) {
@@ -645,8 +895,16 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 
     if (!ok || err != GL_NO_ERROR) {
         glDeleteTextures(1, &tex);
-        fn_eglDestroyImageKHR(egl_dpy, img);
+        if (fn_eglDestroyImageKHR) fn_eglDestroyImageKHR(egl_dpy, img);
         return 0;
+    }
+
+    /* If Texture2DOES fallback was used, set TEXTURE_IMMUTABLE_FORMAT=0
+     * via glTexParameteri to avoid driver confusion on subsequent binds. */
+    if (s_texstorage_failed && !s_texstorage_success_logged) {
+        /* One-time warning */
+        IDK_LOG("comp", "WARNING: using Texture2DOES fallback (TexStorageEXT failed) — "
+                "texture may not be stable across GL contexts\n");
     }
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
