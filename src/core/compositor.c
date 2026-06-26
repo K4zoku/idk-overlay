@@ -367,12 +367,12 @@ int idk_compositor_render(void) {
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
             /* DMABUF frame — import via EGL.
-             * fourcc is no longer in the header; the GL compositor doesn't
-             * need it (eglCreateImage derives format from the dmabuf fd).
-             * Pass stride + modifier from the new header. */
+             * fourcc from header tells EGL the pixel format (ABGR8888,
+             * ARGB8888, etc). Without it, EGL can't match the dmabuf
+             * layout and returns EGL_BAD_MATCH (0x3003). */
             EGLImageKHR img = 0;
             tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                         hdr.stride, 0,
+                                         hdr.stride, hdr.fourcc,
                                          hdr.modifier, &img);
             if (tex == 0 || img == 0) {
                 /* Transient failure (e.g. Qt RHI reallocated the texture

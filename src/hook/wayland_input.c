@@ -550,8 +550,9 @@ static void send_capture_state(uint32_t capture) {
 static void send_repeat_info(void) {
     idk_input_event_t ev = { 0 };
     ev.type = IDK_INPUT_REPEAT;
-    ev.u.repeat.rate  = (uint16_t)g_repeat_rate;   /* cps */
-    ev.u.repeat.delay = (uint16_t)g_repeat_delay;  /* ms */
+    ev.u.repeat.rate  = (uint16_t)g_repeat_rate;
+    ev.u.repeat.delay = (uint16_t)g_repeat_delay;
+    ev.u.repeat._p1 = 0;
     send_event_to_webview(&ev);
 }
 
@@ -757,6 +758,7 @@ static void wptr_motion(void *d, struct wl_pointer *p, uint32_t time,
         ev.time   = time;
         ev.u.motion.x = g_cursor_x;
         ev.u.motion.y = g_cursor_y;
+        ev.u.motion._p1 = 0;
         ev.mods   = (uint16_t)g_mods;
         ev.flags  = IDK_INPUT_FLAG_CAPTURE;
         send_event_to_webview(&ev);
@@ -782,6 +784,8 @@ static void wptr_button(void *d, struct wl_pointer *p, uint32_t serial,
         idk_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_BUTTON;
         ev.time   = time;
+        ev.u.btn.x = g_cursor_x;
+        ev.u.btn.y = g_cursor_y;
         ev.u.btn.button = button;
         ev.flags  = state ? IDK_INPUT_FLAG_PRESS : 0;
         ev.flags |= IDK_INPUT_FLAG_CAPTURE;
@@ -808,6 +812,7 @@ static void wptr_axis(void *d, struct wl_pointer *p, uint32_t time,
             ev.u.axis.dy = WL_FIXED_TO_INT(value);
         else
             ev.u.axis.dx = WL_FIXED_TO_INT(value);
+        ev.u.axis._p1 = 0;
         ev.mods   = (uint16_t)g_mods;
         ev.flags  = IDK_INPUT_FLAG_CAPTURE;
         send_event_to_webview(&ev);
@@ -962,6 +967,7 @@ static void wkb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
         ev.time      = time;
         ev.u.key.keycode = key;
         ev.u.key.keysym = keysym;
+        ev.u.key._p1 = 0;
         ev.flags     = state ? IDK_INPUT_FLAG_PRESS : 0;
         ev.flags    |= IDK_INPUT_FLAG_CAPTURE;
         ev.mods      = (uint16_t)g_mods;

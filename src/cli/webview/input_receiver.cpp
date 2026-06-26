@@ -206,65 +206,40 @@ void InputReceiver::onReadyRead()
     while (true) {
         ssize_t n = ::read(m_fd, &ev, sizeof(ev));
         if (n == (ssize_t)sizeof(ev)) {
-            /* No magic/checksum in new protocol — just validate type range. */
             if (ev.type < IDK_INPUT_KEY || ev.type > IDK_INPUT_REPEAT) {
                 closeFd();
                 return;
             }
 
-            InputEvent ie;
-            ie.type    = ev.type;
-            ie.flags   = ev.flags;
-            ie.mods    = ev.mods;
-            ie.time    = ev.time;
-            /* Extract union payload based on type */
-            ie.keycode = ev.u.key.keycode;
-            ie.keysym  = ev.u.key.keysym;
-            ie.button  = ev.u.btn.button;
-            ie.x       = ev.u.motion.x;
-            ie.y       = ev.u.motion.y;
-            ie.dx      = ev.u.axis.dx;
-            ie.dy      = ev.u.axis.dy;
-            ie.rate    = ev.u.repeat.rate;
-            ie.delay   = ev.u.repeat.delay;
-
             bool nowCaptured = (ev.flags & IDK_INPUT_FLAG_CAPTURE) != 0;
             if (nowCaptured != m_captureState) {
                 m_captureState = nowCaptured;
                 m_focusSent = false;
-                /* Stop key repeat when capture goes OFF */
                 if (!nowCaptured)
                     stopRepeatTimer();
                 emit inputCaptureChanged(nowCaptured);
                 IDK_LOG("input-rx", "capture %s\n", nowCaptured ? "ENABLED" : "DISABLED");
-                /* When capture goes ON, give Chromium focus so subsequent
-                 * key events reach the page. (focusProxy may not be ready
-                 * yet if the page is still loading — we retry below.) */
                 if (nowCaptured) sendFocusIn();
             }
 
-            /* Lazy retry: if page finished loading after capture-on, push
-             * focus as soon as focusProxy becomes available. */
             if (nowCaptured && !m_focusSent)
                 sendFocusIn();
 
-            emit eventReceived(ie);
+            emit eventReceived(ev);
 
             switch (ev.type) {
             case IDK_INPUT_KEY:
-                if (ie.keycode != 0)
-                    injectKeyboardEvent(ie);
+                if (ev.u.key.keycode != 0)
+                    injectKeyboardEvent(ev);
                 break;
             case IDK_INPUT_BUTTON:
             case IDK_INPUT_MOTION:
             case IDK_INPUT_AXIS:
-                injectMouseEvent(ie);
+                injectMouseEvent(ev);
                 break;
             case IDK_INPUT_REPEAT:
-                /* wl_keyboard.repeat_info from compositor:
-                 * rate = cps, delay = ms before first repeat */
-                m_repeatRate = ie.rate > 0 ? ie.rate : 25;
-                m_repeatDelay = ie.delay > 0 ? ie.delay : 500;
+                m_repeatRate = ev.u.repeat.rate > 0 ? ev.u.repeat.rate : 25;
+                m_repeatDelay = ev.u.repeat.delay > 0 ? ev.u.repeat.delay : 500;
                 IDK_LOG("input-rx", "repeat info: rate=%d cps delay=%d ms\n",
                         m_repeatRate, m_repeatDelay);
                 break;
@@ -286,24 +261,21 @@ void InputReceiver::onReadyRead()
 
 /* ─── Keyboard ─────────────────────────────────────────────────────────── */
 
-void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
+void InputReceiver::injectKeyboardEvent(const idk_input_event_t &ev)
 {
     if (!m_webview) return;
     QWidget *fp = focusProxy();
     if (!fp) return;
 
-    int qtKey = keysymToQtKey(ev.keysym);
+    int qtKey = keysymToQtKey(ev.u.key.keysym);
     if (!qtKey) return;
 
     Qt::KeyboardModifiers mods = idkModsToQt(ev.mods);
 
-    /* For printable ASCII, attach the character as text so Chromium inserts
-     * it into the focused input field. The keysym from xkb already reflects
-     * the current shift/altgr state (uppercase, etc). */
     QString text;
-    if (ev.keysym >= 0x20 && ev.keysym < 0x7f)
-        text = QString(QChar((uint)ev.keysym));
-    else if (ev.keysym == 0xff0d)
+    if (ev.u.key.keysym >= 0x20 && ev.u.key.keysym < 0x7f)
+        text = QString(QChar((uint)ev.u.key.keysym));
+    else if (ev.u.key.keysym == 0xff0d)
         text = QStringLiteral("\r");
 
     quint64 t = nowMs();
@@ -314,19 +286,14 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
         p.setTimestamp(t);
         qApp->sendEvent(fp, &p);
 
-        /* Start repeat timer for this key (unless it's a modifier or
-         * other non-repeatable key). Wayland repeat is client-side,
-         * and since we swallowed the press from the game, the game's
-         * SDL3 repeat timer never starts — we must do it ourselves. */
-        if (ev.keycode != 0 && m_captureState)
-            startRepeatTimer(ev.keycode, ev.keysym, ev.mods, text);
+        if (ev.u.key.keycode != 0 && m_captureState)
+            startRepeatTimer(ev.u.key.keycode, ev.u.key.keysym, ev.mods, text);
     } else {
         QKeyEvent r(QEvent::KeyRelease, qtKey, mods, text, /*autorepeat=*/false);
         r.setTimestamp(t);
         qApp->sendEvent(fp, &r);
 
-        /* Stop any active repeat for this key */
-        if (m_repeatKeycode == ev.keycode)
+        if (m_repeatKeycode == ev.u.key.keycode)
             stopRepeatTimer();
     }
 }
@@ -334,7 +301,7 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
 /* ─── Key repeat ───────────────────────────────────────────────────────── */
 
 void InputReceiver::startRepeatTimer(uint32_t keycode, uint32_t keysym,
-                                      uint32_t mods, const QString &text)
+                                      uint16_t mods, const QString &text)
 {
     if (!m_repeatTimer) {
         m_repeatTimer = new QTimer(this);
@@ -401,16 +368,29 @@ void InputReceiver::onRepeatTimeout()
 
 /* ─── Mouse ─────────────────────────────────────────────────────────────── */
 
-void InputReceiver::injectMouseEvent(const InputEvent &ev)
+void InputReceiver::injectMouseEvent(const idk_input_event_t &ev)
 {
     if (!m_webview) return;
     QWidget *fp = focusProxy();
     if (!fp) return;
 
-    m_mouseX = ev.x;
-    m_mouseY = ev.y;
+    int x, y;
+    if (ev.type == IDK_INPUT_BUTTON) {
+        x = ev.u.btn.x;
+        y = ev.u.btn.y;
+    } else if (ev.type == IDK_INPUT_MOTION) {
+        x = ev.u.motion.x;
+        y = ev.u.motion.y;
+    } else {
+        /* AXIS — use last known mouse position */
+        x = m_mouseX;
+        y = m_mouseY;
+    }
+
+    m_mouseX = x;
+    m_mouseY = y;
     quint64 t = nowMs();
-    QPointF local(ev.x, ev.y);
+    QPointF local(x, y);
 
     switch (ev.type) {
     case IDK_INPUT_MOTION: {
@@ -422,9 +402,9 @@ void InputReceiver::injectMouseEvent(const InputEvent &ev)
     }
     case IDK_INPUT_BUTTON: {
         Qt::MouseButton sqBtn;
-        if (ev.button == 0x110)      sqBtn = Qt::LeftButton;
-        else if (ev.button == 0x111) sqBtn = Qt::RightButton;
-        else if (ev.button == 0x112) sqBtn = Qt::MiddleButton;
+        if (ev.u.btn.button == 0x110)      sqBtn = Qt::LeftButton;
+        else if (ev.u.btn.button == 0x111) sqBtn = Qt::RightButton;
+        else if (ev.u.btn.button == 0x112) sqBtn = Qt::MiddleButton;
         else                          return;
 
         bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
@@ -452,7 +432,7 @@ void InputReceiver::injectMouseEvent(const InputEvent &ev)
  * Qt::NoScrollPhase does NOT trigger the default scroll action. We therefore
  * emit a Begin → Update → End burst for every axis event so the renderer's
  * input router commits the scroll consistently. */
-void InputReceiver::injectWheelEvent(const InputEvent &ev)
+void InputReceiver::injectWheelEvent(const idk_input_event_t &ev)
 {
     if (!m_webview) return;
     QWidget *fp = focusProxy();
@@ -460,13 +440,9 @@ void InputReceiver::injectWheelEvent(const InputEvent &ev)
 
     QPointF local(m_mouseX, m_mouseY);
 
-    /* Convert wayland axis units (~10 per wheel notch on most compositors)
-     * to Qt angle ticks (120 per notch). Sign matches the JS path we are
-     * replacing: scrollBy(0, dy * 20) which scrolls down for positive dy.
-     * angleDelta positive = scroll up, so negate. */
     const int scale = 12;
-    int ax = -ev.dx * scale;
-    int ay = -ev.dy * scale;
+    int ax = -ev.u.axis.dx * scale;
+    int ay = -ev.u.axis.dy * scale;
 
     auto post = [&](Qt::ScrollPhase phase, int dy, int dx = 0) {
         QWheelEvent e(local, local, QPoint(0, 0), QPoint(dx, dy),

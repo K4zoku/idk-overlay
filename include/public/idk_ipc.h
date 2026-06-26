@@ -42,7 +42,7 @@ extern "C" {
 #define IDK_IPC_SOCKNAME_MAX 108    /* AF_UNIX path max */
 #define IDK_IPC_SEND_BUF_SIZE 4096  /* CMSG space for 1 fd */
 
-/* ── Frame header (24 bytes, sent with 1 fd via SCM_RIGHTS) ────────────── */
+/* ── Frame header (28 bytes, sent with 1 fd via SCM_RIGHTS) ────────────── */
 
 #define IDK_FRAME_FLAG_VISIBLE  0x01  /* bit0: overlay visible */
 #define IDK_FRAME_FLAG_DMABUF   0x02  /* bit1: 1=dmabuf fd, 0=SHM fd */
@@ -53,17 +53,18 @@ typedef struct idk_frame_header {
     uint32_t width;     /* offset  8 — frame width in pixels                  */
     uint32_t height;    /* offset 12 — frame height in pixels                 */
     uint32_t stride;    /* offset 16 — bytes per row (DMABUF), 0=SHM          */
-    uint8_t  flags;     /* offset 20 — IDK_FRAME_FLAG_*                       */
-    uint8_t  _pad[3];   /* offset 21 — reserved, must be 0                    */
-} idk_frame_header_t;   /* total 24 bytes                                     */
+    uint32_t fourcc;    /* offset 20 — DRM fourcc (DMABUF), 0=SHM             */
+    uint8_t  flags;     /* offset 24 — IDK_FRAME_FLAG_*                       */
+    uint8_t  _pad[3];   /* offset 25 — reserved, must be 0                    */
+} idk_frame_header_t;   /* total 28 bytes                                     */
 #pragma pack(pop)
 
 #ifdef __cplusplus
-static_assert(sizeof(idk_frame_header_t) == 24,
-              "idk_frame_header_t must be 24 bytes");
+static_assert(sizeof(idk_frame_header_t) == 28,
+              "idk_frame_header_t must be 28 bytes");
 #else
-_Static_assert(sizeof(idk_frame_header_t) == 24,
-               "idk_frame_header_t must be 24 bytes");
+_Static_assert(sizeof(idk_frame_header_t) == 28,
+               "idk_frame_header_t must be 28 bytes");
 #endif
 
 /* ── Input event (16 bytes, separate socket, no fd passing) ────────────── */
@@ -106,23 +107,22 @@ typedef struct idk_input_event {
     uint8_t  flags;  /* offset  1 — IDK_INPUT_FLAG_*                         */
     uint16_t mods;   /* offset  2 — IDK_MOD_* bitmask                        */
     uint32_t time;   /* offset  4 — wayland timestamp (ms)                   */
-    union {          /* offset  8, size 8                                    */
-        struct { uint32_t keycode; uint32_t keysym; } key;     /* KEY       */
-        struct { uint32_t button;  uint32_t _pad;    } btn;    /* BUTTON    */
-        struct { int32_t  x;       int32_t  y;       } motion; /* MOTION    */
-        struct { int32_t  dx;      int32_t  dy;      } axis;   /* AXIS      */
-        struct { uint16_t rate;    uint16_t delay;
-                 uint32_t _pad;                     } repeat; /* REPEAT    */
+    union {          /* offset  8, size 12                                   */
+        struct { uint32_t keycode; uint32_t keysym; uint32_t _p1; } key;     /* KEY    */
+        struct { int32_t  x;       int32_t  y; uint32_t button; } btn;      /* BUTTON: x,y first, then button */
+        struct { int32_t  x;       int32_t  y; uint32_t _p1;  } motion;     /* MOTION */
+        struct { int32_t  dx;      int32_t  dy; uint32_t _p1; } axis;       /* AXIS   */
+        struct { uint16_t rate;    uint16_t delay; uint32_t _p1;            } repeat;/* REPEAT */
     } u;
-} idk_input_event_t;  /* total 16 bytes                                       */
+} idk_input_event_t;  /* total 20 bytes                                       */
 #pragma pack(pop)
 
 #ifdef __cplusplus
-static_assert(sizeof(idk_input_event_t) == 16,
-              "idk_input_event_t must be 16 bytes");
+static_assert(sizeof(idk_input_event_t) == 20,
+              "idk_input_event_t must be 20 bytes");
 #else
-_Static_assert(sizeof(idk_input_event_t) == 16,
-               "idk_input_event_t must be 16 bytes");
+_Static_assert(sizeof(idk_input_event_t) == 20,
+               "idk_input_event_t must be 20 bytes");
 #endif
 
 /* ── IPC socket management ─────────────────────────────────────────────── */

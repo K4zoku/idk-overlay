@@ -31,6 +31,7 @@ static void build_frame_hdr(const idk_fs_frame_t *frame,
     hdr->width    = frame->width;
     hdr->height   = frame->height;
     hdr->stride   = frame->stride;
+    hdr->fourcc   = frame->fourcc;
     hdr->flags    = frame->flags;
     hdr->_pad[0]  = 0;
     hdr->_pad[1]  = 0;

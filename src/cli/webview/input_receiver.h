@@ -5,6 +5,8 @@
 #include <QString>
 #include <QTimer>
 
+#include "public/idk_ipc.h"  /* idk_input_event_t — same struct as wire protocol */
+
 class QIODevice;
 class QWebEngineView;
 class QWidget;
@@ -25,7 +27,7 @@ public:
 
 signals:
     void inputCaptureChanged(bool captured);
-    void eventReceived(const struct InputEvent &ev);
+    void eventReceived(const idk_input_event_t &ev);
 
 private slots:
     void onReadyRead();
@@ -33,12 +35,12 @@ private slots:
 
 private:
     void closeFd();
-    void injectKeyboardEvent(const struct InputEvent &ev);
-    void injectMouseEvent(const struct InputEvent &ev);
-    void injectWheelEvent(const struct InputEvent &ev);
+    void injectKeyboardEvent(const idk_input_event_t &ev);
+    void injectMouseEvent(const idk_input_event_t &ev);
+    void injectWheelEvent(const idk_input_event_t &ev);
     QWidget *focusProxy();                  /* lazily resolved */
     void sendFocusIn();
-    void startRepeatTimer(uint32_t keycode, uint32_t keysym, uint32_t mods,
+    void startRepeatTimer(uint32_t keycode, uint32_t keysym, uint16_t mods,
                           const QString &text);
     void stopRepeatTimer();
 
@@ -63,23 +65,6 @@ private:
     bool m_repeatArmed = false;        /* true = initial delay, false = repeating */
     uint32_t m_repeatKeycode = 0;
     uint32_t m_repeatKeysym = 0;
-    uint32_t m_repeatMods = 0;
+    uint16_t m_repeatMods = 0;
     QString m_repeatText;
-};
-
-struct InputEvent {
-    quint8  type;
-    quint8  flags;
-    quint16 mods;
-    quint32 time;
-    /* Payload (8 bytes) — depends on type */
-    quint32 keycode;   /* KEY */
-    quint32 keysym;    /* KEY */
-    quint32 button;    /* BUTTON */
-    qint32  x;         /* MOTION */
-    qint32  y;         /* MOTION */
-    qint32  dx;        /* AXIS */
-    qint32  dy;        /* AXIS */
-    quint16 rate;      /* REPEAT */
-    quint16 delay;     /* REPEAT */
 };

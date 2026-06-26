@@ -1075,11 +1075,8 @@ int idk_vk_compositor_render(void) {
             processed = 1;
         } else {
             /* DMABUF frame — stash for import in render_overlay.
-             * fourcc is no longer in the header; the VK compositor's
-             * drm_fourcc_to_vk_format() defaults to R8G8B8A8_UNORM
-             * (Qt RHI's GL_RGBA8 default), which is correct for all
-             * current use cases. If multi-format support is needed later,
-             * add a fourcc field to the header. */
+             * fourcc from header tells the VK compositor which VkFormat
+             * to use for VkImage creation. */
             if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
                 close(vk_dmabuf_pending_fd);
             }
@@ -1087,7 +1084,7 @@ int idk_vk_compositor_render(void) {
             vk_dmabuf_pending_w = hdr.width;
             vk_dmabuf_pending_h = hdr.height;
             vk_dmabuf_pending_stride = hdr.stride;
-            vk_dmabuf_pending_fourcc = 0;  /* default: ABGR8888 → R8G8B8A8 */
+            vk_dmabuf_pending_fourcc = hdr.fourcc;
             vk_dmabuf_pending_modifier = hdr.modifier;
             vk_has_dmabuf_pending = 1;
             vk_has_frame = 1;

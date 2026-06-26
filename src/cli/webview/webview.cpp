@@ -1037,6 +1037,7 @@ bool WebView::tryExportDMABufOpenGL()
         frame.flags   = IDK_FRAME_FLAG_VISIBLE;  /* DMABUF bit set by idk_fs_send_dma_buf */
         frame.nfd     = 1;
         frame.stride  = m_dmaExportStride;
+        frame.fourcc  = m_dmaExportFourcc;
         frame.modifier = m_dmaExportModifier;
 
         int fds_arr[4] = { sendFd, -1, -1, -1 };
@@ -1414,6 +1415,7 @@ bool WebView::tryExportDMABufVulkan()
     frame.flags   = IDK_FRAME_FLAG_VISIBLE;  /* DMABUF bit set by send_dma_buf */
     frame.nfd     = 1;
     frame.stride  = w * 4;
+    frame.fourcc  = 0x34324241;  /* DRM_FORMAT_ABGR8888 (Qt RHI GL_RGBA8 default) */
     /* modifier=0 (linear) for Vulkan staging buffer export */
 
     int fds[4] = {dmabufFd, -1, -1, -1};

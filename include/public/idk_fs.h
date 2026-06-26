@@ -42,6 +42,7 @@ typedef struct idk_fs_frame {
     uint32_t width;     /* Frame width in pixels                              */
     uint32_t height;    /* Frame height in pixels                             */
     uint32_t stride;    /* Stride in bytes (DMABUF) or 0 (SHM)               */
+    uint32_t fourcc;    /* DRM fourcc (DMABUF) or 0 (SHM)                    */
     uint8_t  flags;     /* IDK_FRAME_FLAG_* bitmask                          */
     uint8_t  nfd;       /* Number of fds to send (1 for single-plane)        */
 } idk_fs_frame_t;
