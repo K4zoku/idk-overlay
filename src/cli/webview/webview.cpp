@@ -882,13 +882,11 @@ bool WebView::tryExportDMABufOpenGL()
     typedef void (*PFN_glGenFramebuffers)(GLsizei, GLuint*);
     typedef void (*PFN_glBindFramebuffer)(GLenum, GLuint);
     typedef void (*PFN_glFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
-    typedef GLenum (*PFN_glCheckFramebufferStatus)(GLenum);
     typedef void (*PFN_glBlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
     typedef void (*PFN_glDeleteFramebuffers)(GLsizei, const GLuint*);
     static PFN_glGenFramebuffers fn_glGenFramebuffers = nullptr;
     static PFN_glBindFramebuffer fn_glBindFramebuffer = nullptr;
     static PFN_glFramebufferTexture2D fn_glFramebufferTexture2D = nullptr;
-    static PFN_glCheckFramebufferStatus fn_glCheckFramebufferStatus = nullptr;
     static PFN_glBlitFramebuffer fn_glBlitFramebuffer = nullptr;
     static PFN_glDeleteFramebuffers fn_glDeleteFramebuffers = nullptr;
     if (!fn_glGenFramebuffers) {
@@ -898,7 +896,6 @@ bool WebView::tryExportDMABufOpenGL()
             fn_glGenFramebuffers = (PFN_glGenFramebuffers)dlsym(lib, "glGenFramebuffers");
             fn_glBindFramebuffer = (PFN_glBindFramebuffer)dlsym(lib, "glBindFramebuffer");
             fn_glFramebufferTexture2D = (PFN_glFramebufferTexture2D)dlsym(lib, "glFramebufferTexture2D");
-            fn_glCheckFramebufferStatus = (PFN_glCheckFramebufferStatus)dlsym(lib, "glCheckFramebufferStatus");
             fn_glBlitFramebuffer = (PFN_glBlitFramebuffer)dlsym(lib, "glBlitFramebuffer");
             fn_glDeleteFramebuffers = (PFN_glDeleteFramebuffers)dlsym(lib, "glDeleteFramebuffers");
         }

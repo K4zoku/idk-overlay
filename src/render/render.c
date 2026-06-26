@@ -38,22 +38,6 @@
 
 /* ── Overlay management ──────────────────────────────────────────────── */
 
-#define RENDER_MAX_OVERLAYS 16
-
-typedef struct render_overlay {
-    uint8_t  id;             /* Overlay ID (1-based) */
-    uint32_t x, y;           /* Position on screen */
-    uint32_t width, height;  /* Size in pixels */
-    uint32_t pixel_size;     /* width * height * 4 */
-    uint8_t  visible;        /* 0 = hidden, 1 = visible */
-    int      fd;             /* Current frame fd (mmap'd) */
-    void    *pixels;         /* mmap'd pixel pointer */
-    uint8_t  source;         /* 0 = injected, 1 = external client */
-} render_overlay_t;
-
-static render_overlay_t g_overlays[RENDER_MAX_OVERLAYS];
-static int g_num_overlays = 0;
-
 /* ── Global state (shared with main) ─────────────────────────────────── */
 
 static const char *g_sockpath = "/tmp/idk-overlay";
@@ -104,58 +88,6 @@ static int accept_client(int server_fd) {
     struct sockaddr_un addr = { 0 };
     socklen_t addr_len = sizeof(addr);
     return accept(server_fd, (struct sockaddr *)&addr, &addr_len);
-}
-
-static int find_or_create_overlay(uint8_t id) {
-    for (int i = 0; i < g_num_overlays; i++) {
-        if (g_overlays[i].id == id) return i;
-    }
-    if (g_num_overlays >= RENDER_MAX_OVERLAYS) {
-        IDK_ERR("render", "Max overlays (%d) reached\n", RENDER_MAX_OVERLAYS);
-        return -1;
-    }
-    int idx = g_num_overlays++;
-    memset(&g_overlays[idx], 0, sizeof(render_overlay_t));
-    g_overlays[idx].id = id;
-    g_overlays[idx].fd = -1;
-    g_overlays[idx].source = 1; /* external client */
-    return idx;
-}
-
-static void update_overlay(render_overlay_t *ov, const void *info, size_t info_len,
-                           int fd) {
-    (void)info_len;
-    const idk_frame_header_t *hdr = (const idk_frame_header_t *)info;
-
-    ov->width      = hdr->width;
-    ov->height     = hdr->height;
-    ov->x          = 0;  /* position no longer in header */
-    ov->y          = 0;
-    ov->pixel_size = hdr->width * hdr->height * 4;
-    ov->visible    = (hdr->flags & IDK_FRAME_FLAG_VISIBLE) ? 1 : 0;
-
-    if (ov->fd >= 0) {
-        if (ov->pixels) {
-            munmap(ov->pixels, ov->pixel_size);
-            ov->pixels = NULL;
-        }
-        close(ov->fd);
-    }
-
-    ov->fd = fd;
-    if (ov->pixel_size > 0) {
-        ov->pixels = mmap(NULL, ov->pixel_size, PROT_READ, MAP_SHARED, fd, 0);
-        if (ov->pixels == MAP_FAILED) {
-            ov->pixels = NULL;
-            IDK_ERR("render", "mmap overlay failed: %s\n", strerror(errno));
-            return;
-        }
-    }
-
-    IDK_LOG("render",
-            "Overlay: %dx%d vis=%d src=%s\n",
-            ov->width, ov->height, ov->visible,
-            ov->source ? "client" : "injected");
 }
 
 static void process_frame(const void *info, size_t info_len, int fd) {
