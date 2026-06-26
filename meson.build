@@ -33,9 +33,10 @@ overlay_c_flags = [
 ]
 fs_c_flags = ['-D_GNU_SOURCE', '-Wall', '-Wextra', '-O2']
 
-inc = include_directories('include')
+inc = include_directories('include', 'src/shaders')
 
 vk_header_found = cc.has_header('vulkan/vulkan.h')
+vk_layer_header_found = cc.has_header('vulkan/vk_layer.h')
 if vk_header_found
     vk_test = cc.links(
         '''
@@ -48,6 +49,9 @@ if vk_header_found
     if vk_test
         add_project_arguments('-DIDK_HAVE_VULKAN', language: 'c')
         add_project_arguments('-DIDK_HAVE_VULKAN', language: 'cpp')
+        if vk_layer_header_found
+            add_project_arguments('-DIDK_HAVE_VK_LAYER', language: 'c')
+        endif
     endif
 endif
 
@@ -65,8 +69,11 @@ idk_overlay_so = library(
         'src/hook/egl_hook.c',
         'src/hook/glx_hook.c',
         'src/hook/vulkan_hook.c',
+        'src/hook/vulkan_layer.c',
         'src/hook/wayland_input.c',
         'src/core/compositor.c',
+        'src/core/compositor_common.c',
+        'src/core/compositor_vk.c',
         'src/gl/gl_loader.c',
         'src/gl/shader_loader.c',
         'src/ipc/ipc.c',
@@ -80,6 +87,18 @@ idk_overlay_so = library(
     objects: spv_o_files,
     version: '0.1',
     install: true,
+)
+
+# ── Vulkan layer manifest ─────────────────────────────────────────────
+# The JSON manifest tells the Vulkan loader about our layer.
+# The layer is only enabled when IDK_VK_LAYER=1 env is set.
+# For testing: VK_LAYER_PATH=<build_dir> IDK_VK_LAYER=1 vkcube
+vulkan_layer_json = configure_file(
+    input: 'src/hook/idk_overlay.json.in',
+    output: 'idk_overlay.json',
+    configuration: {
+        'IDK_LAYER_LIB_PATH': meson.current_build_dir() / 'libidk-overlay.so.0.1',
+    },
 )
 
 # ── CLI targets ────────────────────────────────────────────────────────

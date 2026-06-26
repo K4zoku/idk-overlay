@@ -289,10 +289,22 @@ static int install_vk_swapchain_hook(void) {
     return -1;
 }
 
+/* Forward declaration — defined in vulkan_layer.c when IDK_HAVE_VK_LAYER */
+#ifdef IDK_HAVE_VK_LAYER
+int idk_vk_layer_should_skip_syringe(void);
+#else
+static inline int idk_vk_layer_should_skip_syringe(void) { return 0; }
+#endif
+
 int idk_vulkan_init(int ipc_fd, const char *socket_path) {
     g_ipc_fd = ipc_fd;
     (void)socket_path;
     if (g_hook_installed) return 0;
+    /* Skip syringe hooks when Vulkan layer is active — avoids double-hooking */
+    if (idk_vk_layer_should_skip_syringe()) {
+        IDK_LOG("vk", "skipping syringe hooks (Vulkan layer active)\n");
+        return 0;
+    }
     return install_vk_hook();
 }
 

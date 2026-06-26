@@ -18,29 +18,18 @@
 #include "gl/gl_loader.h"        /* GL types + function pointer redirects */
 #include "gl/shader_loader.h"    /* shader compile + SPIR-V fallback */
 #include "core/compositor.h"
+#include "core/compositor_common.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-#define IDK_FRAME_TYPE_DMABUF  0
-#define IDK_FRAME_TYPE_SHM     1
+/* Frame protocol definitions are in compositor_common.h.
+ * Alias `frame_hdr` for backward compat with existing code. */
+typedef struct idk_frame_hdr frame_hdr;
+/* Fix the typo'd GL constant name used in this file. */
+#define IDK_SHM_FORMATStraight     IDK_SHM_FORMAT_STRAIGHT
 
-struct frame_hdr {
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride;       /* DMABUF: stride in bytes, SHM: unused */
-    uint32_t format;       /* DMABUF: DRM fourcc, SHM: premultiplied flag */
-    uint32_t num_planes;   /* SHM: buffer index, DMABUF: number of planes */
-    uint32_t reserved;     /* SHM: pixel byte size, DMABUF: unused */
-    uint32_t vis_type;     /* visibility (low byte) + frame type (high byte) */
-    uint32_t checksum;
-    /* Modifier follows at byte 32 (after this 32-byte header).
-     * Sent by idk_fs as uint64_t at offset 32. */
-    uint64_t modifier;
-};
-
-/* SHM format flags (stored in hdr.format for SHM frames) */
-#define IDK_SHM_FORMATStraight     0  /* RGBA8888 (non-premultiplied) */
-#define IDK_SHM_FORMAT_PREMULTIPLIED 1  /* RGBA8888_Premultiplied */
+/* IDK_FRAME_TYPE_*, struct frame_hdr (aliased above), IDK_SHM_FORMAT_*
+ * are in compositor_common.h. */
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
@@ -168,17 +157,12 @@ static uint32_t g_frame_h = 0;
 static int g_game_w = 0;
 static int g_game_h = 0;
 static bool g_size_pending = false;
+static struct timespec g_last_resize_ts = {0};
 static struct timespec g_last_frame_ts = {0};
 
 void idk_compositor_notify_resize(int w, int h) {
-    if (w < 1 || h < 1) return;
-    if (w != g_game_w || h != g_game_h) {
-        IDK_LOG("comp", "game surface resize: %dx%d -> %dx%d\n",
-                g_game_w, g_game_h, w, h);
-        g_game_w = w;
-        g_game_h = h;
-        g_size_pending = true;
-    }
+    idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
+                           &g_last_resize_ts, w, h, "comp");
 }
 
 typedef void* GLeglImage;
@@ -202,98 +186,18 @@ static char g_sock_path[512];
 
 /* Init compositor — bind socket, accept client */
 int idk_compositor_init(void) {
-    const char *env_sock = getenv("IDK_SOCKET");
-    if (env_sock && env_sock[0] != '\0') {
-        snprintf(g_sock_path, sizeof(g_sock_path), "%s", env_sock);
-    } else {
-        snprintf(g_sock_path, sizeof(g_sock_path), "/tmp/idk-overlay-%d", getpid());
-    }
-
-    {
-        struct stat st;
-        if (stat(g_sock_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
-            int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-            struct sockaddr_un addr = { .sun_family = AF_UNIX };
-            snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_sock_path);
-            if (connect(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                IDK_ERR("comp", "Another instance is alive — compositor disabled\n");
-                close(test_fd);
-                return -1;
-            }
-            close(test_fd);
-        }
-    }
-
-    unlink(g_sock_path);
-
-    g_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (g_listen_fd < 0) {
-        IDK_ERR("comp", "socket() failed: %s\n", strerror(errno));
+    if (idk_comp_sock_init(&g_listen_fd, g_sock_path, sizeof(g_sock_path), "comp") != 0) {
         return -1;
     }
-
-    int val = 1;
-    setsockopt(g_listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-
-    /* Make accept() non-blocking so init() returns immediately */
-    int flags = fcntl(g_listen_fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(g_listen_fd, F_SETFL, flags | O_NONBLOCK);
-    }
-
-    struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_sock_path);
-
-    if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        unlink(g_sock_path);
-        if (bind(g_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            if (errno == EADDRINUSE) {
-                /* Another instance owns this socket — compositor disabled */
-                IDK_ERR("comp", "Another instance owns the socket, compositor disabled\n");
-                close(g_listen_fd);
-                g_listen_fd = -1;
-                return -1;
-            }
-            IDK_ERR("comp", "bind() failed: %s\n", strerror(errno));
-            close(g_listen_fd);
-            g_listen_fd = -1;
-            return -1;
-        }
-    }
-
-    if (listen(g_listen_fd, 4) < 0) {
-        IDK_ERR("comp", "listen() failed: %s\n", strerror(errno));
-        close(g_listen_fd);
-        g_listen_fd = -1;
-        return -1;
-    }
-
-    g_client_fd = accept(g_listen_fd, NULL, NULL);
-    if (g_client_fd < 0) {
-        IDK_LOG("comp", "No client yet (fd=-1, will retry next frame, err=%s)\n",
-                strerror(errno));
-        g_client_fd = -1;
-    }
-
+    /* Try a non-blocking accept in case the webview is already waiting */
+    idk_comp_sock_accept(g_listen_fd, &g_client_fd, "comp");
     g_has_frame = false;
-
-    IDK_LOG("comp", "Listening on %s, waiting for webview client...\n", g_sock_path);
     return 0;
 }
 
 /* Non-blocking accept */
 static int accept_client(void) {
-    if (g_client_fd >= 0) return 0; /* already have a client */
-    if (g_listen_fd < 0) return -1;
-
-    struct sockaddr_un addr;
-    socklen_t addrlen = sizeof(addr);
-    int client = accept(g_listen_fd, (struct sockaddr *)&addr, &addrlen);
-    if (client >= 0) {
-        IDK_LOG("comp", "Client connected (fd=%d)\n", client);
-        g_client_fd = client;
-    }
-    return 0;
+    return idk_comp_sock_accept(g_listen_fd, &g_client_fd, "comp");
 }
 
 /* SHM → GL texture upload via glTex(Sub)Image2D */
@@ -431,26 +335,11 @@ int idk_compositor_render(void) {
     int processed = 0;
 
     while (1) {
-        struct pollfd pfd = { .fd = g_client_fd, .events = POLLIN };
-        int poll_ret = poll(&pfd, 1, 0);
-        if (poll_ret <= 0 || !(pfd.revents & POLLIN)) break;
-
-        struct frame_hdr hdr;
+        struct idk_frame_hdr hdr;
         int dmabuf_fd = -1;
-
-        char ctrl_buf[CMSG_SPACE(sizeof(int))];
-        char msg_buf[sizeof(struct frame_hdr) + 32];
-        struct iovec iov = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
-        struct msghdr msgh = {
-            .msg_iov = &iov,
-            .msg_iovlen = 1,
-            .msg_control = ctrl_buf,
-            .msg_controllen = sizeof(ctrl_buf),
-        };
-
-        ssize_t n = recvmsg(g_client_fd, &msgh, MSG_DONTWAIT);
-        if (n < (ssize_t)sizeof(struct frame_hdr)) {
-            if (n == 0) {
+        int rc = idk_comp_recv_frame(g_client_fd, &hdr, &dmabuf_fd, "comp");
+        if (rc <= 0) {
+            if (rc < 0) {
                 fprintf(stderr,
                     "[idk-comp] client disconnected (fd=%d), resetting\n",
                     g_client_fd);
@@ -460,25 +349,13 @@ int idk_compositor_render(void) {
             break;
         }
 
-        for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh); cmsg;
-             cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
-            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-                memcpy(&dmabuf_fd, CMSG_DATA(cmsg), sizeof(int));
-                break;
-            }
-        }
-
-        if (dmabuf_fd < 0) break;
-
-        memcpy(&hdr, msg_buf, sizeof(hdr));
-
         if (processed > 0) {
             close(dmabuf_fd);
             continue;
         }
 
         GLuint tex = 0;
-        uint8_t frame_type = (hdr.vis_type >> 8) & 0xFF;
+        uint8_t frame_type = idk_frame_type(&hdr);
 
         if (frame_type == IDK_FRAME_TYPE_SHM) {
             uint32_t pixel_size = hdr.reserved;
@@ -537,27 +414,13 @@ int idk_compositor_render(void) {
     }
 
     if (processed) {
-        struct {
-            uint8_t ack;
-            int32_t w;
-            int32_t h;
-        } ack_msg = {0};
-
-        ack_msg.ack = (processed < 0) ? 1 : 0;
-        if (g_size_pending && processed > 0) {
-            IDK_LOG("comp", "sending game size in ACK: %dx%d\n",
-                    g_game_w, g_game_h);
-            ack_msg.w = g_game_w;
-            ack_msg.h = g_game_h;
-            g_size_pending = false;
-        }
-
-        int flags = fcntl(g_client_fd, F_GETFL, 0);
-        if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags | O_NONBLOCK);
-        ssize_t _w = write(g_client_fd, &ack_msg, sizeof(ack_msg));
-        (void)_w;
-        if (flags >= 0) fcntl(g_client_fd, F_SETFL, flags);
-
+        uint8_t ack = (processed < 0) ? 1 : 0;
+        /* GL path: no debounce (debounce_ms=0 sends size immediately).
+         * VK path uses IDK_COMP_RESIZE_DEBOUNCE_MS. */
+        idk_comp_send_ack(g_client_fd, ack,
+                          g_game_w, g_game_h,
+                          &g_size_pending, &g_last_resize_ts,
+                          0, "comp");
         return 0;
     }
     return -1;

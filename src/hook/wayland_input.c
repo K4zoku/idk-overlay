@@ -25,6 +25,13 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
+/* Forward declaration — defined in vulkan_layer.c when IDK_HAVE_VK_LAYER */
+#ifdef IDK_HAVE_VK_LAYER
+int idk_vk_layer_is_active(void);
+#else
+static inline int idk_vk_layer_is_active(void) { return 0; }
+#endif
+
 struct wl_compositor;
 struct wl_shm;
 struct wl_buffer;
@@ -224,6 +231,7 @@ static struct wl_keyboard *g_sidecar_keyboard = NULL;
 static struct wl_pointer *g_sidecar_pointer = NULL;
 static struct wl_proxy *g_sidecar_cursor_shape_manager = NULL;
 static int g_sidecar_initialized = 0;
+static int g_sidecar_ready = 0;  /* set after roundtrip + seat bound */
 
 /* Cursor shape device */
 static struct wl_proxy *g_cursor_shape_device = NULL;
@@ -570,6 +578,24 @@ void idk_wayland_input_set_capture(int enable) {
     if (new_state == g_captured) return;
 
     g_captured = new_state;
+
+    /* In Vulkan layer mode, the sidecar queue was created on a different
+     * thread (Vulkan WSI loader thread). Creating/using cursor shape
+     * devices from the main thread crashes in wl_proxy_marshal_array_flags
+     * because libwayland is not thread-safe.
+     *
+     * Skip cursor shape device operations when in layer mode — the cursor
+     * will not be changed to crosshair, but input capture still works.
+     * TODO: Create cursor shape device on the correct thread, or use
+     * the game's wl_pointer directly for cursor operations. */
+    if (idk_vk_layer_is_active()) {
+        WLOG("set_capture(%s): skipping cursor ops (Vulkan layer mode)",
+             new_state ? "ON" : "OFF");
+        send_capture_state((uint32_t)new_state);
+        if (new_state)
+            send_repeat_info();
+        return;
+    }
 
     if (g_game_pointer_proxy) {
         sidecar_ensure_cursor_shape_device(
@@ -1539,6 +1565,16 @@ static void sidecar_registry_global(void *d, struct wl_registry *reg,
                                        (void (**)(void))&g_sidecar_seat_listener, NULL);
         }
     } else if (strcmp(iface, "wp_cursor_shape_manager_v1") == 0 && !g_sidecar_cursor_shape_manager) {
+        /* Skip cursor shape manager in Vulkan layer mode — the sidecar
+         * queue was created on a different thread (Vulkan WSI loader),
+         * and creating/using cursor shape devices from the main thread
+         * crashes in wl_proxy_marshal_array_flags (libwayland is not
+         * thread-safe). All cursor ops check g_sidecar_cursor_shape_manager
+         * and no-op if NULL. */
+        if (idk_vk_layer_is_active()) {
+            WLOG("sidecar: skipping wp_cursor_shape_manager_v1 (Vulkan layer mode)");
+            return;
+        }
         uint32_t bind_ver = ver < 2 ? ver : 2;
         g_sidecar_cursor_shape_manager = (struct wl_proxy *)my_wl_registry_bind(
             reg, name, &g_wp_cursor_shape_manager_v1_interface, bind_ver);
@@ -1601,8 +1637,17 @@ static int sidecar_init(struct wl_display *display) {
                                (void (**)(void))&g_sidecar_registry_listener, NULL);
 
     g_sidecar_initialized = 1;
-    WLOG("sidecar: initialized (seat=%p keyboard=%p)",
-         (void *)g_sidecar_seat, (void *)g_sidecar_keyboard);
+
+    /* Roundtrip to bind wl_seat and other globals.
+     * Only mark ready after roundtrip completes — dispatch_queue_pending
+     * crashes if called before the queue is fully set up. */
+    if (real_wl_display_roundtrip_queue) {
+        real_wl_display_roundtrip_queue(display, g_sidecar_queue);
+        g_sidecar_ready = 1;
+    }
+
+    WLOG("sidecar: initialized (seat=%p keyboard=%p ready=%d)",
+         (void *)g_sidecar_seat, (void *)g_sidecar_keyboard, g_sidecar_ready);
     return 0;
 }
 
@@ -1635,7 +1680,7 @@ static void sidecar_ensure_cursor_shape_device(struct wl_pointer *p) {
 static int (*orig_wl_display_dispatch_queue_pending)(struct wl_display *, struct wl_event_queue *) = NULL;
 
 void idk_wayland_input_sidecar_dispatch(void) {
-    if (!g_sidecar_initialized || !g_sidecar_display || !g_sidecar_queue) return;
+    if (!g_sidecar_ready || !g_sidecar_display || !g_sidecar_queue) return;
     if (!orig_wl_display_dispatch_queue_pending) return;
     orig_wl_display_dispatch_queue_pending(g_sidecar_display, g_sidecar_queue);
 }

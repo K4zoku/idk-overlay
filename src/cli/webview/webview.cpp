@@ -191,8 +191,30 @@ void WebView::doRenderAndSend()
                 if (read(ack_fd, &ack_msg, sizeof(ack_msg)) > 0) {
                     m_pending = false;
                     if (ack_msg.ack == 1) {
-                        IDK_LOG("webview-qt", "compositor rejected DMABUF, falling back to SHM\n");
-                        m_dmaBufFailed = true;
+                        /* Compositor rejected this frame's DMABUF. Could be
+                         * transient (e.g. first frame after resize when Qt
+                         * RHI's texture isn't fully rebuilt yet, or NVIDIA
+                         * driver hiccup on vkGetMemoryFdPropertiesKHR).
+                         * Only fall back to SHM permanently after N
+                         * CONSECUTIVE failures — a single success resets
+                         * the counter. */
+                        m_dmabufRejectCount++;
+                        if (m_dmabufRejectCount >= 5 && !m_dmaBufFailed) {
+                            IDK_LOG("webview-qt", "compositor rejected DMABUF %d times — falling back to SHM\n",
+                                    m_dmabufRejectCount);
+                            m_dmaBufFailed = true;
+                        } else if (!m_dmaBufFailed) {
+                            IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) — will retry\n",
+                                    m_dmabufRejectCount);
+                        }
+                    } else {
+                        /* ack=0: frame accepted. Reset the consecutive
+                         * failure counter — DMABUF is working. */
+                        if (m_dmabufRejectCount > 0) {
+                            IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) — counter reset\n",
+                                    m_dmabufRejectCount);
+                            m_dmabufRejectCount = 0;
+                        }
                     }
                     if (ack_msg.w > 0 && ack_msg.h > 0) {
                         IDK_LOG("webview-qt", "ACK received with game size: %dx%d\n",
@@ -363,6 +385,7 @@ void WebView::resizeForGame(int w, int h)
         m_buffer = 0;
         m_pending = false;
         m_dmaBufFailed = false;
+        m_dmabufRejectCount = 0;  /* reset on resize — allow DMABUF retry */
         if (m_heartbeat) m_heartbeat->start(50);
         if (auto *fp = focusProxy()) fp->update();
         m_resizing = false;
@@ -385,6 +408,7 @@ void WebView::resizeForGame(int w, int h)
     initMemory();
     m_pending = false;
     m_dmaBufFailed = false;
+    m_dmabufRejectCount = 0;
 
     /* Restart heartbeat to poll ACKs/resume frame delivery after resize */
     if (m_heartbeat) m_heartbeat->start(50);
@@ -830,6 +854,17 @@ bool WebView::tryExportDMABufOpenGL()
      * Tradeoff: still 1 GPU copy (vs 0 for true zero-copy which doesn't
      * work on Mesa). But no CPU involvement, no PCIe bandwidth. */
     if (m_dmaTex == 0 || m_dmaTexW != w || m_dmaTexH != h) {
+        /* Texture changed — invalidate cached EGLImage + exported fd.
+         * They must be recreated for the new texture. */
+        if (m_dmaEglImg != EGL_NO_IMAGE_KHR) {
+            eglDestroyImage(exportDpy, m_dmaEglImg);
+            m_dmaEglImg = EGL_NO_IMAGE_KHR;
+        }
+        if (m_dmaExportFd >= 0) { ::close(m_dmaExportFd); m_dmaExportFd = -1; }
+        m_dmaExportFourcc = 0;
+        m_dmaExportStride = 0;
+        m_dmaExportModifier = 0;
+
         if (m_dmaTex) glDeleteTextures(1, &m_dmaTex);
         glGenTextures(1, &m_dmaTex);
         glBindTexture(GL_TEXTURE_2D, m_dmaTex);
@@ -928,15 +963,30 @@ bool WebView::tryExportDMABufOpenGL()
 
     /* ── Step 5: Export OUR texture as dmabuf ──
      * Our texture is a regular GL texture (not render target), so
-     * eglCreateImage works correctly on Mesa. */
+     * eglCreateImage works correctly on Mesa.
+     *
+     * REUSE: eglCreateImage + eglExportDMABUFImageMESA are expensive on Mesa
+     * (each call hits the kernel to allocate/export a dma-buf). We cache the
+     * EGLImage and the exported fd across frames as long as m_dmaTex + size
+     * don't change. The fd is dup'd per send — sendmsg takes ownership of
+     * the dup, not the original fd. This reduces per-frame export cost to a
+     * single dup() + sendmsg(). */
     glBindTexture(GL_TEXTURE_2D, m_dmaTex);
 
-    EGLImageKHR eglImg = eglCreateImage(
-        exportDpy, exportCtx, EGL_GL_TEXTURE_2D,
-        reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(m_dmaTex)),
-        nullptr);
-
-    if (eglImg) {
+    /* (Re)create EGLImage + export fd if texture changed or first time. */
+    if (m_dmaEglImg == EGL_NO_IMAGE_KHR) {
+        m_dmaEglImg = eglCreateImage(
+            exportDpy, exportCtx, EGL_GL_TEXTURE_2D,
+            reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(m_dmaTex)),
+            nullptr);
+        if (!m_dmaEglImg) {
+            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage failed (0x%x)\n", eglGetError());
+            glBindTexture(GL_TEXTURE_2D, 0);
+            if (savedDpy != EGL_NO_DISPLAY)
+                eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+            return false;
+        }
+        /* Query + export fd ONCE — reuse for all subsequent frames. */
         EGLint fourcc = 0, nfd = 0;
         EGLuint64KHR modifier = 0;
         int fds[4] = {-1, -1, -1, -1};
@@ -946,45 +996,69 @@ bool WebView::tryExportDMABufOpenGL()
         auto qFn = reinterpret_cast<EGLBoolean (EGLAPIENTRY *)(EGLDisplay, EGLImageKHR, EGLint *, EGLint *, EGLuint64KHR *)>(m_queryFn);
         auto eFn = reinterpret_cast<EGLBoolean (EGLAPIENTRY *)(EGLDisplay, EGLImageKHR, EGLint *, EGLint *, EGLint *)>(m_exportFn);
 
-        if (qFn && eFn &&
-            qFn(exportDpy, eglImg, &fourcc, &nfd, &modifier) &&
-            eFn(exportDpy, eglImg, fds, strides, offsets))
-        {
-            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export OK (fourcc=0x%x nfd=%d modifier=0x%llx)\n",
-                    fourcc, nfd, (unsigned long long)modifier);
-            idk_fs_frame_t frame;
-            memset(&frame, 0, sizeof(frame));
-            frame.width   = static_cast<uint32_t>(w);
-            frame.height  = static_cast<uint32_t>(h);
-            frame.id      = m_buffer;
-            frame.visible = 1;
-            frame.nfd     = static_cast<uint8_t>(nfd);
-            frame.type    = IDK_FRAME_TYPE_DMABUF;
-            frame.stride  = static_cast<uint32_t>(strides[0]);
-            frame.format  = static_cast<uint32_t>(fourcc);
-            frame.modifier = modifier;
-
-            int rc = idk_fs_send_dma_buf(fds, &frame);
-            for (int i = 0; i < nfd && i < 4; i++)
-                if (fds[i] >= 0) ::close(fds[i]);
-
-            if (rc == 0) {
-                IDK_LOG("webview-qt", "frame sent OK (%dx%d type=DMABUF fd=%d stride=%u fourcc=0x%x)\n",
-                        w, h, fds[0], frame.stride, frame.format);
-                m_buffer = (m_buffer + 1) % 2;
-                m_pending = true;
-                m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
-                emit frameSent();
-                ok = true;
-            } else {
-                IDK_LOG("webview-qt", "tryExportDMABufOpenGL: idk_fs_send_dma_buf failed rc=%d\n", rc);
-            }
-        } else {
+        if (!qFn || !eFn ||
+            !qFn(exportDpy, m_dmaEglImg, &fourcc, &nfd, &modifier) ||
+            !eFn(exportDpy, m_dmaEglImg, fds, strides, offsets) ||
+            nfd < 1 || fds[0] < 0) {
             IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query failed\n");
+            eglDestroyImage(exportDpy, m_dmaEglImg);
+            m_dmaEglImg = EGL_NO_IMAGE_KHR;
+            glBindTexture(GL_TEXTURE_2D, 0);
+            if (savedDpy != EGL_NO_DISPLAY)
+                eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+            return false;
         }
-        eglDestroyImage(exportDpy, eglImg);
-    } else {
-        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: eglCreateImage failed (0x%x)\n", eglGetError());
+        m_dmaExportFd = fds[0];
+        m_dmaExportFourcc = static_cast<uint32_t>(fourcc);
+        m_dmaExportStride = static_cast<uint32_t>(strides[0]);
+        m_dmaExportModifier = modifier;
+        /* Close any extra plane fds (single-plane BGRA8888 only uses fds[0]). */
+        for (int i = 1; i < nfd && i < 4; i++)
+            if (fds[i] >= 0) ::close(fds[i]);
+        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export OK (fourcc=0x%x modifier=0x%llx stride=%u fd=%d) — cached for reuse\n",
+                fourcc, (unsigned long long)modifier, m_dmaExportStride, m_dmaExportFd);
+    }
+
+    /* dup the fd — sendmsg takes ownership of the dup, the original stays open
+     * in m_dmaExportFd for the next frame. */
+    int sendFd = dup(m_dmaExportFd);
+    if (sendFd < 0) {
+        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: dup(fd=%d) failed: %s\n",
+                m_dmaExportFd, strerror(errno));
+        glBindTexture(GL_TEXTURE_2D, 0);
+        if (savedDpy != EGL_NO_DISPLAY)
+            eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
+        return false;
+    }
+
+    {
+        idk_fs_frame_t frame;
+        memset(&frame, 0, sizeof(frame));
+        frame.width   = static_cast<uint32_t>(w);
+        frame.height  = static_cast<uint32_t>(h);
+        frame.id      = m_buffer;
+        frame.visible = 1;
+        frame.nfd     = 1;
+        frame.type    = IDK_FRAME_TYPE_DMABUF;
+        frame.stride  = m_dmaExportStride;
+        frame.format  = m_dmaExportFourcc;
+        frame.modifier = m_dmaExportModifier;
+
+        int fds_arr[4] = { sendFd, -1, -1, -1 };
+        int rc = idk_fs_send_dma_buf(fds_arr, &frame);
+        if (sendFd >= 0) ::close(sendFd);  /* sendmsg took its own ref via dup */
+
+        if (rc == 0) {
+            IDK_LOG("webview-qt", "frame sent OK (%dx%d type=DMABUF fd=%d stride=%u fourcc=0x%x)\n",
+                    w, h, m_dmaExportFd, frame.stride, frame.format);
+            m_buffer = (m_buffer + 1) % 2;
+            m_pending = true;
+            m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+            emit frameSent();
+            ok = true;
+        } else {
+            IDK_LOG("webview-qt", "tryExportDMABufOpenGL: idk_fs_send_dma_buf failed rc=%d\n", rc);
+        }
     }
 
     glBindTexture(GL_TEXTURE_2D, 0);

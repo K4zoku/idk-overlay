@@ -19,6 +19,7 @@ ld      = find_program('ld')
 objcopy = find_program('objcopy')
 glslc   = find_program('glslc', required: false)
 cp      = find_program('cp')
+python  = find_program('python3')
 
 build_rel = meson.current_build_dir().replace(meson.project_build_root() + '/', '')
 glsl_o_files = []
@@ -230,3 +231,114 @@ foreach pair : spv_pairs
         message('SPIR-V disabled for version @0@'.format(ver))
     endif
 endforeach
+
+# ── Vulkan overlay shaders (overlay_vk.vert/frag) ───────────────────────
+# Compiled to SPIR-V and embedded as object files via ld+objcopy (same flow
+# as the GL SPIR-V shaders above). This produces symbols:
+#   spv_overlay_vk_vert, spv_overlay_vk_vert_size
+#   spv_overlay_vk_frag, spv_overlay_vk_frag_size
+# declared extern in include/shaders/vk_shaders.h and linked via spv_o_files.
+
+vk_shader_dir = meson.current_source_dir()
+vk_build_dir = meson.current_build_dir()
+
+vk_spv_ok = false
+if glslc.found()
+    rvk = run_command(
+        glslc,
+        '-c', vk_shader_dir / 'overlay_vk.vert',
+        '-o', '/dev/null',
+        '-fshader-stage=vert',
+        check: false,
+    )
+    rfk = run_command(
+        glslc,
+        '-c', vk_shader_dir / 'overlay_vk.frag',
+        '-o', '/dev/null',
+        '-fshader-stage=frag',
+        check: false,
+    )
+    vk_spv_ok = rvk.returncode() == 0 and rfk.returncode() == 0
+endif
+
+if vk_spv_ok
+    vk_vcopy = configure_file(input: vk_shader_dir / 'overlay_vk.vert', output: 'overlay_vk.vert', copy: true)
+    vk_fcopy = configure_file(input: vk_shader_dir / 'overlay_vk.frag', output: 'overlay_vk.frag', copy: true)
+
+    # Vertex: glslc → .spv → .bin → ld -b binary → objcopy rename
+    vk_vs_sym = 'spv_overlay_vk_vert'
+    vk_spv_v = custom_target('spv_overlay_vk_vert',
+        input: vk_vcopy,
+        output: vk_vs_sym + '.spv',
+        command: [glslc, '-c', '-fshader-stage=vert', '@INPUT@', '-o', '@OUTPUT@'],
+        build_by_default: true,
+    )
+    vk_vclean = custom_target('spvc_overlay_vk_vert',
+        input: vk_spv_v,
+        output: vk_vs_sym + '.bin',
+        command: [cp, '@INPUT@', '@OUTPUT@'],
+        build_by_default: true,
+    )
+    vk_vbin = vk_vs_sym + '.bin'
+    vk_vsafe = (build_rel / vk_vbin).replace('.', '_').replace('-', '_').replace('/', '_')
+    vk_vold_start = '_binary_' + vk_vsafe + '_start'
+    vk_vold_size = '_binary_' + vk_vsafe + '_size'
+    vk_vraw = custom_target('ld_overlay_vk_vert',
+        input: vk_vclean,
+        output: vk_vs_sym + '_raw.o',
+        command: [ld, '-r', '-b', 'binary', '-z', 'noexecstack', '@INPUT@', '-o', '@OUTPUT@'],
+        build_by_default: true,
+    )
+    spv_o_files += custom_target('obj_overlay_vk_vert',
+        input: vk_vraw,
+        output: vk_vs_sym + '.o',
+        command: [
+            objcopy,
+            '--redefine-sym', vk_vold_start + '=' + vk_vs_sym,
+            '--redefine-sym', vk_vold_size + '=' + vk_vs_sym + '_size',
+            '@INPUT@', '@OUTPUT@',
+        ],
+        build_by_default: true,
+    )
+
+    # Fragment: same flow
+    vk_fs_sym = 'spv_overlay_vk_frag'
+    vk_spv_f = custom_target('spv_overlay_vk_frag',
+        input: vk_fcopy,
+        output: vk_fs_sym + '.spv',
+        command: [glslc, '-c', '-fshader-stage=frag', '@INPUT@', '-o', '@OUTPUT@'],
+        build_by_default: true,
+    )
+    vk_fclean = custom_target('spvc_overlay_vk_frag',
+        input: vk_spv_f,
+        output: vk_fs_sym + '.bin',
+        command: [cp, '@INPUT@', '@OUTPUT@'],
+        build_by_default: true,
+    )
+    vk_fbin = vk_fs_sym + '.bin'
+    vk_fsafe = (build_rel / vk_fbin).replace('.', '_').replace('-', '_').replace('/', '_')
+    vk_fold_start = '_binary_' + vk_fsafe + '_start'
+    vk_fold_size = '_binary_' + vk_fsafe + '_size'
+    vk_fraw = custom_target('ld_overlay_vk_frag',
+        input: vk_fclean,
+        output: vk_fs_sym + '_raw.o',
+        command: [ld, '-r', '-b', 'binary', '-z', 'noexecstack', '@INPUT@', '-o', '@OUTPUT@'],
+        build_by_default: true,
+    )
+    spv_o_files += custom_target('obj_overlay_vk_frag',
+        input: vk_fraw,
+        output: vk_fs_sym + '.o',
+        command: [
+            objcopy,
+            '--redefine-sym', vk_fold_start + '=' + vk_fs_sym,
+            '--redefine-sym', vk_fold_size + '=' + vk_fs_sym + '_size',
+            '@INPUT@', '@OUTPUT@',
+        ],
+        build_by_default: true,
+    )
+
+    add_project_arguments('-DHAS_VK_SPV', language: 'c')
+    message('Vulkan overlay shaders: SPIR-V enabled (object embedding)')
+else
+    message('Vulkan overlay shaders: glslc not found — VK pipeline will be unavailable at runtime')
+endif

@@ -87,6 +87,11 @@ private:
     // EGL / DMABUF state
     bool m_useDmaBuf = true;
     bool m_dmaBufFailed = false;
+    /* Consecutive DMABUF rejection counter. Incremented on each ack=1 from
+     * compositor, reset on ack=0. Only set m_dmaBufFailed=true after 5
+     * consecutive rejections — handles transient failures (first frame
+     * after resize, NVIDIA driver hiccups on vkGetMemoryFdPropertiesKHR). */
+    int m_dmabufRejectCount = 0;
     bool m_needSharedCtx = true;
     /* Cooldown timestamp (monotonic ms) after a resize — Qt RHI is
      * rebuilding its render-target texture during this window and
@@ -105,6 +110,16 @@ private:
     GLuint m_dmaTex = 0;
     int m_dmaTexW = 0;
     int m_dmaTexH = 0;
+    /* Cached EGLImage + exported dmabuf fd. Reused across frames as long
+     * as m_dmaTex / size don't change — avoids recreating eglCreateImage +
+     * eglExportDMABUFImageMESA every frame (expensive on Mesa). The fd is
+     * dup'd per send (sendmsg takes ownership of the dup, not the original).
+     * On size change or shutdown, both are destroyed. */
+    EGLImageKHR m_dmaEglImg = EGL_NO_IMAGE_KHR;
+    int m_dmaExportFd = -1;
+    uint32_t m_dmaExportFourcc = 0;
+    uint32_t m_dmaExportStride = 0;
+    uint64_t m_dmaExportModifier = 0;
 
     // Vulkan DMABUF export state
 #ifdef IDK_HAVE_VULKAN
