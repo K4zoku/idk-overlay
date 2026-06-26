@@ -298,11 +298,9 @@ void WebView::doRenderAndSend()
     memset(&frame, 0, sizeof(frame));
     frame.width   = static_cast<uint32_t>(m_renderW);
     frame.height  = static_cast<uint32_t>(m_renderH);
-    frame.id      = buffer;
-    frame.visible = 1;
+    frame.flags   = IDK_FRAME_FLAG_VISIBLE;  /* SHM: no DMABUF bit */
     frame.nfd     = 1;
-    frame.type    = IDK_FRAME_TYPE_SHM;
-    frame.format  = m_framePremultiplied ? 1 : 0;  /* premultiplied flag for compositor */
+    /* stride=0 for SHM, modifier=0 */
 
     static int s_consecutive_failures = 0;
 
@@ -1036,12 +1034,9 @@ bool WebView::tryExportDMABufOpenGL()
         memset(&frame, 0, sizeof(frame));
         frame.width   = static_cast<uint32_t>(w);
         frame.height  = static_cast<uint32_t>(h);
-        frame.id      = m_buffer;
-        frame.visible = 1;
+        frame.flags   = IDK_FRAME_FLAG_VISIBLE;  /* DMABUF bit set by idk_fs_send_dma_buf */
         frame.nfd     = 1;
-        frame.type    = IDK_FRAME_TYPE_DMABUF;
         frame.stride  = m_dmaExportStride;
-        frame.format  = m_dmaExportFourcc;
         frame.modifier = m_dmaExportModifier;
 
         int fds_arr[4] = { sendFd, -1, -1, -1 };
@@ -1049,8 +1044,8 @@ bool WebView::tryExportDMABufOpenGL()
         if (sendFd >= 0) ::close(sendFd);  /* sendmsg took its own ref via dup */
 
         if (rc == 0) {
-            IDK_LOG("webview-qt", "frame sent OK (%dx%d type=DMABUF fd=%d stride=%u fourcc=0x%x)\n",
-                    w, h, m_dmaExportFd, frame.stride, frame.format);
+            IDK_LOG("webview-qt", "frame sent OK (%dx%d type=DMABUF fd=%d stride=%u)\n",
+                    w, h, m_dmaExportFd, frame.stride);
             m_buffer = (m_buffer + 1) % 2;
             m_pending = true;
             m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
@@ -1416,12 +1411,10 @@ bool WebView::tryExportDMABufVulkan()
     memset(&frame, 0, sizeof(frame));
     frame.width   = w;
     frame.height  = h;
-    frame.id      = m_buffer;
-    frame.visible = 1;
+    frame.flags   = IDK_FRAME_FLAG_VISIBLE;  /* DMABUF bit set by send_dma_buf */
     frame.nfd     = 1;
-    frame.type    = IDK_FRAME_TYPE_DMABUF;
     frame.stride  = w * 4;
-    frame.format  = 0x34324742; // DRM_FORMAT_BGRA8888 (Qt default for Vulkan)
+    /* modifier=0 (linear) for Vulkan staging buffer export */
 
     int fds[4] = {dmabufFd, -1, -1, -1};
     int rc = idk_fs_send_dma_buf(fds, &frame);

@@ -125,24 +125,15 @@ static int find_or_create_overlay(uint8_t id) {
 
 static void update_overlay(render_overlay_t *ov, const void *info, size_t info_len,
                            int fd) {
-    (void)info_len; /* Size validation is handled by caller */
-    struct frame_hdr {
-        uint32_t width;
-        uint32_t height;
-        uint32_t stride;
-        uint32_t format;
-        uint32_t num_planes;
-        uint32_t pid;
-        uint32_t reserved;
-        uint32_t checksum;
-    } *hdr = (struct frame_hdr *)info;
+    (void)info_len;
+    const idk_frame_header_t *hdr = (const idk_frame_header_t *)info;
 
-    ov->width    = hdr->width;
-    ov->height   = hdr->height;
-    ov->x        = hdr->stride;  /* mapped from client */
-    ov->y        = hdr->format;  /* mapped from client */
-    ov->pixel_size = (uint32_t)hdr->pid;
-    ov->visible  = (uint8_t)hdr->reserved;
+    ov->width      = hdr->width;
+    ov->height     = hdr->height;
+    ov->x          = 0;  /* position no longer in header */
+    ov->y          = 0;
+    ov->pixel_size = hdr->width * hdr->height * 4;
+    ov->visible    = (hdr->flags & IDK_FRAME_FLAG_VISIBLE) ? 1 : 0;
 
     if (ov->fd >= 0) {
         if (ov->pixels) {
@@ -157,56 +148,32 @@ static void update_overlay(render_overlay_t *ov, const void *info, size_t info_l
         ov->pixels = mmap(NULL, ov->pixel_size, PROT_READ, MAP_SHARED, fd, 0);
         if (ov->pixels == MAP_FAILED) {
             ov->pixels = NULL;
-            IDK_ERR("render", "mmap overlay %u failed: %s\n",
-                    ov->id, strerror(errno));
+            IDK_ERR("render", "mmap overlay failed: %s\n", strerror(errno));
             return;
         }
     }
 
     IDK_LOG("render",
-            "Overlay %u: %dx%d@(%u,%u) vis=%d src=%s\n",
-            ov->id, ov->width, ov->height, ov->x, ov->y,
-            ov->visible, ov->source ? "client" : "injected");
+            "Overlay: %dx%d vis=%d src=%s\n",
+            ov->width, ov->height, ov->visible,
+            ov->source ? "client" : "injected");
 }
 
 static void process_frame(const void *info, size_t info_len, int fd) {
+    (void)info_len;
     g_frame_count++;
 
-    struct frame_hdr {
-        uint32_t width;
-        uint32_t height;
-        uint32_t stride;
-        uint32_t format;
-        uint32_t num_planes;
-        uint32_t pid;
-        uint32_t reserved;
-        uint32_t checksum;
-    } *hdr = (struct frame_hdr *)info;
+    const idk_frame_header_t *hdr = (const idk_frame_header_t *)info;
 
-    uint8_t overlay_id = (uint8_t)hdr->num_planes;
-    int is_overlay = (overlay_id >= 1 && overlay_id <= RENDER_MAX_OVERLAYS);
+    /* In the new protocol, all frames go through the same path.
+     * The old overlay_id concept (from num_planes field) is gone. */
+    IDK_LOG("render",
+            "Frame #%d: %dx%d stride=%u flags=0x%02x fd=%d\n",
+            g_frame_count, hdr->width, hdr->height, hdr->stride,
+            hdr->flags, fd);
 
-    if (is_overlay) {
-        int idx = find_or_create_overlay(overlay_id);
-        if (idx < 0) {
-            close(fd);
-            return;
-        }
-        update_overlay(&g_overlays[idx], info, info_len, fd);
-    } else {
-        /* Full-screen frame from injected library */
-        IDK_LOG("render",
-                "Frame #%d: %dx%d stride=%d fmt=0x%08X pid=%d fd=%d\n",
-                g_frame_count, hdr->width, hdr->height, hdr->stride,
-                hdr->format, hdr->pid, fd);
-
-        if (hdr->format != 0x34325258) {
-            IDK_ERR("render", "Unknown format 0x%08X, skipping\n",
-                    hdr->format);
-            close(fd);
-            return;
-        }
-
+    /* Treat as full-screen frame (injected library) */
+    {
         size_t pixel_size = (size_t)hdr->width * (size_t)hdr->height * 4;
         uint8_t *pixels = mmap(NULL, pixel_size, PROT_READ, MAP_SHARED, fd, 0);
         if (pixels == MAP_FAILED) {
@@ -216,7 +183,7 @@ static void process_frame(const void *info, size_t info_len, int fd) {
         }
 
         IDK_LOG("render",
-                "SHM frame loaded: %u bytes at %p (ABGR8888)\n",
+                "SHM frame loaded: %u bytes at %p\n",
                 (unsigned)pixel_size, (void *)pixels);
 
         munmap(pixels, pixel_size);
@@ -283,9 +250,9 @@ int main(int argc, char **argv) {
         }
 
         /* Receive frames from the connected client */
-        uint8_t info_buf[32] = { 0 };
+        idk_frame_header_t hdr;
         int fd = -1;
-        int rc = idk_ipc_recv_frame(client_fd, info_buf, sizeof(info_buf), &fd);
+        int rc = idk_ipc_recv_frame(client_fd, &hdr, &fd);
 
         if (rc < 0) {
             /* Client disconnected or timeout */
@@ -295,7 +262,7 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        process_frame(info_buf, sizeof(info_buf), fd);
+        process_frame(&hdr, sizeof(hdr), fd);
     }
 
     if (client_fd >= 0) close(client_fd);

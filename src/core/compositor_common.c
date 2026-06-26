@@ -105,21 +105,21 @@ int idk_comp_sock_accept(int listen_fd, int *out_client_fd, const char *log_tag)
     return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
 }
 
-int idk_comp_recv_frame(int client_fd, struct idk_frame_hdr *out_hdr,
+int idk_comp_recv_frame(int client_fd, idk_frame_header_t *out_hdr,
                         int *out_fd, const char *log_tag) {
+    (void)log_tag;  /* reserved for future logging */
     struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
     if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN)) return 0;
 
     char ctrl_buf[CMSG_SPACE(sizeof(int))];
-    char msg_buf[sizeof(struct idk_frame_hdr) + 32];
-    struct iovec iov = { .iov_base = msg_buf, .iov_len = sizeof(msg_buf) };
+    struct iovec iov = { .iov_base = out_hdr, .iov_len = sizeof(*out_hdr) };
     struct msghdr msgh = {
         .msg_iov = &iov, .msg_iovlen = 1,
         .msg_control = ctrl_buf, .msg_controllen = sizeof(ctrl_buf),
     };
 
     ssize_t n = recvmsg(client_fd, &msgh, MSG_DONTWAIT);
-    if (n < (ssize_t)sizeof(struct idk_frame_hdr)) {
+    if (n < (ssize_t)sizeof(*out_hdr)) {
         if (n == 0) return -1;  /* peer disconnected */
         return 0;
     }
@@ -133,7 +133,6 @@ int idk_comp_recv_frame(int client_fd, struct idk_frame_hdr *out_hdr,
     }
     if (fd < 0) return 0;
 
-    memcpy(out_hdr, msg_buf, sizeof(*out_hdr));
     *out_fd = fd;
     return 1;
 }

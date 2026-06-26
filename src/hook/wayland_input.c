@@ -522,7 +522,7 @@ static int init_input_socket(void) {
     return 0;
 }
 
-static void send_event_to_webview(const idk_ipc_input_event_t *ev) {
+static void send_event_to_webview(const idk_input_event_t *ev) {
     pthread_mutex_lock(&g_client_fd_lock);
     int fd = g_client_fd;
     pthread_mutex_unlock(&g_client_fd_lock);
@@ -537,10 +537,10 @@ static void send_event_to_webview(const idk_ipc_input_event_t *ev) {
 }
 
 static void send_capture_state(uint32_t capture) {
-    idk_ipc_input_event_t ev = { 0 };
-    ev.type    = IDK_INPUT_STATE;
-    ev.capture = capture;
-    ev.mods    = g_mods;
+    idk_input_event_t ev = { 0 };
+    ev.type  = IDK_INPUT_STATE;
+    ev.flags = capture ? IDK_INPUT_FLAG_CAPTURE : 0;
+    ev.mods  = (uint16_t)g_mods;
     send_event_to_webview(&ev);
 }
 
@@ -548,10 +548,10 @@ static void send_capture_state(uint32_t capture) {
  * repeat when captured (game's SDL3 repeat timer never starts because
  * we swallow key press events). */
 static void send_repeat_info(void) {
-    idk_ipc_input_event_t ev = { 0 };
+    idk_input_event_t ev = { 0 };
     ev.type = IDK_INPUT_REPEAT;
-    ev.x    = g_repeat_rate;   /* rate in characters per second */
-    ev.y    = g_repeat_delay;  /* delay in milliseconds before first repeat */
+    ev.u.repeat.rate  = (uint16_t)g_repeat_rate;   /* cps */
+    ev.u.repeat.delay = (uint16_t)g_repeat_delay;  /* ms */
     send_event_to_webview(&ev);
 }
 
@@ -752,13 +752,13 @@ static void wptr_motion(void *d, struct wl_pointer *p, uint32_t time,
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
                 WP_CURSOR_SHAPE_DEFAULT);
-        idk_ipc_input_event_t ev = { 0 };
+        idk_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_MOTION;
         ev.time   = time;
-        ev.x      = g_cursor_x;
-        ev.y      = g_cursor_y;
-        ev.mods   = g_mods;
-        ev.capture = 1;
+        ev.u.motion.x = g_cursor_x;
+        ev.u.motion.y = g_cursor_y;
+        ev.mods   = (uint16_t)g_mods;
+        ev.flags  = IDK_INPUT_FLAG_CAPTURE;
         send_event_to_webview(&ev);
         return;
     }
@@ -779,16 +779,13 @@ static void wptr_button(void *d, struct wl_pointer *p, uint32_t serial,
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
                 WP_CURSOR_SHAPE_DEFAULT);
-        idk_ipc_input_event_t ev = { 0 };
+        idk_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_BUTTON;
         ev.time   = time;
-        ev.serial = serial;
-        ev.button = button;
-        ev.state  = state;
-        ev.x      = g_cursor_x;
-        ev.y      = g_cursor_y;
-        ev.mods   = g_mods;
-        ev.capture = 1;
+        ev.u.btn.button = button;
+        ev.flags  = state ? IDK_INPUT_FLAG_PRESS : 0;
+        ev.flags |= IDK_INPUT_FLAG_CAPTURE;
+        ev.mods   = (uint16_t)g_mods;
         send_event_to_webview(&ev);
         return;
     }
@@ -804,17 +801,15 @@ static void wptr_axis(void *d, struct wl_pointer *p, uint32_t time,
             my_wp_cursor_shape_device_set_shape(
                 g_cursor_shape_device, g_last_enter_serial,
                 WP_CURSOR_SHAPE_DEFAULT);
-        idk_ipc_input_event_t ev = { 0 };
+        idk_input_event_t ev = { 0 };
         ev.type   = IDK_INPUT_AXIS;
         ev.time   = time;
         if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
-            ev.dy = WL_FIXED_TO_INT(value);
+            ev.u.axis.dy = WL_FIXED_TO_INT(value);
         else
-            ev.dx = WL_FIXED_TO_INT(value);
-        ev.x      = g_cursor_x;
-        ev.y      = g_cursor_y;
-        ev.mods   = g_mods;
-        ev.capture = 1;
+            ev.u.axis.dx = WL_FIXED_TO_INT(value);
+        ev.mods   = (uint16_t)g_mods;
+        ev.flags  = IDK_INPUT_FLAG_CAPTURE;
         send_event_to_webview(&ev);
         return;
     }
@@ -962,15 +957,14 @@ static void wkb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
     }
 
     if (g_captured) {
-        idk_ipc_input_event_t ev = { 0 };
-        ev.type     = IDK_INPUT_KEY;
-        ev.time     = time;
-        ev.serial   = serial;
-        ev.keycode  = key;
-        ev.keysym   = keysym;
-        ev.state    = state;
-        ev.mods     = g_mods;
-        ev.capture  = 1;
+        idk_input_event_t ev = { 0 };
+        ev.type      = IDK_INPUT_KEY;
+        ev.time      = time;
+        ev.u.key.keycode = key;
+        ev.u.key.keysym = keysym;
+        ev.flags     = state ? IDK_INPUT_FLAG_PRESS : 0;
+        ev.flags    |= IDK_INPUT_FLAG_CAPTURE;
+        ev.mods      = (uint16_t)g_mods;
         WLOG("wkb_key: keycode=%u state=%u", key, state);
         send_event_to_webview(&ev);
         return;

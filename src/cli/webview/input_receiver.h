@@ -68,17 +68,18 @@ private:
 };
 
 struct InputEvent {
-    quint32 type;
+    quint8  type;
+    quint8  flags;
+    quint16 mods;
     quint32 time;
-    quint32 serial;
-    quint32 keycode;
-    quint32 keysym;
-    quint32 state;
-    quint32 button;
-    qint32  x;
-    qint32  y;
-    qint32  dx;
-    qint32  dy;
-    quint32 mods;
-    quint32 capture;
+    /* Payload (8 bytes) — depends on type */
+    quint32 keycode;   /* KEY */
+    quint32 keysym;    /* KEY */
+    quint32 button;    /* BUTTON */
+    qint32  x;         /* MOTION */
+    qint32  y;         /* MOTION */
+    qint32  dx;        /* AXIS */
+    qint32  dy;        /* AXIS */
+    quint16 rate;      /* REPEAT */
+    quint16 delay;     /* REPEAT */
 };

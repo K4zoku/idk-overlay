@@ -155,15 +155,12 @@ static void send_frame(void) {
     int shm_fd = read_pixels_to_shm(w, h);
     if (shm_fd < 0) return;
 
-    struct {
-        uint32_t width; uint32_t height;
-        uint32_t stride; uint32_t format;
-        uint32_t num_planes; uint32_t pid;
-    } info = {
-        .width = w, .height = h, .stride = w,
-        .format = 0x34325258, .num_planes = 1, .pid = getpid(),
-    };
-    idk_ipc_send_frame(g_ipc_fd, &info, sizeof(info), shm_fd);
+    idk_frame_header_t hdr = { 0 };
+    hdr.width  = w;
+    hdr.height = h;
+    hdr.stride = 0;  /* SHM: no stride */
+    hdr.flags  = IDK_FRAME_FLAG_VISIBLE;
+    idk_ipc_send_frame(g_ipc_fd, &hdr, shm_fd);
     close(shm_fd);
 }
 

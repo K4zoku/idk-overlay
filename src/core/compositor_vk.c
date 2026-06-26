@@ -46,11 +46,9 @@
  * Vertex: fullscreen triangle (3 vertices, no VBO needed)
  * Fragment: sample texture, output premultiplied RGBA */
 
-/* ── Frame protocol: shared definitions in compositor_common.h ────────── */
-/* struct idk_frame_hdr, IDK_FRAME_TYPE_*, IDK_SHM_FORMAT_* are now in
- * include/core/compositor_common.h. We alias `frame_hdr` for backward
- * compat with the existing code that uses `struct frame_hdr`. */
-typedef struct idk_frame_hdr frame_hdr;
+/* Frame protocol definitions (idk_frame_header_t, IDK_FRAME_FLAG_*) are in
+ * compositor_common.h (via idk_ipc.h). The old 40-byte struct frame_hdr has
+ * been replaced by the 24-byte idk_frame_header_t. */
 
 /* ── Socket state ──────────────────────────────────────────────────────── */
 
@@ -1053,7 +1051,7 @@ int idk_vk_compositor_render(void) {
 
     int processed = 0;
     while (1) {
-        struct idk_frame_hdr hdr;
+        idk_frame_header_t hdr;
         int fd = -1;
         int rc = idk_comp_recv_frame(vk_sock_client_fd, &hdr, &fd, "comp-vk");
         if (rc <= 0) {
@@ -1063,13 +1061,8 @@ int idk_vk_compositor_render(void) {
 
         if (processed > 0) { close(fd); continue; }
 
-        uint8_t frame_type = idk_frame_type(&hdr);
-
-        if (frame_type == IDK_FRAME_TYPE_SHM) {
+        if (!idk_frame_is_dmabuf(&hdr)) {
             /* SHM frame — will be uploaded in render_overlay via staging buffer */
-            uint32_t pixel_size = hdr.reserved;
-            if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
-            (void)pixel_size;  /* used in render_overlay */
             vk_overlay_w = hdr.width;
             vk_overlay_h = hdr.height;
             if (vk_shm_fd >= 0) close(vk_shm_fd);
@@ -1080,7 +1073,13 @@ int idk_vk_compositor_render(void) {
                 vk_has_dmabuf_pending = 0;
             }
             processed = 1;
-        } else if (frame_type == IDK_FRAME_TYPE_DMABUF) {
+        } else {
+            /* DMABUF frame — stash for import in render_overlay.
+             * fourcc is no longer in the header; the VK compositor's
+             * drm_fourcc_to_vk_format() defaults to R8G8B8A8_UNORM
+             * (Qt RHI's GL_RGBA8 default), which is correct for all
+             * current use cases. If multi-format support is needed later,
+             * add a fourcc field to the header. */
             if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
                 close(vk_dmabuf_pending_fd);
             }
@@ -1088,19 +1087,15 @@ int idk_vk_compositor_render(void) {
             vk_dmabuf_pending_w = hdr.width;
             vk_dmabuf_pending_h = hdr.height;
             vk_dmabuf_pending_stride = hdr.stride;
-            vk_dmabuf_pending_fourcc = hdr.format;
+            vk_dmabuf_pending_fourcc = 0;  /* default: ABGR8888 → R8G8B8A8 */
             vk_dmabuf_pending_modifier = hdr.modifier;
             vk_has_dmabuf_pending = 1;
             vk_has_frame = 1;
             if (vk_shm_fd >= 0) { close(vk_shm_fd); vk_shm_fd = -1; }
             processed = 1;
-            IDK_LOG("comp-vk", "DMABUF pending: %ux%u fourcc=0x%x stride=%u mod=0x%lx\n",
-                    hdr.width, hdr.height, hdr.format,
+            IDK_LOG("comp-vk", "DMABUF pending: %ux%u stride=%u mod=0x%lx\n",
+                    hdr.width, hdr.height,
                     hdr.stride, (unsigned long)hdr.modifier);
-        } else {
-            IDK_LOG("comp-vk", "Unknown frame type %u, dropping\n", frame_type);
-            close(fd);
-            processed = 1;
         }
     }
 

@@ -1,4 +1,9 @@
-/* idk_fs.c */
+/* idk_fs.c — Frame sender library (client side of compositor socket).
+ *
+ * Builds the 24-byte wire header (idk_frame_header_t) from idk_fs_frame_t
+ * and sends it with the fd via SCM_RIGHTS. See include/public/idk_ipc.h
+ * for the wire format.
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,43 +24,20 @@
 static int g_sock_fd = -1;
 static char g_sock_path[IDK_IPC_SOCKNAME_MAX];
 
-static uint32_t crc32_simple(const void *data, size_t len) {
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= (uint8_t)p[i];
-        for (int j = 0; j < 8; j++) {
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        }
-    }
-    return ~crc;
-}
-
+/* Build the 24-byte wire header from the client-facing frame struct. */
 static void build_frame_hdr(const idk_fs_frame_t *frame,
-                            uint8_t *hdr, size_t hdr_size) {
-    if (hdr_size < sizeof(uint32_t) * 8) return;
-
-    uint32_t *fields = (uint32_t *)hdr;
-    fields[0] = frame->width;
-    fields[1] = frame->height;
-    fields[2] = frame->stride;       /* DMABUF: stride in bytes, SHM: 0 */
-    fields[3] = frame->format;       /* DMABUF: DRM fourcc, SHM: 0 */
-    fields[4] = (uint32_t)frame->id; /* num_planes → overlay ID */
-    fields[5] = frame->width * frame->height * 4; /* pid → pixel byte size */
-    fields[6] = (uint32_t)frame->visible          /* reserved → visibility (low byte) */
-              | ((uint32_t)frame->type << 8);     /*            frame type (high byte) */
-    /* fields[7] = checksum (filled by caller) */
-
-    /* Write modifier at bytes 32-39 (after the 32-byte header).
-     * The compositor reads 64 bytes, so this fits in the existing buffer. */
-    if (hdr_size >= 40) {
-        uint64_t *mod = (uint64_t *)(hdr + 32);
-        *mod = frame->modifier;
-    }
+                            idk_frame_header_t *hdr) {
+    hdr->modifier = frame->modifier;
+    hdr->width    = frame->width;
+    hdr->height   = frame->height;
+    hdr->stride   = frame->stride;
+    hdr->flags    = frame->flags;
+    hdr->_pad[0]  = 0;
+    hdr->_pad[1]  = 0;
+    hdr->_pad[2]  = 0;
 }
 
-/* SHM helpers */
-
+/* SHM helper — copy pixels into a memfd for sending. */
 static int copy_to_shm(const void *src, size_t size) {
     char shm_name[64];
     snprintf(shm_name, sizeof(shm_name), "/idk-framesource-%d", (int)getpid());
@@ -91,9 +73,6 @@ int idk_fs_init(const char *sockpath, int reuse_fd) {
     return idk_fs_init2(sockpath, reuse_fd, 30);
 }
 
-/* Variant with configurable retry count for the connect() loop.
- * 0 retries = single attempt (non-blocking — for use in event loops).
- * 30 retries = ~3s total (legacy behavior, blocks the caller). */
 int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
     if (!sockpath) {
         errno = EINVAL;
@@ -162,98 +141,22 @@ void idk_fs_shutdown(void) {
     }
 }
 
-int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
+/* Internal: sendmsg with frame header + N fds.
+ * nfd must be 1..4. */
+static int send_frame_msg(const idk_fs_frame_t *frame, const int *fds, int nfd) {
     if (g_sock_fd < 0) {
         errno = ENOTCONN;
         return -1;
     }
-    if (!frame) {
+    if (!frame || !fds || nfd < 1 || nfd > 4) {
         errno = EINVAL;
         return -1;
     }
 
-    uint8_t hdr[40] = { 0 };
-    build_frame_hdr(frame, hdr, sizeof(hdr));
+    idk_frame_header_t hdr;
+    build_frame_hdr(frame, &hdr);
 
-    uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t) - 8);
-    ((uint32_t *)hdr)[7] = checksum;
-
-    struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(hdr) };
-    char ctrl_buf[CMSG_SPACE(sizeof(int))] = { 0 };
-    struct msghdr msgh = {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-        .msg_control = ctrl_buf,
-        .msg_controllen = sizeof(ctrl_buf),
-    };
-
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(cmsg), &data_fd, sizeof(int));
-    msgh.msg_controllen = cmsg->cmsg_len;
-
-    ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1;
-        }
-        if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
-            IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
-                    errno, strerror(errno));
-            idk_fs_shutdown();
-        } else {
-            IDK_ERR("fs", "sendmsg failed: %s\n", strerror(errno));
-        }
-        return -1;
-    }
-
-    IDK_LOG("fs",
-            "Frame sent: %dx%d stride=%u fourcc=0x%x id=%d visible=%d fd=%d\n",
-            frame->width, frame->height, frame->stride, frame->format,
-            frame->id, frame->visible, data_fd);
-    return 0;
-}
-
-int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
-    if (!pixels || !frame) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    size_t pixel_size = (size_t)frame->width * (size_t)frame->height * 4;
-    int shm_fd = copy_to_shm(pixels, pixel_size);
-    if (shm_fd < 0) {
-        IDK_ERR("fs", "copy_to_shm failed\n");
-        return -1;
-    }
-
-    int rc = idk_fs_send_frame(shm_fd, frame);
-    close(shm_fd);
-
-    usleep(50000);
-
-    return rc;
-}
-
-int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
-    if (g_sock_fd < 0) {
-        errno = ENOTCONN;
-        return -1;
-    }
-    if (!frame || !dma_buf_fds || (size_t)frame->nfd == 0 || (size_t)frame->nfd > 4) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    uint8_t hdr[40] = { 0 };
-    build_frame_hdr(frame, hdr, sizeof(hdr));
-
-    uint32_t checksum = crc32_simple(hdr, sizeof(hdr) - sizeof(uint32_t) - 8);
-    ((uint32_t *)hdr)[7] = checksum;
-
-    struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(hdr) };
+    struct iovec iov = { .iov_base = &hdr, .iov_len = sizeof(hdr) };
     char ctrl_buf[CMSG_SPACE(sizeof(int) * 4)] = { 0 };
     struct msghdr msgh = {
         .msg_iov = &iov,
@@ -265,8 +168,8 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * frame->nfd);
-    memcpy(CMSG_DATA(cmsg), dma_buf_fds, sizeof(int) * frame->nfd);
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * nfd);
+    memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * nfd);
     msgh.msg_controllen = cmsg->cmsg_len;
 
     ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
@@ -285,6 +188,65 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     }
 
     return 0;
+}
+
+int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
+    if (!frame) {
+        errno = EINVAL;
+        return -1;
+    }
+    int rc = send_frame_msg(frame, &data_fd, 1);
+    if (rc == 0) {
+        IDK_LOG("fs",
+                "Frame sent: %dx%d stride=%u flags=0x%02x fd=%d\n",
+                frame->width, frame->height, frame->stride, frame->flags, data_fd);
+    }
+    return rc;
+}
+
+int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
+    if (!pixels || !frame) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* SHM frames always have these flags (visible, not dmabuf). */
+    idk_fs_frame_t f = *frame;
+    f.flags = IDK_FRAME_FLAG_VISIBLE;  /* clears DMABUF bit */
+    f.stride = 0;                       /* SHM has no stride */
+
+    size_t pixel_size = (size_t)f.width * (size_t)f.height * 4;
+    int shm_fd = copy_to_shm(pixels, pixel_size);
+    if (shm_fd < 0) {
+        IDK_ERR("fs", "copy_to_shm failed\n");
+        return -1;
+    }
+
+    int rc = idk_fs_send_frame(shm_fd, &f);
+    close(shm_fd);
+
+    usleep(50000);
+    return rc;
+}
+
+int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
+    if (!frame || !dma_buf_fds || frame->nfd == 0 || frame->nfd > 4) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* DMABUF frames set the DMABUF flag (keep visible bit as-is). */
+    idk_fs_frame_t f = *frame;
+    f.flags = (f.flags & ~IDK_FRAME_FLAG_DMABUF) | IDK_FRAME_FLAG_DMABUF;
+
+    int rc = send_frame_msg(&f, dma_buf_fds, f.nfd);
+    if (rc == 0) {
+        IDK_LOG("fs",
+                "DMABUF sent: %dx%d stride=%u flags=0x%02x mod=0x%llx fd=%d\n",
+                f.width, f.height, f.stride, f.flags,
+                (unsigned long long)f.modifier, dma_buf_fds[0]);
+    }
+    return rc;
 }
 
 int idk_fs_wait_ack(void) {

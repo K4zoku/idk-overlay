@@ -1,21 +1,29 @@
 /*
  * idk_ipc.h — Unix domain socket IPC for passing dmabuf fds + metadata
  *
- * Wire format per frame:
- *   [header: 32 bytes]          [scm_rights: 1 fd]
- *   +------------------+
- *   | width    uint32  |
- *   | height   uint32  |
- *   | stride   uint32  |
- *   | format   uint32  |
- *   | num_planes uint32|
- *   | pid      uint32  |
- *   | reserved uint32  |
- *   | checksum uint32  |
- *   +------------------+
+ * Wire format (P0.5 cleanup — 2026-06-26):
  *
- * Input events use a separate socket (default path: /tmp/idk-overlay-<pid>-input)
- * to avoid multiplexing with the frame protocol. See idk_ipc_input_event_t.
+ * Frame (24 bytes header + 1 fd via SCM_RIGHTS):
+ *   +----------------------+
+ *   | modifier uint64      |  offset  0 — DRM modifier (0=linear, SHM=0)
+ *   | width     uint32     |  offset  8
+ *   | height    uint32     |  offset 12
+ *   | stride    uint32     |  offset 16 — bytes per row (DMABUF), 0=SHM
+ *   | flags     uint8      |  offset 20 — bit0=visible, bit1=dmabuf
+ *   | _pad     uint8[3]    |  offset 21 — reserved
+ *   +----------------------+  total 24 bytes
+ *
+ * Input event (16 bytes, no fd passing):
+ *   +----------------------+
+ *   | type   uint8         |  offset  0 — KEY/BUTTON/MOTION/AXIS/STATE/REPEAT
+ *   | flags  uint8         |  offset  1 — bit0=press(1)/release(0)
+ *   | mods   uint16        |  offset  2 — Ctrl=1,Shift=2,Alt=4,Super=8
+ *   | time   uint32        |  offset  4 — wayland timestamp (ms)
+ *   | payload union (8B)   |  offset  8 — key/btn/motion/axis/repeat
+ *   +----------------------+  total 16 bytes
+ *
+ * Removed (no backward compat needed — pre-release):
+ *   magic, serial, capture, checksum, overlay_id, format, pixel_size, num_planes
  */
 #ifndef IDK_IPC_H
 #define IDK_IPC_H
@@ -34,7 +42,31 @@ extern "C" {
 #define IDK_IPC_SOCKNAME_MAX 108    /* AF_UNIX path max */
 #define IDK_IPC_SEND_BUF_SIZE 4096  /* CMSG space for 1 fd */
 
-/* ── Input event protocol (separate socket, no fd passing) ──────────────── */
+/* ── Frame header (24 bytes, sent with 1 fd via SCM_RIGHTS) ────────────── */
+
+#define IDK_FRAME_FLAG_VISIBLE  0x01  /* bit0: overlay visible */
+#define IDK_FRAME_FLAG_DMABUF   0x02  /* bit1: 1=dmabuf fd, 0=SHM fd */
+
+#pragma pack(push, 1)
+typedef struct idk_frame_header {
+    uint64_t modifier;  /* offset  0 — DRM modifier (0=linear or SHM)        */
+    uint32_t width;     /* offset  8 — frame width in pixels                  */
+    uint32_t height;    /* offset 12 — frame height in pixels                 */
+    uint32_t stride;    /* offset 16 — bytes per row (DMABUF), 0=SHM          */
+    uint8_t  flags;     /* offset 20 — IDK_FRAME_FLAG_*                       */
+    uint8_t  _pad[3];   /* offset 21 — reserved, must be 0                    */
+} idk_frame_header_t;   /* total 24 bytes                                     */
+#pragma pack(pop)
+
+#ifdef __cplusplus
+static_assert(sizeof(idk_frame_header_t) == 24,
+              "idk_frame_header_t must be 24 bytes");
+#else
+_Static_assert(sizeof(idk_frame_header_t) == 24,
+               "idk_frame_header_t must be 24 bytes");
+#endif
+
+/* ── Input event (16 bytes, separate socket, no fd passing) ────────────── */
 /*
  * The game (injected .so) hooks wl_proxy_add_listener to intercept
  * wl_pointer/wl_keyboard listeners. When "input capture" is toggled on
@@ -45,40 +77,22 @@ extern "C" {
  * Socket direction:
  *   - Game listens on /tmp/idk-overlay-<pid>-input (server)
  *   - Webview connects to it (client)
- *   - Game writes idk_ipc_input_event_t messages
+ *   - Game writes idk_input_event_t messages
  *   - Webview reads them in its event loop
- *
- * Wire format (52 bytes, no SCM_RIGHTS):
- *   +----------------------+
- *   | magic    uint32      |  IDK_INPUT_MAGIC = 0x49444B49 ("IDKI")
- *   | type     uint32      |  IDK_INPUT_KEY / BUTTON / MOTION / AXIS / STATE
- *   | time     uint32      |  wayland timestamp (ms)
- *   | serial   uint32      |  wayland serial
- *   | keycode  uint32      |  evdev scancode (for KEY)
- *   | keysym   uint32      |  xkb keysym (for KEY, XKB_KEY_* from xkbcommon)
- *   | state    uint32      |  0=release, 1=press (for KEY/BUTTON)
- *   | button   uint32      |  BTN_* code (for BUTTON, linux/input-event-codes.h)
- *   | x        int32       |  surface-local x in pixels (for MOTION)
- *   | y        int32       |  surface-local y in pixels (for MOTION)
- *   | dx       int32       |  scroll delta (for AXIS, axis=0 is dx, axis=1 is dy)
- *   | dy       int32       |  scroll delta
- *   | mods     uint32      |  modifier bitmask (Ctrl=1, Shift=2, Alt=4, Super=8)
- *   | capture  uint32      |  0=passing through, 1=game input captured
- *   | reserved uint32      |  future use
- *   | checksum uint32      |  CRC32 of all preceding fields
- *   +----------------------+
  */
-
-#define IDK_INPUT_MAGIC 0x49444B49u  /* "IDKI" */
 
 enum idk_input_type {
     IDK_INPUT_KEY     = 1,  /* keyboard press/release */
     IDK_INPUT_BUTTON  = 2,  /* mouse button press/release */
     IDK_INPUT_MOTION  = 3,  /* mouse motion (absolute, surface-local) */
     IDK_INPUT_AXIS    = 4,  /* mouse scroll */
-    IDK_INPUT_STATE   = 5,  /* capture state changed (only `capture` field matters) */
-    IDK_INPUT_REPEAT  = 6,  /* keyboard repeat info: x=rate (cps), y=delay (ms) */
+    IDK_INPUT_STATE   = 5,  /* capture state changed (only flags bit0 matters) */
+    IDK_INPUT_REPEAT  = 6,  /* keyboard repeat info: rate (cps), delay (ms) */
 };
+
+/* Input event flags */
+#define IDK_INPUT_FLAG_PRESS   0x01  /* bit0: 1=press, 0=release (KEY/BUTTON) */
+#define IDK_INPUT_FLAG_CAPTURE 0x02  /* bit0 of state: capture ON when set   */
 
 /* Modifier flags (XKB-style bitmask, can be combined) */
 #define IDK_MOD_CTRL   0x01
@@ -86,31 +100,29 @@ enum idk_input_type {
 #define IDK_MOD_ALT    0x04
 #define IDK_MOD_SUPER  0x08
 
-typedef struct idk_ipc_input_event {
-    uint32_t magic;
-    uint32_t type;
-    uint32_t time;
-    uint32_t serial;
-    uint32_t keycode;
-    uint32_t keysym;
-    uint32_t state;
-    uint32_t button;
-    int32_t  x;
-    int32_t  y;
-    int32_t  dx;
-    int32_t  dy;
-    uint32_t mods;
-    uint32_t capture;
-    uint32_t reserved;
-    uint32_t checksum;
-} idk_ipc_input_event_t;  /* 16 × 4 = 64 bytes */
+#pragma pack(push, 1)
+typedef struct idk_input_event {
+    uint8_t  type;   /* offset  0 — IDK_INPUT_*                              */
+    uint8_t  flags;  /* offset  1 — IDK_INPUT_FLAG_*                         */
+    uint16_t mods;   /* offset  2 — IDK_MOD_* bitmask                        */
+    uint32_t time;   /* offset  4 — wayland timestamp (ms)                   */
+    union {          /* offset  8, size 8                                    */
+        struct { uint32_t keycode; uint32_t keysym; } key;     /* KEY       */
+        struct { uint32_t button;  uint32_t _pad;    } btn;    /* BUTTON    */
+        struct { int32_t  x;       int32_t  y;       } motion; /* MOTION    */
+        struct { int32_t  dx;      int32_t  dy;      } axis;   /* AXIS      */
+        struct { uint16_t rate;    uint16_t delay;
+                 uint32_t _pad;                     } repeat; /* REPEAT    */
+    } u;
+} idk_input_event_t;  /* total 16 bytes                                       */
+#pragma pack(pop)
 
 #ifdef __cplusplus
-static_assert(sizeof(idk_ipc_input_event_t) == 64,
-              "idk_ipc_input_event_t must be 64 bytes");
+static_assert(sizeof(idk_input_event_t) == 16,
+              "idk_input_event_t must be 16 bytes");
 #else
-_Static_assert(sizeof(idk_ipc_input_event_t) == 64,
-               "idk_ipc_input_event_t must be 64 bytes");
+_Static_assert(sizeof(idk_input_event_t) == 16,
+               "idk_input_event_t must be 16 bytes");
 #endif
 
 /* ── IPC socket management ─────────────────────────────────────────────── */
@@ -118,71 +130,53 @@ _Static_assert(sizeof(idk_ipc_input_event_t) == 64,
 /**
  * Connect to the render process via Unix domain socket.
  * Creates the socket if it doesn't exist yet.
- *
- * @param sockpath  Unix socket path.
- * @param out_fd    Output: the connected socket file descriptor.
- * @return          0 on success, -1 on failure.
  */
 int idk_ipc_connect(const char *sockpath, int *out_fd);
 
 /**
  * Close the IPC socket connection.
- *
- * @param fd  Socket fd from idk_ipc_connect().
  */
 void idk_ipc_close(int fd);
 
 /* ── Sending frames ────────────────────────────────────────────────────── */
 
 /**
- * Send a frame info + dmabuf fd over the IPC socket.
+ * Send a frame header + fd over the IPC socket.
  * Uses SCM_RIGHTS to pass the fd atomically with the metadata.
  *
  * @param socket_fd   Connected socket fd.
- * @param info        Frame metadata.
- * @param dmabuf_fd   DMABUF fd from the captured frame.
+ * @param hdr         Frame header (24 bytes, fully populated by caller).
+ * @param fd          dmabuf/SHM fd to pass.
  * @return            0 on success, -1 on failure.
  */
-int idk_ipc_send_frame(int socket_fd, const void *info, size_t info_len,
-                       int dmabuf_fd);
+int idk_ipc_send_frame(int socket_fd, const idk_frame_header_t *hdr, int fd);
 
-/* ── Receiving frames (for idk-render process) ─────────────────────────── */
+/* ── Receiving frames ─────────────────────────────────────────────────── */
 
 /**
- * Receive a frame info + fd from the IPC socket.
- * Blocks until a frame is available or connection is closed.
+ * Receive a frame header + fd from the IPC socket.
+ * Blocks up to 2s waiting for data.
  *
- * @param socket_fd  Listening/connected socket fd.
- * @param info       Output: frame metadata struct.
- * @param out_fd     Output: received dmabuf fd (must be closed by caller).
- * @return           0 on success (frame received), -1 on EOF/error.
+ * @param socket_fd  Connected socket fd.
+ * @param hdr        Output: frame header (24 bytes).
+ * @param out_fd     Output: received fd (must be closed by caller).
+ * @return           0 on success, -1 on EOF/error/timeout.
  */
-int idk_ipc_recv_frame(int socket_fd, void *info, size_t info_len,
-                       int *out_fd);
+int idk_ipc_recv_frame(int socket_fd, idk_frame_header_t *hdr, int *out_fd);
 
-/* ── Input events (separate socket, no fd passing) ──────────────────────── */
+/* ── Input events (separate socket, no fd passing) ─────────────────────── */
 
 /**
  * Send an input event to the webview. Non-blocking: if the socket buffer
- * is full, the event is dropped (better to drop than to stall the game's
- * input thread).
- *
- * @param socket_fd  Connected input socket fd.
- * @param ev         Input event to send (checksum is filled in by this call).
- * @return           0 on success, -1 on error or would-block.
+ * is full, the event is dropped.
  */
-int idk_ipc_send_input(int socket_fd, const idk_ipc_input_event_t *ev);
+int idk_ipc_send_input(int socket_fd, const idk_input_event_t *ev);
 
 /**
  * Receive an input event from the game. Blocking by default; pass
- * MSG_DONTWAIT (via flags param) for non-blocking poll.
- *
- * @param socket_fd  Connected input socket fd.
- * @param ev         Output: received event.
- * @param flags      recv() flags (0 = blocking, MSG_DONTWAIT = non-blocking).
- * @return           0 on success, -1 on EOF/error/again.
+ * MSG_DONTWAIT for non-blocking poll.
  */
-int idk_ipc_recv_input(int socket_fd, idk_ipc_input_event_t *ev, int flags);
+int idk_ipc_recv_input(int socket_fd, idk_input_event_t *ev, int flags);
 
 #ifdef __cplusplus
 }

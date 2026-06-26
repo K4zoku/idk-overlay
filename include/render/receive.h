@@ -11,44 +11,29 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "public/idk_ipc.h"  /* idk_frame_header_t */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* ── Frame header ─────────────────────────────────────────────────────── */
-
-/**
- * Frame header sent alongside dmabuf/SHM fd.
- * Must match the wire format used by idk_ipc.c
- */
-struct frame_hdr {
-    uint32_t width;     /* Frame width in pixels */
-    uint32_t height;    /* Frame height in pixels */
-    uint32_t stride;    /* Frame stride in pixels (typically width) */
-    uint32_t format;    /* Frame format (e.g., 0x34325258 for ABGR8888) */
-    uint32_t num_planes; /* Number of planes (1 for packed formats) */
-    uint32_t pid;       /* PID of the sender process */
-    uint32_t reserved;  /* Reserved for future use */
-    uint32_t checksum;  /* CRC32 checksum of the header (excluding this field) */
-};
+/* idk_frame_header_t (24 bytes) is defined in include/public/idk_ipc.h.
+ * The old 32-byte struct frame_hdr has been replaced. */
 
 /* ── Frame reception ──────────────────────────────────────────────────── */
 
 /**
  * Receive one frame (dmabuf or SHM fd) from the connected socket.
+ * Blocks up to 2 seconds. The fd is passed via SCM_RIGHTS and must be
+ * closed by the caller.
  *
- * This function blocks until a frame is available or the connection times out.
- * The received fd is passed via SCM_RIGHTS and must be closed by the caller.
- *
- * @param sock_fd    Connected socket fd (created by connect_webview_socket()).
- * @param hdr        Output: frame header (populated on success).
+ * @param sock_fd    Connected socket fd.
+ * @param hdr        Output: frame header (24 bytes).
  * @param out_fd     Output: received dmabuf/SHM fd (must be closed after use).
  * @return           0 on success, -1 on EOF/error/timeout.
- *
- * @note Timeout is 2 seconds. The caller should handle retries.
- * @note The fd is valid for the lifetime of the call; close it immediately.
  */
-int receive_frame(int sock_fd, struct frame_hdr *hdr, int *out_fd);
+int receive_frame(int sock_fd, idk_frame_header_t *hdr, int *out_fd);
 
 /* ── Overlay rendering helpers ────────────────────────────────────────── */
 

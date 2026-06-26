@@ -1,3 +1,11 @@
+/* ipc.c — Unix domain socket IPC for idk-overlay.
+ *
+ * Implements frame send/recv (24-byte header + fd via SCM_RIGHTS) and
+ * input event send/recv (16-byte event, no fd).
+ *
+ * See include/public/idk_ipc.h for the wire format.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,29 +17,6 @@
 
 #include "public/idk_ipc.h"
 #include "core/log.h"
-
-typedef struct idk_frame_hdr {
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride;
-    uint32_t format;
-    uint32_t num_planes;
-    uint32_t pid;
-    uint32_t reserved;
-    uint32_t checksum;
-} idk_frame_hdr_t;
-
-static uint32_t crc32_simple(const void *data, size_t len) {
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= (uint32_t)p[i];
-        for (int j = 0; j < 8; j++) {
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        }
-    }
-    return ~crc;
-}
 
 int idk_ipc_connect(const char *sockpath, int *out_fd) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -63,56 +48,57 @@ void idk_ipc_close(int fd) {
     if (fd >= 0) close(fd);
 }
 
-int idk_ipc_send_frame(int socket_fd, const void *info, size_t info_len,
-                       int dmabuf_fd) {
-    if (socket_fd < 0 || info_len < sizeof(idk_frame_hdr_t)) {
+int idk_ipc_send_frame(int socket_fd, const idk_frame_header_t *hdr, int fd) {
+    if (socket_fd < 0 || !hdr) {
         errno = EINVAL;
         return -1;
     }
 
-    idk_frame_hdr_t send_hdr;
-    memcpy(&send_hdr, info, sizeof(send_hdr));
-    send_hdr.checksum = crc32_simple(info, info_len - sizeof(uint32_t));
-
-    struct msghdr msgh = { 0 };
-    struct iovec iov = { .iov_base = &send_hdr, .iov_len = info_len };
+    struct iovec iov = { .iov_base = (void *)hdr, .iov_len = sizeof(*hdr) };
     char ctrl_buf[CMSG_SPACE(sizeof(int))] = { 0 };
-
-    msgh.msg_iov = &iov;
-    msgh.msg_iovlen = 1;
-    msgh.msg_control = ctrl_buf;
-    msgh.msg_controllen = sizeof(ctrl_buf);
+    struct msghdr msgh = {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+        .msg_control = ctrl_buf,
+        .msg_controllen = sizeof(ctrl_buf),
+    };
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(cmsg), &dmabuf_fd, sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &fd, sizeof(int));
     msgh.msg_controllen = cmsg->cmsg_len;
 
-    ssize_t n = sendmsg(socket_fd, &msgh, 0);
+    ssize_t n = sendmsg(socket_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -1;
+        }
         IDK_ERR("ipc", "sendmsg failed: %s\n", strerror(errno));
+        return -1;
+    }
+    if ((size_t)n != sizeof(*hdr)) {
         return -1;
     }
     return 0;
 }
 
-int idk_ipc_recv_frame(int socket_fd, void *info, size_t info_len,
-                       int *out_fd) {
-    if (info_len < sizeof(idk_frame_hdr_t)) {
+int idk_ipc_recv_frame(int socket_fd, idk_frame_header_t *hdr, int *out_fd) {
+    if (socket_fd < 0 || !hdr || !out_fd) {
         errno = EINVAL;
         return -1;
     }
+    *out_fd = -1;
 
     char ctrl_buf[CMSG_SPACE(sizeof(int))] = { 0 };
-    struct msghdr msgh = { 0 };
-    struct iovec iov = { .iov_base = info, .iov_len = info_len };
-
-    msgh.msg_iov = &iov;
-    msgh.msg_iovlen = 1;
-    msgh.msg_control = ctrl_buf;
-    msgh.msg_controllen = sizeof(ctrl_buf);
+    struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(*hdr) };
+    struct msghdr msgh = {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+        .msg_control = ctrl_buf,
+        .msg_controllen = sizeof(ctrl_buf),
+    };
 
     struct pollfd pfd = { .fd = socket_fd, .events = POLLIN | POLLHUP };
     if (poll(&pfd, 1, 2000) <= 0) {
@@ -124,15 +110,18 @@ int idk_ipc_recv_frame(int socket_fd, void *info, size_t info_len,
 
     ssize_t n = recvmsg(socket_fd, &msgh, 0);
     if (n <= 0) {
-        if (n == 0) return -1;
+        return -1;
+    }
+    if ((size_t)n < sizeof(*hdr)) {
+        /* Partial header — protocol violation. */
         return -1;
     }
 
-    *out_fd = -1;
     for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh); cmsg;
          cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
             memcpy(out_fd, CMSG_DATA(cmsg), sizeof(int));
+            break;
         }
     }
 
@@ -140,29 +129,16 @@ int idk_ipc_recv_frame(int socket_fd, void *info, size_t info_len,
         return -1;
     }
 
-    uint32_t *checksum = (uint32_t *)((char *)info + info_len - sizeof(uint32_t));
-    uint32_t expected = crc32_simple(info, info_len - sizeof(uint32_t));
-    if (*checksum != expected) {
-        close(*out_fd);
-        *out_fd = -1;
-        return -1;
-    }
-
     return 0;
 }
 
-int idk_ipc_send_input(int socket_fd, const idk_ipc_input_event_t *ev) {
+int idk_ipc_send_input(int socket_fd, const idk_input_event_t *ev) {
     if (socket_fd < 0 || !ev) {
         errno = EINVAL;
         return -1;
     }
 
-    idk_ipc_input_event_t out = *ev;
-    out.magic = IDK_INPUT_MAGIC;
-    out.checksum = 0;
-    out.checksum = crc32_simple(&out, sizeof(out) - sizeof(uint32_t));
-
-    ssize_t n = send(socket_fd, &out, sizeof(out),
+    ssize_t n = send(socket_fd, ev, sizeof(*ev),
                      MSG_NOSIGNAL | MSG_DONTWAIT);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -171,13 +147,13 @@ int idk_ipc_send_input(int socket_fd, const idk_ipc_input_event_t *ev) {
         IDK_ERR("ipc", "send_input failed: %s\n", strerror(errno));
         return -1;
     }
-    if ((size_t)n != sizeof(out)) {
+    if ((size_t)n != sizeof(*ev)) {
         return -1;
     }
     return 0;
 }
 
-int idk_ipc_recv_input(int socket_fd, idk_ipc_input_event_t *ev, int flags) {
+int idk_ipc_recv_input(int socket_fd, idk_input_event_t *ev, int flags) {
     if (socket_fd < 0 || !ev) {
         errno = EINVAL;
         return -1;
@@ -196,16 +172,11 @@ int idk_ipc_recv_input(int socket_fd, idk_ipc_input_event_t *ev, int flags) {
             return -1;
         }
         total += (size_t)n;
-        flags = 0;
+        flags = 0;  /* blocking after first chunk */
     }
 
-    if (ev->magic != IDK_INPUT_MAGIC) {
-        errno = EBADMSG;
-        return -1;
-    }
-
-    uint32_t expected = crc32_simple(ev, sizeof(*ev) - sizeof(uint32_t));
-    if (ev->checksum != expected) {
+    /* Validate type is in range. */
+    if (ev->type < IDK_INPUT_KEY || ev->type > IDK_INPUT_REPEAT) {
         errno = EBADMSG;
         return -1;
     }

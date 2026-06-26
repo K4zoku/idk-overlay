@@ -27,46 +27,15 @@
 #include "core/log.h"
 
 /* ── Frame header ─────────────────────────────────────────────────────── */
-
-struct frame_hdr {
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride;
-    uint32_t format;
-    uint32_t num_planes;
-    uint32_t pid;
-    uint32_t reserved;
-    uint32_t checksum;
-};
-
-/* ── CRC32 (same as idk_ipc.c) ────────────────────────────────────────── */
-
-static uint32_t __attribute__((unused)) crc32_simple(const void *data, size_t len) {
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= (uint32_t)p[i];
-        for (int j = 0; j < 8; j++) {
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        }
-    }
-    return ~crc;
-}
+/* Use the new 24-byte idk_frame_header_t from idk_ipc.h. The old 32-byte
+ * struct frame_hdr is replaced. Callers that referenced hdr.format,
+ * hdr.num_planes, hdr.pid, hdr.reserved, hdr.checksum need updating. */
 
 /* ── Receive frame from socket ────────────────────────────────────────── */
 
-/**
- * Receive one frame (dmabuf or SHM fd) from the connected socket.
- *
- * @param sock_fd    Connected socket fd.
- * @param hdr        Output: frame header.
- * @param out_fd     Output: received dmabuf/SHM fd (caller must close).
- * @return           0 on success, -1 on EOF/error.
- */
-int receive_frame(int sock_fd, struct frame_hdr *hdr, int *out_fd) {
-    char buf[64];
+int receive_frame(int sock_fd, idk_frame_header_t *hdr, int *out_fd) {
     char ctrl_buf[CMSG_SPACE(sizeof(int))] = { 0 };
-    struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
+    struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(*hdr) };
     struct msghdr msgh = {
         .msg_iov = &iov,
         .msg_iovlen = 1,
@@ -100,7 +69,6 @@ int receive_frame(int sock_fd, struct frame_hdr *hdr, int *out_fd) {
         return -1;
     }
 
-    memcpy(hdr, buf, sizeof(*hdr));
     return 0;
 }
 

@@ -202,31 +202,33 @@ void InputReceiver::onReadyRead()
 {
     if (m_fd < 0) return;
 
-    idk_ipc_input_event_t ev;
+    idk_input_event_t ev;
     while (true) {
         ssize_t n = ::read(m_fd, &ev, sizeof(ev));
         if (n == (ssize_t)sizeof(ev)) {
-            if (ev.magic != IDK_INPUT_MAGIC) {
+            /* No magic/checksum in new protocol — just validate type range. */
+            if (ev.type < IDK_INPUT_KEY || ev.type > IDK_INPUT_REPEAT) {
                 closeFd();
                 return;
             }
 
             InputEvent ie;
             ie.type    = ev.type;
-            ie.time    = ev.time;
-            ie.serial  = ev.serial;
-            ie.keycode = ev.keycode;
-            ie.keysym  = ev.keysym;
-            ie.state   = ev.state;
-            ie.button  = ev.button;
-            ie.x       = ev.x;
-            ie.y       = ev.y;
-            ie.dx      = ev.dx;
-            ie.dy      = ev.dy;
+            ie.flags   = ev.flags;
             ie.mods    = ev.mods;
-            ie.capture = ev.capture;
+            ie.time    = ev.time;
+            /* Extract union payload based on type */
+            ie.keycode = ev.u.key.keycode;
+            ie.keysym  = ev.u.key.keysym;
+            ie.button  = ev.u.btn.button;
+            ie.x       = ev.u.motion.x;
+            ie.y       = ev.u.motion.y;
+            ie.dx      = ev.u.axis.dx;
+            ie.dy      = ev.u.axis.dy;
+            ie.rate    = ev.u.repeat.rate;
+            ie.delay   = ev.u.repeat.delay;
 
-            bool nowCaptured = (ev.capture != 0);
+            bool nowCaptured = (ev.flags & IDK_INPUT_FLAG_CAPTURE) != 0;
             if (nowCaptured != m_captureState) {
                 m_captureState = nowCaptured;
                 m_focusSent = false;
@@ -250,7 +252,7 @@ void InputReceiver::onReadyRead()
 
             switch (ev.type) {
             case IDK_INPUT_KEY:
-                if (ev.keycode != 0)
+                if (ie.keycode != 0)
                     injectKeyboardEvent(ie);
                 break;
             case IDK_INPUT_BUTTON:
@@ -260,9 +262,9 @@ void InputReceiver::onReadyRead()
                 break;
             case IDK_INPUT_REPEAT:
                 /* wl_keyboard.repeat_info from compositor:
-                 * x = rate (characters per second), y = delay (ms before first repeat) */
-                m_repeatRate = ev.x > 0 ? ev.x : 25;
-                m_repeatDelay = ev.y > 0 ? ev.y : 500;
+                 * rate = cps, delay = ms before first repeat */
+                m_repeatRate = ie.rate > 0 ? ie.rate : 25;
+                m_repeatDelay = ie.delay > 0 ? ie.delay : 500;
                 IDK_LOG("input-rx", "repeat info: rate=%d cps delay=%d ms\n",
                         m_repeatRate, m_repeatDelay);
                 break;
@@ -305,8 +307,9 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
         text = QStringLiteral("\r");
 
     quint64 t = nowMs();
+    bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
 
-    if (ev.state == 1) {                          /* press */
+    if (isPress) {
         QKeyEvent p(QEvent::KeyPress, qtKey, mods, text, /*autorepeat=*/false);
         p.setTimestamp(t);
         qApp->sendEvent(fp, &p);
@@ -317,7 +320,7 @@ void InputReceiver::injectKeyboardEvent(const InputEvent &ev)
          * SDL3 repeat timer never starts — we must do it ourselves. */
         if (ev.keycode != 0 && m_captureState)
             startRepeatTimer(ev.keycode, ev.keysym, ev.mods, text);
-    } else {                                       /* release */
+    } else {
         QKeyEvent r(QEvent::KeyRelease, qtKey, mods, text, /*autorepeat=*/false);
         r.setTimestamp(t);
         qApp->sendEvent(fp, &r);
@@ -424,11 +427,12 @@ void InputReceiver::injectMouseEvent(const InputEvent &ev)
         else if (ev.button == 0x112) sqBtn = Qt::MiddleButton;
         else                          return;
 
-        if (ev.state == 1) m_buttons |=  sqBtn;
-        else               m_buttons &= ~sqBtn;
+        bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
+        if (isPress) m_buttons |=  sqBtn;
+        else         m_buttons &= ~sqBtn;
 
-        QEvent::Type type = (ev.state == 1) ? QEvent::MouseButtonPress
-                                            : QEvent::MouseButtonRelease;
+        QEvent::Type type = isPress ? QEvent::MouseButtonPress
+                                    : QEvent::MouseButtonRelease;
         QMouseEvent be(type, local, local, local,
                        sqBtn, m_buttons, Qt::NoModifier);
         be.setTimestamp(t);

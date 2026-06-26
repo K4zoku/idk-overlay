@@ -1,13 +1,13 @@
 /*
  * compositor_common.h — shared code between GL and Vulkan compositors.
  *
- * Contains the frame protocol (struct frame_hdr, frame type constants),
+ * Contains the frame protocol (idk_frame_header_t from idk_ipc.h),
  * socket layer (listen/accept/recvmsg), ACK logic with resize debounce,
  * and cross-GPU dmabuf vendor detection helpers.
  *
- * Both compositor_gl.c and compositor_vk.c use these to avoid duplicating
- * the ~250 lines of socket + frame-receive + ACK code that is identical
- * between the two paths.
+ * Both compositor.c (GL) and compositor_vk.c (VK) use these to avoid
+ * duplicating the ~250 lines of socket + frame-receive + ACK code that
+ * is identical between the two paths.
  */
 
 #ifndef IDK_COMPOSITOR_COMMON_H
@@ -18,33 +18,24 @@
 #include <time.h>
 #include <stdbool.h>
 
+#include "public/idk_ipc.h"  /* idk_frame_header_t, IDK_FRAME_FLAG_* */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ── Frame protocol (40-byte header sent over the socket) ─────────────── */
+/* ── Frame protocol helpers ───────────────────────────────────────────── */
+/* idk_frame_header_t, IDK_FRAME_FLAG_VISIBLE, IDK_FRAME_FLAG_DMABUF are
+ * defined in include/public/idk_ipc.h. */
 
-#define IDK_FRAME_TYPE_DMABUF  0
-#define IDK_FRAME_TYPE_SHM     1
+/* Returns true if the frame is a DMABUF frame (vs SHM). */
+static inline bool idk_frame_is_dmabuf(const idk_frame_header_t *hdr) {
+    return (hdr->flags & IDK_FRAME_FLAG_DMABUF) != 0;
+}
 
-#define IDK_SHM_FORMAT_STRAIGHT       0
-#define IDK_SHM_FORMAT_PREMULTIPLIED  1
-
-struct idk_frame_hdr {
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride;       /* DMABUF: bytes per row; SHM: unused */
-    uint32_t format;       /* DMABUF: DRM fourcc; SHM: premul flag */
-    uint32_t num_planes;   /* DMABUF: plane count; SHM: buf_idx */
-    uint32_t reserved;     /* SHM: pixel byte size */
-    uint32_t vis_type;     /* low byte: visibility; high byte: frame type */
-    uint32_t checksum;
-    uint64_t modifier;     /* DMABUF: tiling modifier; SHM: unused */
-};
-
-/* Extract frame type from vis_type field. */
-static inline uint8_t idk_frame_type(const struct idk_frame_hdr *hdr) {
-    return (hdr->vis_type >> 8) & 0xFF;
+/* Returns true if the frame is visible. */
+static inline bool idk_frame_is_visible(const idk_frame_header_t *hdr) {
+    return (hdr->flags & IDK_FRAME_FLAG_VISIBLE) != 0;
 }
 
 /* ── ACK message (9 bytes: 1 byte ack + 4 bytes w + 4 bytes h) ────────── */
@@ -64,30 +55,26 @@ bool idk_comp_notify_resize(int *game_w, int *game_h, bool *size_pending,
                             struct timespec *last_resize_ts,
                             int w, int h, const char *log_tag);
 
-/* Check if resize has been stable for >debounce_ms. Returns true if ready
- * to embed size in ACK. */
+/* Check if resize has been stable for >debounce_ms. */
 bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_ms);
 
 /* ── Socket layer ─────────────────────────────────────────────────────── */
 
 /* Initialize listening socket. Path from IDK_SOCKET env or /tmp/idk-overlay-<pid>.
- * On success: out_listen_fd set, out_client_fd = -1 (accept later).
- * Returns 0 on success, -1 on failure. */
+ * On success: out_listen_fd set. Returns 0 on success, -1 on failure. */
 int idk_comp_sock_init(int *out_listen_fd, char *path, size_t path_sz,
                        const char *log_tag);
 
-/* Non-blocking accept. If a client connects, sets *out_client_fd (non-blocking)
- * and returns 1. Returns 0 if no pending connection, -1 on error. */
+/* Non-blocking accept. Returns 1 if connected, 0 if no pending, -1 on error. */
 int idk_comp_sock_accept(int listen_fd, int *out_client_fd, const char *log_tag);
 
 /* Receive one frame from the client socket (non-blocking).
- * On success: fills out_hdr, sets *out_fd to the dmabuf/shm fd (caller owns).
- * Returns 1 if a frame was received, 0 if no data, -1 on error/disconnect. */
-int idk_comp_recv_frame(int client_fd, struct idk_frame_hdr *out_hdr,
+ * On success: fills out_hdr, sets *out_fd (caller owns).
+ * Returns 1 if frame received, 0 if no data, -1 on error/disconnect. */
+int idk_comp_recv_frame(int client_fd, idk_frame_header_t *out_hdr,
                         int *out_fd, const char *log_tag);
 
-/* Send ACK to client. If size_pending && resize stable, embed w/h.
- * Flips size_pending to false after embedding. */
+/* Send ACK to client. If size_pending && resize stable, embed w/h. */
 void idk_comp_send_ack(int client_fd, uint8_t ack,
                        int game_w, int game_h,
                        bool *size_pending,

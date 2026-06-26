@@ -22,14 +22,10 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* Frame protocol definitions are in compositor_common.h.
- * Alias `frame_hdr` for backward compat with existing code. */
-typedef struct idk_frame_hdr frame_hdr;
-/* Fix the typo'd GL constant name used in this file. */
-#define IDK_SHM_FORMATStraight     IDK_SHM_FORMAT_STRAIGHT
-
-/* IDK_FRAME_TYPE_*, struct frame_hdr (aliased above), IDK_SHM_FORMAT_*
- * are in compositor_common.h. */
+/* Frame protocol definitions are in compositor_common.h (via idk_ipc.h).
+ * idk_frame_header_t (24 bytes) replaces the old 40-byte struct frame_hdr.
+ * Frame type is now a flag bit (IDK_FRAME_FLAG_DMABUF) instead of a
+ * separate field, and premultiplied/visible are also flag bits. */
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
@@ -335,7 +331,7 @@ int idk_compositor_render(void) {
     int processed = 0;
 
     while (1) {
-        struct idk_frame_hdr hdr;
+        idk_frame_header_t hdr;
         int dmabuf_fd = -1;
         int rc = idk_comp_recv_frame(g_client_fd, &hdr, &dmabuf_fd, "comp");
         if (rc <= 0) {
@@ -355,23 +351,28 @@ int idk_compositor_render(void) {
         }
 
         GLuint tex = 0;
-        uint8_t frame_type = idk_frame_type(&hdr);
 
-        if (frame_type == IDK_FRAME_TYPE_SHM) {
-            uint32_t pixel_size = hdr.reserved;
-            if (pixel_size == 0) pixel_size = hdr.width * hdr.height * 4;
+        if (!idk_frame_is_dmabuf(&hdr)) {
+            /* SHM frame — compute pixel size from dimensions (4 bytes/pixel) */
+            uint32_t pixel_size = hdr.width * hdr.height * 4;
+            /* buf_idx is no longer in the header; use 0 (single buffer).
+             * Premultiplied flag is not in the new header — assume
+             * premultiplied for SHM (Qt RHI always premultiplies). */
             tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                 pixel_size, hdr.num_planes,
-                                 hdr.format == IDK_SHM_FORMAT_PREMULTIPLIED);
+                                 pixel_size, 0, 1);
             if (tex == 0) break;
             g_frame_w = hdr.width;
             g_frame_h = hdr.height;
             processed = 1;
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
+            /* DMABUF frame — import via EGL.
+             * fourcc is no longer in the header; the GL compositor doesn't
+             * need it (eglCreateImage derives format from the dmabuf fd).
+             * Pass stride + modifier from the new header. */
             EGLImageKHR img = 0;
             tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                         hdr.stride, hdr.format,
+                                         hdr.stride, 0,
                                          hdr.modifier, &img);
             if (tex == 0 || img == 0) {
                 /* Transient failure (e.g. Qt RHI reallocated the texture
