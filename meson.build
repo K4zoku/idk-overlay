@@ -6,7 +6,7 @@ project(
         'warning_level=3',
         'c_std=gnu11',
     ],
-    meson_version: '>= 1.0.0',
+    meson_version: '>= 1.1.0',
 )
 
 add_project_arguments('-fPIC', language: 'c')
