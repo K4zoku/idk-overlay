@@ -23,7 +23,7 @@
 #include "core/log.h"
 
 /* Frame protocol definitions are in compositor_common.h (via idk_ipc.h).
- * idk_frame_header_t (24 bytes) replaces the old 40-byte struct frame_hdr.
+ * idk_frame_header_t (28 bytes) replaces the old 40-byte struct frame_hdr.
  * Frame type is now a flag bit (IDK_FRAME_FLAG_DMABUF) instead of a
  * separate field, and premultiplied/visible are also flag bits. */
 

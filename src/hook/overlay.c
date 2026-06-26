@@ -14,9 +14,7 @@
 #include "hook/syringe_hook.h"
 #include "hook/overlay.h"
 #include "public/idk_ipc.h"
-#include "hook/vulkan.h"
-#include "hook/egl.h"
-#include "hook/glx.h"
+#include "hook/graphic_hooks.h"
 #include "hook/wayland_input.h"
 #include "core/log.h"
 

@@ -1,76 +1,16 @@
 /*
- * receive.c — Receive dmabuf frame from external process (webview),
- *             render overlay onto it.
+ * receive.c — Overlay rendering helpers (text, clock, UI).
  *
- * Injected process calls receive_frame() to get dmabuf fd from webview
- * (or any external process). Then render overlay (text, UI, clock)
- * onto the dmabuf buffer.
- *
- * The caller is responsible for displaying the result:
- *   - Send back to external process via socket (for display)
- *   - Or render into target process framebuffer directly
+ * Renders text, clock, and composite overlay onto an ABGR8888 pixel buffer.
+ * Frame reception is handled by idk_ipc_recv_frame() in src/ipc/ipc.c.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <string.h>
-#include <unistd.h>
-#include <errno.h>
 #include <time.h>
 
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/mman.h>
-#include <poll.h>
-
 #include "public/idk_ipc.h"
-#include "core/log.h"
-
-/* ── Frame header ─────────────────────────────────────────────────────── */
-/* Use the new 24-byte idk_frame_header_t from idk_ipc.h. The old 32-byte
- * struct frame_hdr is replaced. Callers that referenced hdr.format,
- * hdr.num_planes, hdr.pid, hdr.reserved, hdr.checksum need updating. */
-
-/* ── Receive frame from socket ────────────────────────────────────────── */
-
-int receive_frame(int sock_fd, idk_frame_header_t *hdr, int *out_fd) {
-    char ctrl_buf[CMSG_SPACE(sizeof(int))] = { 0 };
-    struct iovec iov = { .iov_base = hdr, .iov_len = sizeof(*hdr) };
-    struct msghdr msgh = {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-        .msg_control = ctrl_buf,
-        .msg_controllen = sizeof(ctrl_buf),
-    };
-
-    struct pollfd pfd = { .fd = sock_fd, .events = POLLIN };
-    if (poll(&pfd, 1, 2000) <= 0 || !(pfd.revents & POLLIN)) {
-        return -1;
-    }
-
-    ssize_t n = recvmsg(sock_fd, &msgh, 0);
-    if (n <= 0) {
-        if (n == 0) return -1; /* peer closed */
-        IDK_ERR("render", "recvmsg failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    *out_fd = -1;
-    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh); cmsg;
-         cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
-        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-            memcpy(out_fd, CMSG_DATA(cmsg), sizeof(int));
-            break;
-        }
-    }
-
-    if (*out_fd < 0) {
-        IDK_ERR("render", "No fd received\n");
-        return -1;
-    }
-
-    return 0;
-}
 
 /* ── Overlay rendering helpers ────────────────────────────────────────── */
 

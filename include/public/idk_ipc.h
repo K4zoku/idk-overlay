@@ -3,17 +3,18 @@
  *
  * Wire format (P0.5 cleanup — 2026-06-26):
  *
- * Frame (24 bytes header + 1 fd via SCM_RIGHTS):
+ * Frame (28 bytes header + 1 fd via SCM_RIGHTS):
  *   +----------------------+
  *   | modifier uint64      |  offset  0 — DRM modifier (0=linear, SHM=0)
  *   | width     uint32     |  offset  8
  *   | height    uint32     |  offset 12
  *   | stride    uint32     |  offset 16 — bytes per row (DMABUF), 0=SHM
- *   | flags     uint8      |  offset 20 — bit0=visible, bit1=dmabuf
- *   | _pad     uint8[3]    |  offset 21 — reserved
- *   +----------------------+  total 24 bytes
+ *   | fourcc    uint32     |  offset 20 — DRM fourcc (DMABUF), 0=SHM
+ *   | flags     uint8      |  offset 24 — bit0=visible, bit1=dmabuf
+ *   | _pad     uint8[3]    |  offset 25 — reserved
+ *   +----------------------+  total 28 bytes
  *
- * Input event (16 bytes, no fd passing):
+ * Input event (20 bytes, no fd passing):
  *   +----------------------+
  *   | type   uint8         |  offset  0 — KEY/BUTTON/MOTION/AXIS/STATE/REPEAT
  *   | flags  uint8         |  offset  1 — bit0=press(1)/release(0)
@@ -145,7 +146,7 @@ void idk_ipc_close(int fd);
  * Uses SCM_RIGHTS to pass the fd atomically with the metadata.
  *
  * @param socket_fd   Connected socket fd.
- * @param hdr         Frame header (24 bytes, fully populated by caller).
+ * @param hdr         Frame header (28 bytes, fully populated by caller).
  * @param fd          dmabuf/SHM fd to pass.
  * @return            0 on success, -1 on failure.
  */
@@ -158,7 +159,7 @@ int idk_ipc_send_frame(int socket_fd, const idk_frame_header_t *hdr, int fd);
  * Blocks up to 2s waiting for data.
  *
  * @param socket_fd  Connected socket fd.
- * @param hdr        Output: frame header (24 bytes).
+ * @param hdr        Output: frame header (28 bytes).
  * @param out_fd     Output: received fd (must be closed by caller).
  * @return           0 on success, -1 on EOF/error/timeout.
  */

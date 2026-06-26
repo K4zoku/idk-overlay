@@ -17,24 +17,6 @@
 extern "C" {
 #endif
 
-/* ── Frame header ─────────────────────────────────────────────────────── */
-/* idk_frame_header_t (24 bytes) is defined in include/public/idk_ipc.h.
- * The old 32-byte struct frame_hdr has been replaced. */
-
-/* ── Frame reception ──────────────────────────────────────────────────── */
-
-/**
- * Receive one frame (dmabuf or SHM fd) from the connected socket.
- * Blocks up to 2 seconds. The fd is passed via SCM_RIGHTS and must be
- * closed by the caller.
- *
- * @param sock_fd    Connected socket fd.
- * @param hdr        Output: frame header (24 bytes).
- * @param out_fd     Output: received dmabuf/SHM fd (must be closed after use).
- * @return           0 on success, -1 on EOF/error/timeout.
- */
-int receive_frame(int sock_fd, idk_frame_header_t *hdr, int *out_fd);
-
 /* ── Overlay rendering helpers ────────────────────────────────────────── */
 
 /**

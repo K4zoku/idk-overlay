@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 
 #include "hook/syringe_hook.h"
-#include "hook/glx.h"
+#include "hook/graphic_hooks.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 #include "shim/elfhacks.h"

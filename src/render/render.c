@@ -12,14 +12,13 @@
  * socket, receives dmabuf fds (SCM_RIGHTS), imports them into Vulkan
  * or reads from SHM, and optionally writes pixels to a file.
  *
- * Overlay frame header mapping (from idk_client):
- *   width     → width
- *   height    → height
- *   stride    → overlay X position
- *   format    → overlay Y position
- *   num_planes → overlay ID
- *   pid       → pixel byte size
- *   reserved  → visibility flag
+ * Frame header fields (idk_frame_header_t from idk_ipc.h):
+ *   modifier  → DRM modifier (0 for linear/SHM)
+ *   width     → frame width in pixels
+ *   height    → frame height in pixels
+ *   stride    → bytes per row
+ *   fourcc    → DRM fourcc (0 for SHM)
+ *   flags     → IDK_FRAME_FLAG_VISIBLE | IDK_FRAME_FLAG_DMABUF
  */
 
 #include <stdio.h>

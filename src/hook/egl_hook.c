@@ -7,7 +7,7 @@
 #include <pthread.h>
 
 #include "hook/syringe_hook.h"
-#include "hook/egl.h"
+#include "hook/graphic_hooks.h"
 #include "hook/overlay.h"
 #include "hook/wayland_input.h"
 #include "gl/gl_loader.h"

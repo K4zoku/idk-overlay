@@ -48,7 +48,7 @@
 
 /* Frame protocol definitions (idk_frame_header_t, IDK_FRAME_FLAG_*) are in
  * compositor_common.h (via idk_ipc.h). The old 40-byte struct frame_hdr has
- * been replaced by the 24-byte idk_frame_header_t. */
+ * been replaced by the 28-byte idk_frame_header_t. */
 
 /* ── Socket state ──────────────────────────────────────────────────────── */
 
