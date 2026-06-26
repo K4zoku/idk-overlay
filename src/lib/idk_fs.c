@@ -1,8 +1,7 @@
-/* idk_fs.c — Frame sender library (client side of compositor socket).
+/* idk_fs.c — Frame sender library (client side of compositor).
  *
- * Builds the 24-byte wire header (idk_frame_header_t) from idk_fs_frame_t
- * and sends it with the fd via SCM_RIGHTS. See include/public/idk_ipc.h
- * for the wire format.
+ * Uses idk_transport under the hood. Phase 1: socket backend.
+ * Phase 2: SHM backend (transparent swap).
  */
 
 #include <stdio.h>
@@ -11,20 +10,18 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/mman.h>
 
 #include "public/idk_fs.h"
 #include "public/idk_ipc.h"
+#include "core/transport.h"
 #include "core/log.h"
 
 /* ── Internal state ── */
 
-static int g_sock_fd = -1;
-static char g_sock_path[IDK_IPC_SOCKNAME_MAX];
+static idk_transport_t g_tp;
 
-/* Build the 24-byte wire header from the client-facing frame struct. */
+/* Build the 28-byte wire header from the client-facing frame struct. */
 void build_frame_hdr(const idk_fs_frame_t *frame,
                      idk_frame_header_t *hdr) {
     hdr->modifier = frame->modifier;
@@ -75,81 +72,35 @@ int idk_fs_init(const char *sockpath, int reuse_fd) {
 }
 
 int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
+    (void)reuse_fd;
+    (void)retries;
     if (!sockpath) {
         errno = EINVAL;
         return -1;
     }
-
     size_t len = strlen(sockpath);
-    if (len >= IDK_IPC_SOCKNAME_MAX) {
+    if (len >= IDK_TP_PATH_MAX) {
         errno = ERANGE;
         return -1;
     }
-    strncpy(g_sock_path, sockpath, IDK_IPC_SOCKNAME_MAX);
-    g_sock_path[IDK_IPC_SOCKNAME_MAX - 1] = '\0';
-
-    if (!reuse_fd) {
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd < 0) {
-            IDK_ERR("fs", "socket() failed: %s\n", strerror(errno));
-            return -1;
-        }
-
-        struct sockaddr_un addr = { .sun_family = AF_UNIX };
-        memcpy(addr.sun_path, sockpath, len + 1);
-
-        int connect_ret = -1;
-        for (int i = 0; i <= retries; i++) {
-            connect_ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-            if (connect_ret == 0) break;
-            if (errno != ECONNREFUSED && errno != ENOENT) {
-                IDK_ERR("fs", "connect(%s) failed: %s\n",
-                        sockpath, strerror(errno));
-                close(fd);
-                return -1;
-            }
-            if (i < retries) usleep(100000);
-        }
-
-        if (connect_ret < 0) {
-            if (retries > 0 || (errno != ECONNREFUSED && errno != ENOENT)) {
-                IDK_ERR("fs",
-                        "connect(%s) failed after %d retries: %s\n",
-                        sockpath, retries, strerror(errno));
-            }
-            close(fd);
-            return -1;
-        }
-
-        g_sock_fd = fd;
-        IDK_LOG("fs", "Connected to %s (fd=%d)\n", sockpath, fd);
-    } else {
-        g_sock_fd = reuse_fd;
-        IDK_LOG("fs", "Reusing fd=%d for %s\n", reuse_fd, sockpath);
-    }
-
-    return 0;
+    return idk_tp_init(&g_tp, IDK_TP_PRODUCER, sockpath);
 }
 
 int idk_fs_get_fd(void) {
-    return g_sock_fd;
+    return g_tp._client_fd;
+}
+
+bool idk_fs_is_connected(void) {
+    return g_tp.ready;
 }
 
 void idk_fs_shutdown(void) {
-    if (g_sock_fd >= 0) {
-        close(g_sock_fd);
-        g_sock_fd = -1;
-    }
+    idk_tp_destroy(&g_tp);
 }
 
-/* Internal: sendmsg with frame header + N fds.
- * nfd must be 1..4. */
+/* Internal: sendmsg with frame header + N fds. */
 static int send_frame_msg(const idk_fs_frame_t *frame, const int *fds, int nfd) {
-    if (g_sock_fd < 0) {
-        errno = ENOTCONN;
-        return -1;
-    }
-    if (!frame || !fds || nfd < 1 || nfd > 4) {
+    if (!g_tp.ready || !frame || !fds || nfd < 1 || nfd > 4) {
         errno = EINVAL;
         return -1;
     }
@@ -157,38 +108,7 @@ static int send_frame_msg(const idk_fs_frame_t *frame, const int *fds, int nfd) 
     idk_frame_header_t hdr;
     build_frame_hdr(frame, &hdr);
 
-    struct iovec iov = { .iov_base = &hdr, .iov_len = sizeof(hdr) };
-    char ctrl_buf[CMSG_SPACE(sizeof(int) * 4)] = { 0 };
-    struct msghdr msgh = {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-        .msg_control = ctrl_buf,
-        .msg_controllen = sizeof(ctrl_buf),
-    };
-
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * nfd);
-    memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * nfd);
-    msgh.msg_controllen = cmsg->cmsg_len;
-
-    ssize_t n = sendmsg(g_sock_fd, &msgh, MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1;
-        }
-        if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN || errno == ESHUTDOWN) {
-            IDK_ERR("fs", "sendmsg: peer closed (errno=%d: %s) — shutting down socket\n",
-                    errno, strerror(errno));
-            idk_fs_shutdown();
-        } else {
-            IDK_ERR("fs", "sendmsg failed: %s\n", strerror(errno));
-        }
-        return -1;
-    }
-
-    return 0;
+    return idk_tp_send(&g_tp, &hdr, fds, nfd);
 }
 
 int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
@@ -211,10 +131,9 @@ int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    /* SHM frames always have these flags (visible, not dmabuf). */
     idk_fs_frame_t f = *frame;
-    f.flags = IDK_FRAME_FLAG_VISIBLE;  /* clears DMABUF bit */
-    f.stride = 0;                       /* SHM has no stride */
+    f.flags = IDK_FRAME_FLAG_VISIBLE;
+    f.stride = 0;
 
     size_t pixel_size = (size_t)f.width * (size_t)f.height * 4;
     int shm_fd = copy_to_shm(pixels, pixel_size);
@@ -236,7 +155,6 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
         return -1;
     }
 
-    /* DMABUF frames set the DMABUF flag (keep visible bit as-is). */
     idk_fs_frame_t f = *frame;
     f.flags = (f.flags & ~IDK_FRAME_FLAG_DMABUF) | IDK_FRAME_FLAG_DMABUF;
 
@@ -250,16 +168,10 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
     return rc;
 }
 
-int idk_fs_wait_ack(void) {
-    if (g_sock_fd < 0) {
+int idk_fs_wait_ack(idk_ack_msg_t *ack, int timeout_ms) {
+    if (!g_tp.ready) {
         errno = ENOTCONN;
         return -1;
     }
-    char ack = 0;
-    ssize_t n = read(g_sock_fd, &ack, 1);
-    if (n <= 0) {
-        if (n == 0) errno = ECONNRESET;
-        return -1;
-    }
-    return 0;
+    return idk_tp_wait_ack(&g_tp, ack, timeout_ms);
 }

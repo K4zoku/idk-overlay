@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "public/idk_ipc.h"
 
@@ -101,9 +102,17 @@ int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame);
 
 /**
  * Wait for compositor ACK after sending a frame.
- * Returns 0 on ACK received, -1 on error.
+ * Fills *ack with the ACK message (includes resize info).
+ * @param ack        Output: ACK message (w/h for resize, ack for accept/reject).
+ * @param timeout_ms Timeout in milliseconds.
+ * @return           0 on ACK received, -1 on timeout/error.
  */
-int idk_fs_wait_ack(void);
+int idk_fs_wait_ack(idk_ack_msg_t *ack, int timeout_ms);
+
+/**
+ * Check if connected to compositor.
+ */
+bool idk_fs_is_connected(void);
 
 /**
  * Send DMA-BUF fds directly (no SHM copy — for GPU-rendered content).

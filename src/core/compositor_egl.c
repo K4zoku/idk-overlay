@@ -9,10 +9,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <poll.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -20,6 +16,7 @@
 #include "gl/shader_loader.h"    /* shader compile + SPIR-V fallback */
 #include "core/compositor_egl.h"
 #include "core/compositor_common.h"
+#include "core/transport.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
@@ -263,28 +260,28 @@ static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                                     uint64_t modifier,
                                     EGLImageKHR *out_img);
 
-static int g_listen_fd = -1;
-static int g_client_fd = -1;
 static char g_sock_path[512];
+static idk_transport_t g_tp;
 
-/* Init compositor — bind socket, accept client */
+/* Init compositor — init transport, accept client */
 int idk_compositor_egl_init(void) {
     static int g_inited = 0;
     if (g_inited) return 0;
     g_inited = 1;
 
-    if (idk_comp_sock_init(&g_listen_fd, g_sock_path, sizeof(g_sock_path), "comp") != 0) {
+    idk_comp_get_path(g_sock_path, sizeof(g_sock_path));
+    if (idk_tp_init(&g_tp, IDK_TP_CONSUMER, g_sock_path) != 0) {
         return -1;
     }
     /* Try a non-blocking accept in case the webview is already waiting */
-    idk_comp_sock_accept(g_listen_fd, &g_client_fd, "comp");
+    idk_tp_accept(&g_tp);
     g_has_frame = false;
     return 0;
 }
 
 /* Non-blocking accept */
 static int accept_client(void) {
-    return idk_comp_sock_accept(g_listen_fd, &g_client_fd, "comp");
+    return idk_tp_accept(&g_tp);
 }
 
 /* SHM → GL texture upload via glTex(Sub)Image2D */
@@ -383,23 +380,25 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
 
 int idk_compositor_egl_render(void) {
     accept_client();
-    if (g_client_fd < 0) return -1;
+    if (!g_tp.ready) return -1;
 
     /* Poll for new frame — keep newest only */
     int processed = 0;
 
     while (1) {
         idk_frame_header_t hdr;
-        int dmabuf_fd = -1;
-        int rc = idk_comp_recv_frame(g_client_fd, &hdr, &dmabuf_fd, "comp");
+        int fds[4], nfd = 0;
+        int rc = idk_tp_recv(&g_tp, &hdr, fds, &nfd);
         if (rc <= 0) {
             if (rc < 0) {
-                IDK_LOG("comp", "client disconnected (fd=%d), resetting\n", g_client_fd);
-                close(g_client_fd);
-                g_client_fd = -1;
+                IDK_LOG("comp", "client disconnected, resetting\n");
+                idk_tp_destroy(&g_tp);
+                g_tp.ready = false;
             }
             break;
         }
+
+        int dmabuf_fd = (nfd > 0) ? fds[0] : -1;
 
         if (processed > 0) {
             close(dmabuf_fd);
@@ -506,12 +505,12 @@ int idk_compositor_egl_render(void) {
 
     if (processed) {
         uint8_t ack = (processed < 0) ? 1 : 0;
-        /* GL path: no debounce (debounce_ms=0 sends size immediately).
-         * VK path uses IDK_COMP_RESIZE_DEBOUNCE_MS. */
-        idk_comp_send_ack(g_client_fd, ack,
-                          g_game_w, g_game_h,
-                          &g_size_pending, &g_last_resize_ts,
-                          0, "comp");
+        idk_ack_msg_t ack_msg;
+        idk_comp_build_ack(&ack_msg, ack,
+                           g_game_w, g_game_h,
+                           &g_size_pending, &g_last_resize_ts,
+                           0, "comp");
+        idk_tp_send_ack(&g_tp, &ack_msg);
         return 0;
     }
     return -1;
@@ -916,15 +915,7 @@ void idk_compositor_egl_shutdown(void) {
         g_dmabuf_fd = -1;
     }
 
-    if (g_client_fd >= 0) {
-        close(g_client_fd);
-        g_client_fd = -1;
-    }
-
-    if (g_listen_fd >= 0) {
-        close(g_listen_fd);
-        g_listen_fd = -1;
-    }
+    idk_tp_destroy(&g_tp);
 
     /* Remove socket file */
     if (g_sock_path[0]) {
