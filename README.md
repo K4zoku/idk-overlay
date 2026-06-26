@@ -10,7 +10,7 @@ Injects into a target process via [syringe](https://github.com/K4zoku/syringe) (
 - **Wayland-native**: works on Wayland without X11 fallback
 - **Qt6 WebEngine webview**: render HTML/CSS/JS overlays
 - **DMABUF import**: zero-copy texture import via EGL (`EGL_EXT_image_dma_buf`) or `GL_EXT_memory_object` (GLX fallback)
-- **Wayland input hooking**: toggle input capture (default: F8) to redirect keyboard + mouse to the overlay UI
+- **Wayland input hooking**: toggle input capture (default: Shift+Tab) to redirect keyboard + mouse to the overlay UI
 - **Plugin architecture**: per-API hooks register via `idk_hook_plugin_t`, auto-discovered
 - **Double-buffered GL textures**: no flickering, no tearing
 - **ACK flow control**: webview frame rate synced to game swap rate
@@ -97,7 +97,7 @@ IDK_SOCKET=/tmp/idk-overlay-$(pgrep osu!) ./build/src/cli/webview/idk-webview
 | `IDK_VK` | `1` | Enable Vulkan hooks |
 | `IDK_GL` | `1` | Enable OpenGL/EGL hooks |
 | `IDK_DEBUG` | (unset) | Set to `1` to enable debug logging |
-| `IDK_TOGGLE_KEY` | `F8` | Hotkey to toggle input capture (xkb keysym name: `F1`–`F12`, `Scroll_Lock`, `Pause`, etc.) |
+| `IDK_TOGGLE_KEY` | `Shift+Tab` | Hotkey to toggle input capture (xkb keysym name: `F1`–`F12`, `Scroll_Lock`, `Pause`, etc.) |
 
 ## Wayland input hooking
 
@@ -119,12 +119,12 @@ Each message is 20 bytes (`idk_input_event_t`):
 | type   uint8   |  KEY/BUTTON/MOTION/AXIS/STATE     |
 | flags  uint8   |  bit0=press, bit1=capture         |
 | mods   uint16  |  Ctrl=1, Shift=2, Alt=4, Super=8  |
-| time   uint32  |  Wayland timestamp (ms)            |
+| time   uint32  |  Wayland timestamp (ms)           |
 | union  (12B)   |  key { keycode, keysym, _pad }    |
-|                 |  btn { x, y, button }             |
-|                 |  motion { x, y, _pad }            |
-|                 |  axis { dx, dy, _pad }            |
-|                 |  repeat { rate, delay, _pad }     |
+|                |  btn { x, y, button }             |
+|                |  motion { x, y, _pad }            |
+|                |  axis { dx, dy, _pad }            |
+|                |  repeat { rate, delay, _pad }     |
 +----------------------------------------------------+
 ```
 
