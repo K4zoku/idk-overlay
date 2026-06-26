@@ -39,10 +39,27 @@ foreach src : ['test_vendor.c', 'test_resize.c']
     test(name, test_exe)
 endforeach
 
-# Tests needing idk_fs_lib (build_frame_hdr)
-test_exe = executable('test_frame_header', 'test_frame_header.c',
+# Tests needing idk_fs_lib (build_frame_hdr, public API)
+foreach src : ['test_frame_header.c', 'test_idk_fs.c']
+    name = src.split('.')[0]
+    test_exe = executable(name, src,
+        c_args: test_c_args,
+        include_directories: inc,
+        link_with: [idk_fs_lib],
+    )
+    test(name, test_exe)
+endforeach
+
+# Static library for ipc.c — validation tests
+test_ipc_lib = static_library('test_ipc',
+    '../src/ipc/ipc.c',
     c_args: test_c_args,
     include_directories: inc,
-    link_with: [idk_fs_lib],
 )
-test('test_frame_header', test_exe)
+
+test_exe = executable('test_ipc', 'test_ipc.c',
+    c_args: test_c_args,
+    include_directories: inc,
+    link_with: [test_ipc_lib],
+)
+test('test_ipc', test_exe)
