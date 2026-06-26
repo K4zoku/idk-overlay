@@ -127,8 +127,16 @@ static int producer_init(idk_transport_t *tp, const char *path) {
 /* ── Interface implementation ───────────────────────────────────────── */
 
 int tp_socket_init(idk_transport_t *tp, const char *name) {
-    memset(tp, 0, sizeof(*tp));
-    if (tp->role == IDK_TP_CONSUMER)
+    /* Preserve role/ready/backend set by idk_tp_init; only zero internal state. */
+    idk_tp_role_t role = tp->role;
+    uint8_t backend = tp->backend;
+    memset(tp->_rsv, 0, sizeof(tp->_rsv));
+    tp->_server_fd = -1;
+    tp->_client_fd = -1;
+    tp->ready = false;
+    tp->role = role;
+    tp->backend = backend;
+    if (role == IDK_TP_CONSUMER)
         return consumer_init(tp, name);
     else
         return producer_init(tp, name);

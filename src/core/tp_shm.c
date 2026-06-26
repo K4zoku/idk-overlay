@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -35,14 +36,16 @@
 #define SHM_O_MAGIC       0   /* uint32_t   — magic value */
 #define SHM_O_PROD_STATE  4   /* atomic_int — 0=init,1=ready,-1=dead */
 #define SHM_O_CONS_STATE  8   /* atomic_int — 0=init,1=ready,-1=dead */
-#define SHM_O_PROD_PID    12  /* int32_t    — producer PID (for pidfd) */
-#define SHM_O_DMABUF_NFD  16  /* int32_t    — # of dmabuf fds (0-4) */
-#define SHM_O_DMABUF_FDS  20  /* int32_t[4] — fd numbers in producer */
-#define SHM_O_HDR         36  /* idk_frame_header_t (28 bytes) */
-#define SHM_O_ACK         64  /* idk_ack_msg_t (12 bytes) */
-#define SHM_O_SLOT_STATE  76  /* atomic_int — 0=empty,1=frame,2=ack */
+#define SHM_O_PROD_PID    12  /* int32_t    — producer PID (for consumer pidfd) */
+#define SHM_O_CONS_PID    16  /* int32_t    — consumer PID (for producer liveness check) */
+#define SHM_O_DMABUF_NFD  20  /* int32_t    — # of dmabuf fds (0-4) */
+#define SHM_O_DMABUF_FDS  24  /* int32_t[4] — fd numbers in producer */
+#define SHM_O_HDR         40  /* idk_frame_header_t (28 bytes) */
+#define SHM_O_ACK         68  /* idk_ack_msg_t (12 bytes) */
+#define SHM_O_SLOT_STATE  80  /* atomic_int — 0=empty,1=frame,2=ack */
+#define SHM_O_FRAME_SEQ   84  /* atomic_int — incremented each frame sent */
 
-_Static_assert(SHM_O_SLOT_STATE + 4 <= SHM_SIZE,
+_Static_assert(SHM_O_FRAME_SEQ + 4 <= SHM_SIZE,
                "SHM layout exceeds page size");
 
 #define SHM_MAGIC_VAL 0x4D485349  /* "SHMI" */
@@ -87,18 +90,22 @@ static void make_shm_name(const char *name, char *buf, size_t max) {
 static int futex_wait(atomic_int *uaddr, int val, int timeout_ms) {
     struct timespec ts, *tsp = NULL;
     if (timeout_ms >= 0) {
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        ts.tv_sec  += timeout_ms / 1000;
-        ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
-        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        /* FUTEX_WAIT interprets timeout as a RELATIVE duration (not absolute).
+         * Do NOT add clock_gettime — just set the duration directly. */
+        ts.tv_sec  = timeout_ms / 1000;
+        ts.tv_nsec = (long)(timeout_ms % 1000) * 1000000L;
         tsp = &ts;
     }
-    int op = FUTEX_WAIT | FUTEX_PRIVATE_FLAG;
+    /* NO FUTEX_PRIVATE_FLAG — the futex lives in shared memory mapped by
+     * two different processes. PRIVATE only works for process-internal
+     * futexes (heap/stack/anonymous mmap). With PRIVATE, futex_wake from
+     * the other process won't find this waiter. */
+    int op = FUTEX_WAIT;
     return (int)syscall(__NR_futex, uaddr, op, val, tsp, NULL, 0);
 }
 
 static int futex_wake(atomic_int *uaddr) {
-    return (int)syscall(__NR_futex, uaddr, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1,
+    return (int)syscall(__NR_futex, uaddr, FUTEX_WAKE, 1,
                         NULL, NULL, 0);
 }
 
@@ -126,7 +133,13 @@ static void *shm_setup(const char *name, int *out_fd, int is_creator) {
     return ptr;
 }
 
-/* ── Consumer init ───────────────────────────────────────────────────── */
+/* ── Consumer init — NON-BLOCKING ──────────────────────────────────────
+ *
+ * Creates SHM, writes consumer PID, sets CONS_STATE=1, returns immediately.
+ * Does NOT wait for producer — that happens lazily in tp_shm_accept
+ * (called every frame from compositor render loop). This avoids blocking
+ * the hook install thread, which would race with the game's main thread
+ * if install_addr (trampoline code patching) runs after a long init. */
 
 static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     char shm_name[64];
@@ -143,42 +156,19 @@ static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     /* Initialize SHM header */
     *shm_i32(ptr, SHM_O_MAGIC) = SHM_MAGIC_VAL;
     atomic_store(shm_atom(ptr, SHM_O_PROD_STATE), 0);
-    atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 1);  /* consumer ready */
+    atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 1);  /* consumer partially ready */
+    *shm_i32(ptr, SHM_O_CONS_PID) = (int32_t)getpid();
+    *shm_i32(ptr, SHM_O_PROD_PID) = 0;
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
+    atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
 
     tp->_server_fd = shm_fd;
-    tp->_client_fd = -1;
+    tp->_client_fd = -1;  /* pidfd opened lazily in accept */
     TP_SH_SHM_PTR(tp->_rsv) = ptr;
-    tp->ready = false;
+    tp->ready = false;  /* not fully ready until producer connects + pidfd opened */
 
-    /* Wait for producer to signal ready */
-    IDK_LOG("tp", "shm: consumer waiting for producer on %s\n", shm_name);
-    int waited = 0;
-    while (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) != 1) {
-        if (waited >= 0 && futex_wait(shm_atom(ptr, SHM_O_PROD_STATE), 0, 30000) < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
-        }
-        if (++waited > 600) {  /* ~30s total */
-            IDK_ERR("tp", "shm: timeout waiting for producer on %s\n", shm_name);
-            tp_shm_destroy(tp);
-            return -1;
-        }
-        usleep(50000);
-    }
-
-    /* Open pidfd for producer */
-    int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
-    int pidfd = (int)syscall(__NR_pidfd_open, prod_pid, 0);
-    if (pidfd < 0) {
-        IDK_ERR("tp", "shm: pidfd_open(%d) failed: %s\n", prod_pid, strerror(errno));
-        tp_shm_destroy(tp);
-        return -1;
-    }
-    tp->_client_fd = pidfd;
-
-    atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 2);  /* consumer fully ready */
-    tp->ready = true;
-    IDK_LOG("tp", "shm: consumer ready, producer pid=%d pidfd=%d\n", prod_pid, pidfd);
+    IDK_LOG("tp", "shm: consumer created %s (pid=%d, waiting for producer)\n",
+            shm_name, (int)getpid());
     return 0;
 }
 
@@ -222,9 +212,32 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
     tp->_server_fd = -1;
     tp->_client_fd = shm_fd;
     TP_SH_SHM_PTR(tp->_rsv) = ptr;
-    tp->ready = true;
 
-    IDK_LOG("tp", "shm: producer ready on %s\n", shm_name);
+    /* Wait for consumer to be fully ready (pidfd opened) before
+     * declaring ready. Consumer's tp_shm_accept (called every frame)
+     * detects PROD_STATE==1, opens pidfd, sets CONS_STATE=2. */
+    IDK_LOG("tp", "shm: producer waiting for consumer on %s\n", shm_name);
+    atomic_int *cons_state = shm_atom(ptr, SHM_O_CONS_STATE);
+    int waited_ms = 0;
+    while (atomic_load(cons_state) != 2) {
+        if (atomic_load(cons_state) == -1) {
+            IDK_ERR("tp", "shm: consumer died before ready on %s\n", shm_name);
+            close(shm_fd);
+            return -1;
+        }
+        int rc = futex_wait(cons_state, 1, 1000);  /* wait while cons_state==1 */
+        (void)rc;
+        waited_ms += 1000;
+        if (waited_ms >= 30000) {
+            IDK_ERR("tp", "shm: timeout waiting for consumer on %s\n", shm_name);
+            close(shm_fd);
+            return -1;
+        }
+    }
+
+    tp->ready = true;
+    int cons_pid = *shm_i32(ptr, SHM_O_CONS_PID);
+    IDK_LOG("tp", "shm: producer ready on %s (consumer pid=%d)\n", shm_name, cons_pid);
     return 0;
 }
 
@@ -258,21 +271,50 @@ void tp_shm_destroy(idk_transport_t *tp) {
 
 /* ── Consumer API ─────────────────────────────────────────────────────── */
 
+/* Called every frame from compositor render loop. Non-blocking.
+ * If not yet ready, checks if producer connected; if so, opens pidfd,
+ * signals CONS_STATE=2, sets ready. */
 int tp_shm_accept(idk_transport_t *tp) {
-    (void)tp;
-    /* In SHM mode, accept is implicit during init — producer connects
-     * by opening the SHM and writing its PID. */
-    return tp->ready ? 1 : 0;
+    if (tp->ready) return 1;
+
+    void *ptr = TP_SH_SHM_PTR(tp->_rsv);
+    if (!ptr) return -1;
+
+    /* Check if producer has connected */
+    int ps = atomic_load(shm_atom(ptr, SHM_O_PROD_STATE));
+    if (ps != 1) {
+        if (ps == -1) return -1;  /* producer died */
+        return 0;  /* still waiting */
+    }
+
+    /* Producer connected — open pidfd */
+    int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
+    if (prod_pid <= 0) return -1;
+
+    int pidfd = (int)syscall(__NR_pidfd_open, prod_pid, 0);
+    if (pidfd < 0) {
+        IDK_ERR("tp", "shm: pidfd_open(%d) failed: %s\n", prod_pid, strerror(errno));
+        return -1;
+    }
+    tp->_client_fd = pidfd;
+
+    /* Signal fully ready — producer waits for this */
+    atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 2);
+    futex_wake(shm_atom(ptr, SHM_O_CONS_STATE));
+    tp->ready = true;
+    IDK_LOG("tp", "shm: consumer ready, producer pid=%d pidfd=%d\n", prod_pid, pidfd);
+    return 1;
 }
 
 int tp_shm_poll(idk_transport_t *tp) {
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
     if (!ptr || !tp->ready) return -1;
 
+    /* Check producer still alive */
+    if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1) return -1;
+
     int s = atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE));
-    if (s == SLOT_FRAME) return 1;
-    if (s == SLOT_EMPTY) return 0;
-    return 0;  /* SLOT_ACK means consumer-side not yet read */
+    return (s == SLOT_FRAME) ? 1 : 0;
 }
 
 int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
@@ -283,12 +325,14 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
         return -1;
     }
 
-    /* Wait for producer to write a frame */
-    if (tp_shm_poll(tp) != 1) {
-        if (atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE)) == SLOT_EMPTY)
-            return 0;  /* no data yet */
-        /* else: protocol violation */
+    /* Check producer is still alive */
+    if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1) {
         return -1;
+    }
+
+    /* No frame available */
+    if (atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE)) != SLOT_FRAME) {
+        return 0;
     }
 
     /* Read header */
@@ -296,13 +340,15 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
 
     /* Steal dmabuf fds via pidfd_getfd */
     *nfd = *shm_i32(ptr, SHM_O_DMABUF_NFD);
+    if (*nfd < 0) *nfd = 0;
     if (*nfd > 4) *nfd = 4;
     for (int i = 0; i < *nfd; i++) {
         int target_fd = shm_i32(ptr, SHM_O_DMABUF_FDS)[i];
         int stolen = (int)syscall(__NR_pidfd_getfd, tp->_client_fd,
                                   target_fd, 0);
         if (stolen < 0) {
-            /* Close any fds already stolen */
+            IDK_ERR("tp", "shm: pidfd_getfd(%d) failed: %s\n",
+                    target_fd, strerror(errno));
             for (int j = 0; j < i; j++) close(fds[j]);
             *nfd = 0;
             return -1;
@@ -332,6 +378,22 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
         return -1;
     }
 
+    /* Check consumer still alive via kill(pid, 0).
+     * On consumer segfault, tp_shm_destroy is NOT called, so CONS_STATE
+     * stays at 2. We need an out-of-band liveness check. */
+    int cons_pid = *shm_i32(ptr, SHM_O_CONS_PID);
+    if (cons_pid > 0 && kill(cons_pid, 0) < 0 && errno == ESRCH) {
+        IDK_ERR("tp", "shm: consumer pid=%d dead\n", cons_pid);
+        errno = ECONNRESET;
+        return -1;
+    }
+
+    /* Also check CONS_STATE for graceful shutdown */
+    if (atomic_load(shm_atom(ptr, SHM_O_CONS_STATE)) == -1) {
+        errno = ECONNRESET;
+        return -1;
+    }
+
     /* Wait for slot to be empty (consumer must have read previous ack) */
     int s = atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE));
     if (s != SLOT_EMPTY && s != SLOT_ACK) {
@@ -339,13 +401,20 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
         return -1;
     }
 
-    /* Write dmabuf fd numbers into SHM */
+    /* Write dmabuf fd numbers into SHM (these are fd numbers in OUR
+     * process — consumer steals them via pidfd_getfd) */
     *shm_i32(ptr, SHM_O_DMABUF_NFD) = nfd;
     for (int i = 0; i < nfd; i++)
         shm_i32(ptr, SHM_O_DMABUF_FDS)[i] = fds[i];
 
     /* Write header */
     memcpy(shm_ptr(ptr, SHM_O_HDR), hdr, sizeof(*hdr));
+
+    /* Increment frame sequence for liveness tracking */
+    atomic_fetch_add(shm_atom(ptr, SHM_O_FRAME_SEQ), 1);
+
+    /* Memory barrier: ensure header + fds visible before slot state */
+    atomic_thread_fence(memory_order_release);
 
     /* Signal consumer */
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_FRAME);
@@ -363,19 +432,33 @@ int tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
 
     /* Wait for slot to become SLOT_ACK */
     atomic_int *slot = shm_atom(ptr, SHM_O_SLOT_STATE);
-    int waited = 0;
+    int waited_ms = 0;
     while (atomic_load(slot) != SLOT_ACK) {
-        if (timeout_ms >= 0 && waited >= timeout_ms) { errno = ETIMEDOUT; return -1; }
-        if (futex_wait(slot, SLOT_FRAME, timeout_ms) < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            if (errno == ETIMEDOUT) return -1;
+        /* Check consumer dead */
+        if (atomic_load(shm_atom(ptr, SHM_O_CONS_STATE)) == -1) {
+            errno = ECONNRESET;
+            return -1;
         }
-        waited += 10;  /* approximate; real timeout via futex */
+        if (timeout_ms >= 0 && waited_ms >= timeout_ms) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        /* futex_wait on slot while it's SLOT_FRAME — wakes when
+         * consumer changes it (to SLOT_ACK or SLOT_EMPTY) */
+        int tick_ms = 1000;
+        if (timeout_ms >= 0 && timeout_ms - waited_ms < tick_ms)
+            tick_ms = timeout_ms - waited_ms;
+        if (tick_ms <= 0) tick_ms = 1;
+        int rc = futex_wait(slot, SLOT_FRAME, tick_ms);
+        (void)rc;
+        waited_ms += tick_ms;
     }
 
     /* Read ack and reset slot */
+    atomic_thread_fence(memory_order_acquire);
     memcpy(ack, shm_ptr(ptr, SHM_O_ACK), sizeof(*ack));
     atomic_store(slot, SLOT_EMPTY);
+    futex_wake(slot);  /* wake producer in case it's waiting for empty */
 
     return 0;
 }
