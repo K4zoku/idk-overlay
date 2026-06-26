@@ -13,34 +13,38 @@
 
 #include "hook/syringe_hook.h"
 #include "hook/overlay.h"
-#include "public/idk_ipc.h"
+#include "hook/hook_plugin.h"
 #include "hook/graphic_hooks.h"
 #include "hook/wayland_input.h"
 #include "core/log.h"
 
 static char g_socket_path[PATH_MAX];
-static int g_ipc_fd = -1;
 static int g_enable_vk = 0;
 static int g_enable_gl = 0;
 static int g_initialized = 0;
-static int g_wl_input_tried = 0;  /* avoid retrying wayland input hook every swap */
-static int g_hooks_installed = 0; /* set by background thread when any hook succeeds */
+static int g_wl_input_tried = 0;
+static int g_hooks_installed = 0;
 
-static FILE *g_dbg = NULL;
-static void dbg_init(void) {
-    if (g_dbg) return;
-    g_dbg = fopen("/tmp/idk-debug.log", "a");
-    if (g_dbg) {
-        setvbuf(g_dbg, NULL, _IONBF, 0);
-        fprintf(g_dbg, "\n=== idk-overlay (PID %d) ===\n", getpid());
+/* All registered hook plugins */
+static idk_hook_plugin_t *g_plugins[] = {
+    &idk_plugin_egl,
+    &idk_plugin_glx,
+    &idk_plugin_vk_syringe,
+};
+
+/* Probe a plugin by trying to dlopen its libraries (NOLOAD) */
+static int plugin_lib_loaded(const idk_hook_plugin_t *p) {
+    for (int i = 0; p->lib_patterns[i]; i++) {
+        void *h = dlopen(p->lib_patterns[i], RTLD_NOW | RTLD_NOLOAD);
+        if (h) {
+            dlclose(h);
+            return 1;
+        }
     }
+    return 0;
 }
-#define DBG(fmt, ...) do { \
-    if (g_dbg) fprintf(g_dbg, "[idk-overlay] " fmt "\n", ##__VA_ARGS__); \
-    IDK_LOG("overlay", fmt "\n", ##__VA_ARGS__); \
-} while(0)
 
-/* Background thread: poll for GL/EGL/Vulkan libraries */
+/* Background thread: poll for graphics libraries and install hooks */
 static void *hook_install_thread(void *arg) {
     (void)arg;
 
@@ -56,78 +60,50 @@ static void *hook_install_thread(void *arg) {
         usleep(10000);
     }
 
-    int egl_done = 0;
-    int glx_done = 0;
-    int vk_done = 0;
-
-    DBG("hook_install_thread started (gl=%d vk=%d)", g_enable_gl, g_enable_vk);
+    int n_plugins = sizeof(g_plugins) / sizeof(g_plugins[0]);
+    int done[n_plugins];
+    memset(done, 0, sizeof(done));
 
     for (int i = 0; i < 150; i++) {
-        if (g_enable_gl && !egl_done) {
-            void *h = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-            if (!h) h = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
-            if (h) {
-                dlclose(h);
-                DBG("EGL: libEGL found, installing hook");
-                int r = idk_egl_init();
+        for (int p = 0; p < n_plugins; p++) {
+            if (done[p]) continue;
+
+            /* Skip based on global enable flags */
+            idk_hook_plugin_t *plug = g_plugins[p];
+            int enabled = 0;
+            if (strcmp(plug->name, "vk-syringe") == 0)
+                enabled = g_enable_vk;
+            else
+                enabled = g_enable_gl;
+
+            if (!enabled) {
+                done[p] = 1;
+                continue;
+            }
+
+            if (plugin_lib_loaded(plug)) {
+                IDK_LOG("overlay", "%s: library found, installing hook\n", plug->name);
+                int r = plug->init();
                 if (r == 0) {
-                    egl_done = 1;
+                    done[p] = 1;
                     g_hooks_installed = 1;
+                    IDK_LOG("overlay", "%s: hook installed OK\n", plug->name);
                 } else {
-                    DBG("EGL hook install failed, will retry");
+                    IDK_LOG("overlay", "%s: hook install failed, will retry\n", plug->name);
                 }
             }
         }
 
-        /* GLX probe — try in parallel with EGL.
-         * Modern Mesa loads libEGL.so.1 even for GLX apps, so EGL hook
-         * may install successfully but never fire (app calls glXSwapBuffers,
-         * not eglSwapBuffers). Both hooks can coexist — whichever the app
-         * calls first will init the compositor. */
-        if (g_enable_gl && !glx_done) {
-            void *h = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-            if (!h) h = dlopen("libGL.so", RTLD_NOW | RTLD_NOLOAD);
-            if (h) {
-                dlclose(h);
-                DBG("GLX: libGL found, installing hook");
-                int r = idk_glx_init();
-                if (r == 0) {
-                    glx_done = 1;
-                    g_hooks_installed = 1;
-                    DBG("GLX: hook installed OK");
-                } else {
-                    DBG("GLX hook install failed, will retry");
-                }
-            }
-        }
-
-        if (g_enable_vk && !vk_done) {
-            void *h = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_NOLOAD);
-            if (!h) h = dlopen("libvulkan.so", RTLD_NOW | RTLD_NOLOAD);
-            if (h) {
-                dlclose(h);
-                int r = idk_vulkan_init(g_ipc_fd, g_socket_path);
-                if (r == 0) {
-                    vk_done = 1;
-                    g_hooks_installed = 1;
-                } else {
-                    DBG("Vulkan hook install failed, will retry");
-                }
-            }
-        }
-
-        if (egl_done && glx_done && vk_done) break;
-        if (!g_enable_gl) { egl_done = 1; glx_done = 1; }
-        if (!g_enable_vk) vk_done = 1;
-        if (egl_done && glx_done && vk_done) break;
+        int all_done = 1;
+        for (int p = 0; p < n_plugins; p++)
+            if (!done[p]) { all_done = 0; break; }
+        if (all_done) break;
 
         usleep(200000);
     }
 
-    if (!g_hooks_installed) {
-        DBG("no graphics hooks installed after 30s — "
-            "game may not use EGL or Vulkan, or libraries not detected");
-    }
+    if (!g_hooks_installed)
+        IDK_LOG("overlay", "no graphics hooks installed after 30s\n");
 
     return NULL;
 }
@@ -143,10 +119,6 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     else
         snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay-%d", getpid());
 
-    /* GLX/EGL/Vulkan hooks each init their own compositor socket.
-     * The old idk-render socket connect is removed — GLX now uses
-     * the compositor path (same as EGL), not idk-render. */
-
     void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
     if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
     if (wlh) {
@@ -154,42 +126,29 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
         dlclose(wlh);
     }
 
-
     pthread_t t;
-    if (pthread_create(&t, NULL, hook_install_thread, NULL) == 0) {
+    if (pthread_create(&t, NULL, hook_install_thread, NULL) == 0)
         pthread_detach(t);
-    } else {
-        DBG("FATAL: pthread_create failed — hooks will not be installed");
-    }
 
     return 0;
 }
 
 void idk_overlay_shutdown(void) {
-    if (g_enable_vk) idk_vulkan_shutdown();
-    if (g_enable_gl) {
-        idk_glx_shutdown();
-        idk_egl_shutdown();
-    }
-    idk_wayland_input_shutdown();
+    int n_plugins = sizeof(g_plugins) / sizeof(g_plugins[0]);
+    for (int p = 0; p < n_plugins; p++)
+        g_plugins[p]->shutdown();
 
-    if (g_ipc_fd >= 0) {
-        close(g_ipc_fd);
-        g_ipc_fd = -1;
-    }
+    idk_wayland_input_shutdown();
 }
 
 int idk_overlay_try_install_wayland_input(void) {
     if (g_wl_input_tried) return 0;
     g_wl_input_tried = 1;
-    int r = idk_wayland_input_init();
-    return r;
+    return idk_wayland_input_init();
 }
 
-/* AppImage guard: g_initialized prevents double-init */
 __attribute__((constructor))
 static void on_load(void) {
-    dbg_init();
     const char *env_vk = getenv("IDK_VK");
     const char *env_gl = getenv("IDK_GL");
     const char *env_path = getenv("IDK_SOCKET");

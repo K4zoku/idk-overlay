@@ -1,4 +1,4 @@
-/* compositor.c */
+/* compositor_egl.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +18,7 @@
 
 #include "gl/gl_loader.h"        /* GL types + function pointer redirects */
 #include "gl/shader_loader.h"    /* shader compile + SPIR-V fallback */
-#include "core/compositor.h"
+#include "core/compositor_egl.h"
 #include "core/compositor_common.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
@@ -251,7 +251,7 @@ static bool g_size_pending = false;
 static struct timespec g_last_resize_ts = {0};
 static struct timespec g_last_frame_ts = {0};
 
-void idk_compositor_notify_resize(int w, int h) {
+void idk_compositor_egl_notify_resize(int w, int h) {
     idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
                            &g_last_resize_ts, w, h, "comp");
 }
@@ -276,7 +276,7 @@ static int g_client_fd = -1;
 static char g_sock_path[512];
 
 /* Init compositor — bind socket, accept client */
-int idk_compositor_init(void) {
+int idk_compositor_egl_init(void) {
     if (idk_comp_sock_init(&g_listen_fd, g_sock_path, sizeof(g_sock_path), "comp") != 0) {
         return -1;
     }
@@ -418,7 +418,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     return g_tex[g_tex_idx];
 }
 
-int idk_compositor_render(void) {
+int idk_compositor_egl_render(void) {
     accept_client();
     if (g_client_fd < 0) return -1;
 
@@ -709,7 +709,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     return tex;
 }
 
-void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
+void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     (void)x; (void)y;
     if (g_program == 0) return;
 
@@ -727,7 +727,7 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
             /* Clear g_program so init creates a fresh one.
              * Don't call glDeleteProgram — the ID may belong to the host. */
             g_program = 0;
-            if (idk_compositor_init_gl() != 0) {
+            if (idk_compositor_egl_init_gl() != 0) {
                 IDK_ERR("comp", "shader re-init failed — skipping frame\n");
                 return;
             }
@@ -957,14 +957,14 @@ void idk_compositor_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                 (GLboolean)last_color_mask[2], (GLboolean)last_color_mask[3]);
 }
 
-int idk_compositor_has_overlay(void) {
+int idk_compositor_egl_has_overlay(void) {
     return g_has_frame;
 }
 
-int idk_compositor_set_overlay(int dmabuf_fd, uint32_t w, uint32_t h,
+int idk_compositor_egl_set_overlay(int dmabuf_fd, uint32_t w, uint32_t h,
                                  uint32_t stride, uint32_t format) {
     (void)stride; (void)format;
-    /* This is a legacy API — use idk_compositor_render() instead */
+    /* This is a legacy API — use idk_compositor_egl_render() instead */
     /* For backward compat, just store and let render() pick it up */
     if (dmabuf_fd >= 0) {
         g_dmabuf_fd = dmabuf_fd;
@@ -975,7 +975,7 @@ int idk_compositor_set_overlay(int dmabuf_fd, uint32_t w, uint32_t h,
     return -1;
 }
 
-void idk_compositor_shutdown(void) {
+void idk_compositor_egl_shutdown(void) {
     if (g_shm_map) {
         munmap(g_shm_map, g_shm_map_size);
         g_shm_map = NULL;
@@ -1018,7 +1018,7 @@ void idk_compositor_shutdown(void) {
 /* ── GL resource initialization ────────────────────────────────────── */
 
 /* Init shaders and GL resources */
-int idk_compositor_init_gl(void) {
+int idk_compositor_egl_init_gl(void) {
     if (idk_gl_loader_init() != 0) {
         IDK_ERR("comp", "GL loader init failed — cannot init GL resources\n");
         return -1;

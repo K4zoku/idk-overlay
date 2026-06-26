@@ -8,24 +8,13 @@
 
 #include "hook/syringe_hook.h"
 #include "hook/graphic_hooks.h"
+#include "hook/hook_util.h"
+#include "hook/hook_plugin.h"
 #include "hook/overlay.h"
 #include "hook/wayland_input.h"
 #include "gl/gl_loader.h"
-#include "core/compositor.h"
+#include "core/compositor_egl.h"
 #include "core/log.h"
-#include "shim/elfhacks.h"
-
-static FILE *g_dbg = NULL;
-static void egl_dbg_init(void) {
-    if (g_dbg) return;
-    g_dbg = fopen("/tmp/idk-debug.log", "a");
-    if (g_dbg) setvbuf(g_dbg, NULL, _IONBF, 0);
-}
-#define EDBG(fmt, ...) do { \
-    egl_dbg_init(); \
-    if (g_dbg) fprintf(g_dbg, "[idk-egl] " fmt "\n", ##__VA_ARGS__); \
-    IDK_LOG("egl", fmt "\n", ##__VA_ARGS__); \
-} while(0)
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
@@ -36,228 +25,79 @@ typedef int32_t EGLint;
 
 static EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay, EGLSurface) = NULL;
 static int g_hook_installed = 0;
-static int g_retry_done = 0;
 static int g_gl_resources_ready = 0;
 static pthread_mutex_t g_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static EGLBoolean (*fn_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint*) = NULL;
 
-static void *(*real_dlsym)(void *, const char *) = NULL;
-static void *(*real_dlopen)(const char *, int) = NULL;
-static int (*real_dlclose)(void *) = NULL;
+static EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
+    if (!orig_eglSwapBuffers)
+        orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))hook_orig("eglSwapBuffers");
 
-static void load_real_functions(void) {
-    if (real_dlsym) return;
+    idk_wayland_input_sidecar_dispatch();
 
-    eh_obj_t lib;
-    const char *libs[] = {
-#if defined(__GLIBC__)
-        "*libdl.so*",
-#endif
-        "*libc.so*",
-        "*libc.*.so*",
-        "*ld-musl-*.so*",
-    };
-
-    for (size_t i = 0; i < sizeof(libs) / sizeof(*libs); i++) {
-        if (eh_find_obj(&lib, libs[i]) != 0) continue;
-        eh_find_sym(&lib, "dlsym", (void **)&real_dlsym);
-        eh_find_sym(&lib, "dlopen", (void **)&real_dlopen);
-        eh_find_sym(&lib, "dlclose", (void **)&real_dlclose);
-        eh_destroy_obj(&lib);
-        if (real_dlsym) break;
+    if (!g_gl_resources_ready) {
+        if (idk_compositor_egl_init_gl() == 0)
+            g_gl_resources_ready = 1;
     }
 
-    if (real_dlsym) {
-        IDK_LOG("egl", "real functions loaded: dlsym=%p dlopen=%p\n",
-                (void *)real_dlsym, (void *)real_dlopen);
-    }
-}
+    idk_compositor_egl_render();
 
-static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface);
-static int ensure_eglQuerySurface(void);
-
-static EGLBoolean call_real_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-    load_real_functions();
-    if (real_dlsym) {
-        void *lib = dlopen("libEGL.so.1", RTLD_LAZY);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY);
-        if (lib) {
-            EGLBoolean (*fn)(EGLDisplay, EGLSurface) =
-                (EGLBoolean (*)(EGLDisplay, EGLSurface))real_dlsym(lib, "eglSwapBuffers");
-            if (fn) {
-                EGLBoolean ret = fn(dpy, surface);
-                if (real_dlclose) real_dlclose(lib);
-                return ret;
-            }
-            if (real_dlclose) real_dlclose(lib);
-        }
+    if (!fn_eglQuerySurface)
+        fn_eglQuerySurface = (EGLBoolean (*)(EGLDisplay, EGLSurface, EGLint, EGLint*))
+            dlsym(RTLD_DEFAULT, "eglQuerySurface");
+    if (fn_eglQuerySurface && dpy && surface) {
+        EGLint surf_w = 0, surf_h = 0;
+        if (fn_eglQuerySurface(dpy, surface, EGL_WIDTH, &surf_w) &&
+            fn_eglQuerySurface(dpy, surface, EGL_HEIGHT, &surf_h))
+            idk_compositor_egl_notify_resize((int)surf_w, (int)surf_h);
     }
-    return 0;
+
+    if (idk_compositor_egl_has_overlay() && idk_fn_glGetIntegerv) {
+        GLint vp[4] = {0, 0, 0, 0};
+        idk_fn_glGetIntegerv(GL_VIEWPORT, vp);
+        if (vp[2] > 0 && vp[3] > 0)
+            idk_compositor_egl_render_overlay(0, 0, (uint32_t)vp[2], (uint32_t)vp[3]);
+    }
+
+    return orig_eglSwapBuffers(dpy, surface);
 }
 
 static int install_egl_hook(void) {
     pthread_mutex_lock(&g_hook_mutex);
-    load_real_functions();
     if (g_hook_installed) {
         pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
 
-    void *egl_handle = NULL;
-    void *egl_swap_addr = NULL;
-    int n = 0;
-
-    if (real_dlopen) {
-        egl_handle = real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-        if (!egl_handle)
-            egl_handle = real_dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
-    } else {
-        egl_handle = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-        if (!egl_handle)
-            egl_handle = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
-    }
-
-    if (!egl_handle) {
-        EDBG("libEGL not loaded yet — will retry");
-        pthread_mutex_unlock(&g_hook_mutex);
-        return -1;
-    }
-
-    if (egl_handle) {
-        if (real_dlsym)
-            egl_swap_addr = real_dlsym(egl_handle, "eglSwapBuffers");
-        if (!egl_swap_addr)
-            egl_swap_addr = dlsym(egl_handle, "eglSwapBuffers");
-    }
-
-    if (idk_compositor_init() != 0) {
-        EDBG("compositor init failed");
-    }
-
-    if (egl_swap_addr) {
-        n = syringe_hook_install_addr("eglSwapBuffers",
-                                       egl_swap_addr,
-                                       (void *)hook_eglSwapBuffers,
-                                       (void **)&orig_eglSwapBuffers);
-        if (n > 0) {
-            g_hook_installed = 1;
-            EDBG("installed via install_addr");
-            pthread_mutex_unlock(&g_hook_mutex);
-            return 0;
-        }
-    }
-
-    n = syringe_hook_install("eglSwapBuffers",
-                             (void *)hook_eglSwapBuffers,
-                             (void **)&orig_eglSwapBuffers);
-    if (n > 0) {
+    /* LD_PRELOAD: our symbol is already the one the linker resolves to. */
+    if (hook_is_ld_preload("eglSwapBuffers", (void *)eglSwapBuffers)) {
+        IDK_LOG("egl", "LD_PRELOAD detected — no syringe hook needed\n");
+        orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))
+            hook_orig("eglSwapBuffers");
         g_hook_installed = 1;
-        EDBG("installed via GOT walk");
         pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
 
-    if (egl_swap_addr) {
-        n = syringe_hook_install_addr("eglSwapBuffers",
-                                       egl_swap_addr,
-                                       (void *)hook_eglSwapBuffers,
-                                       (void **)&orig_eglSwapBuffers);
-        if (n > 0) {
-            g_hook_installed = 1;
-            EDBG("installed via install_addr (retry)");
-            pthread_mutex_unlock(&g_hook_mutex);
-            return 0;
-        }
+    /* Late inject: patch GOT/PLT via syringe */
+    if (idk_compositor_egl_init() != 0)
+        IDK_LOG("egl", "compositor init queued (no GL context yet)\n");
+
+    int n = syringe_hook_install("eglSwapBuffers",
+                                  (void *)eglSwapBuffers,
+                                  (void **)&orig_eglSwapBuffers);
+    if (n > 0) {
+        g_hook_installed = 1;
+        IDK_LOG("egl", "syringe hook installed\n");
+        pthread_mutex_unlock(&g_hook_mutex);
+        return 0;
     }
 
-    EDBG("all install methods failed — will retry from background thread");
+    IDK_LOG("egl", "syringe hook install failed\n");
     pthread_mutex_unlock(&g_hook_mutex);
     return -1;
 }
-
-static EGLBoolean hook_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-    if (!orig_eglSwapBuffers && !g_retry_done) {
-        g_retry_done = 1;
-        install_egl_hook();
-    }
-
-    /* Install wayland input hook on first swap — by now libwayland-client
-     * is guaranteed loaded (if this is a wayland client) and the EGL hook
-     * is in place. Idempotent. */
-    idk_overlay_try_install_wayland_input();
-
-    idk_wayland_input_sidecar_dispatch();
-
-    if (!g_gl_resources_ready) {
-        if (idk_compositor_init_gl() == 0) {
-            g_gl_resources_ready = 1;
-        } else {
-            EDBG("GL resources init failed");
-        }
-    }
-
-    idk_compositor_render();
-
-    /* Per-frame EGL surface size query — catches all game resizes
-     * (e.g. SDL_SetWindowSize on XWayland, wl_egl_window_resize on
-     * native Wayland). Only triggers notify_resize on actual change. */
-    if (!fn_eglQuerySurface) {
-        if (ensure_eglQuerySurface() != 0) {
-            EDBG("eglQuerySurface resolution failed");
-        }
-    }
-    if (fn_eglQuerySurface && dpy && surface) {
-        EGLint surf_w = 0, surf_h = 0;
-        if (fn_eglQuerySurface(dpy, surface, EGL_WIDTH, &surf_w) &&
-            fn_eglQuerySurface(dpy, surface, EGL_HEIGHT, &surf_h)) {
-            idk_compositor_notify_resize((int)surf_w, (int)surf_h);
-        }
-    }
-
-    if (idk_compositor_has_overlay() && idk_fn_glGetIntegerv) {
-        GLint vp[4] = {0, 0, 0, 0};
-        idk_fn_glGetIntegerv(GL_VIEWPORT, vp);
-        if (vp[2] > 0 && vp[3] > 0) {
-            idk_compositor_render_overlay(0, 0, (uint32_t)vp[2], (uint32_t)vp[3]);
-        }
-    }
-
-    if (orig_eglSwapBuffers) {
-        return orig_eglSwapBuffers(dpy, surface);
-    }
-    return call_real_eglSwapBuffers(dpy, surface);
-}
-
-/* ── Resolve eglQuerySurface (try multiple methods) ────────────── */
-
-static int ensure_eglQuerySurface(void) {
-    if (fn_eglQuerySurface) return 0;
-
-    void *lib = real_dlopen
-        ? real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD)
-        : dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib) lib = real_dlopen
-        ? real_dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD)
-        : dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
-    if (lib) {
-        fn_eglQuerySurface = (EGLBoolean (*)(EGLDisplay, EGLSurface, EGLint, EGLint*))
-            (real_dlsym ? real_dlsym(lib, "eglQuerySurface") : dlsym(lib, "eglQuerySurface"));
-        if (fn_eglQuerySurface) {
-            EDBG("eglQuerySurface resolved from libEGL");
-            return 0;
-        }
-    }
-
-    fn_eglQuerySurface = dlsym(RTLD_DEFAULT, "eglQuerySurface");
-    if (fn_eglQuerySurface) {
-        EDBG("eglQuerySurface resolved via RTLD_DEFAULT");
-        return 0;
-    }
-
-    return -1;
-}
-
 
 int idk_egl_init(void) {
     if (g_hook_installed) return 0;
@@ -266,16 +106,13 @@ int idk_egl_init(void) {
 
 void idk_egl_shutdown(void) {
     if (!g_hook_installed) return;
-
-    /* During process exit, the game's EGL context is already torn down
-     * BEFORE our destructor runs. Calling syringe_hook_remove restores
-     * the original code but can race with the game's exit path. And
-     * idk_compositor_shutdown's GL cleanup (already removed) would crash
-     * with a dead context.
-     *
-     * Safest: just mark as shut down, don't touch hooks or GL. The OS
-     * reclaims everything on process exit. */
     g_hook_installed = 0;
     g_gl_resources_ready = 0;
-    g_retry_done = 0;
 }
+
+idk_hook_plugin_t idk_plugin_egl = {
+    .name = "egl",
+    .lib_patterns = {"libEGL.so.1", "libEGL.so", NULL},
+    .init  = idk_egl_init,
+    .shutdown = idk_egl_shutdown,
+};

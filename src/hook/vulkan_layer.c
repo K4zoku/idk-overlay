@@ -25,7 +25,6 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
-#include "core/compositor.h"
 #include "core/compositor_vk.h"
 #include "core/log.h"
 #include "hook/overlay.h"
@@ -473,8 +472,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateSwapchainKHR(
         uint32_t h = pCreateInfo->imageExtent.height;
         idk_vk_compositor_notify_resize((int)w, (int)h);
         idk_vk_compositor_notify_swapchain_created();  /* skip overlay during storm */
-        /* Also notify the GL compositor in case the game mixes GL + Vulkan. */
-        idk_compositor_notify_resize((int)w, (int)h);
 
         pthread_mutex_lock(&g_dispatch_lock);
         struct swapchain_data *sd = new_swapchain(*pSwapchain, device);
