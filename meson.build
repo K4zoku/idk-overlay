@@ -58,7 +58,6 @@ endif
 # ── Subprojects ────────────────────────────────────────────────────────
 
 subdir('src/shaders')
-subdir('src/render')
 subdir('src/lib')
 
 # ── libidk-overlay.so — inject path (EGL + Vulkan hooks) ───────────────
@@ -115,6 +114,5 @@ message('\n=== idk-overlay build configuration ===')
 message('  libidk-overlay.so:    inject path (EGL + Vulkan hooks)')
 message('  libidk-framesource:   shared library (frame sender)')
 message('  idk-webview:          Qt6 webview (DMA-BUF + idk socket)')
-message('  idk-render:           render process (receive + read pixels)')
 message('  idk-inject:           CLI (wraps syringe_inject)')
 message('=============================================\n')

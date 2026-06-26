@@ -7,25 +7,28 @@ qt6_dep = dependency(
 )
 
 if qt6_dep.found()
+    webview_inc = include_directories('../../../include/webview')
+
     qt = import('qt6')
     webview_files = files(
-        'groupconfig.cpp',
-        'input_receiver.cpp',
         'main.cpp',
         'manager.cpp',
-        'rhi_texture_extractor.cpp',
-        'utils.cpp',
-        'webview.cpp',
+        'config/groupconfig.cpp',
+        'config/utils.cpp',
+        'input/input_receiver.cpp',
+        'view/rhi_texture_extractor.cpp',
+        'view/webview.cpp',
     )
     webview_moc_headers = files(
-        'input_receiver.h',
-        'manager.h',
-        'webview.h',
+        '../../../include/webview/input_receiver.h',
+        '../../../include/webview/manager.h',
+        '../../../include/webview/webview.h',
     )
     idk_webview_moc = qt.preprocess(moc_headers: webview_moc_headers, dependencies: qt6_dep)
     idk_webview_exe = executable(
         'idk-webview',
         webview_files + idk_webview_moc,
+        include_directories: [inc, webview_inc],
         dependencies: [qt6_dep, egl_dep, gl_dep, idk_fs_dep, vk_dep],
         install: true,
     )
