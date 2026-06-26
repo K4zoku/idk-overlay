@@ -67,14 +67,13 @@ Manager::Manager(const QString &confFile,
             IDK_LOG("webview", "idk_fs connect failed, will retry\n");
         }
 
-        /* Poll idk_fs_get_fd() every 1s to detect state transitions. */
+        /* Poll idk_fs_is_connected() every 1s to detect state transitions. */
         connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
-            int fd_now = idk_fs_get_fd();
-            bool connected_now = (fd_now >= 0);
+            bool connected_now = idk_fs_is_connected();
 
             if (connected_now && !m_was_connected) {
                 m_disconnect_count = 0;
-                IDK_LOG("webview", "idk_fs connected (fd=%d)\n", fd_now);
+                IDK_LOG("webview", "idk_fs connected\n");
                 emit socketConnected();
                 startInputReceiver();
             } else if (!connected_now && m_was_connected) {
@@ -186,7 +185,7 @@ Manager::~Manager()
 
 bool Manager::isConnected() const
 {
-    return idk_fs_get_fd() >= 0;
+    return idk_fs_is_connected();
 }
 
 void Manager::initWebViews()

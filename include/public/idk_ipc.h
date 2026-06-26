@@ -1,9 +1,9 @@
 /*
- * idk_ipc.h — Unix domain socket IPC for passing dmabuf fds + metadata
+ * idk_ipc.h — Wire protocol types for idk-overlay
  *
  * Wire format (P0.5 cleanup — 2026-06-26):
  *
- * Frame (28 bytes header + 1 fd via SCM_RIGHTS):
+ * Frame (28 bytes header + fd via SCM_RIGHTS / pidfd_getfd):
  *   +----------------------+
  *   | modifier uint64      |  offset  0 — DRM modifier (0=linear, SHM=0)
  *   | width     uint32     |  offset  8
@@ -23,8 +23,8 @@
  *   | payload union (8B)   |  offset  8 — key/btn/motion/axis/repeat
  *   +----------------------+  total 16 bytes
  *
- * Removed (no backward compat needed — pre-release):
- *   magic, serial, capture, checksum, overlay_id, format, pixel_size, num_planes
+ * Frame transport is handled by idk_transport API (core/transport.h).
+ * Input events use a separate socket via idk_ipc_send/recv_input().
  */
 #ifndef IDK_IPC_H
 #define IDK_IPC_H
@@ -32,7 +32,6 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/socket.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,9 +40,8 @@ extern "C" {
 /* ── IPC constants ─────────────────────────────────────────────────────── */
 
 #define IDK_IPC_SOCKNAME_MAX 108    /* AF_UNIX path max */
-#define IDK_IPC_SEND_BUF_SIZE 4096  /* CMSG space for 1 fd */
 
-/* ── Frame header (28 bytes, sent with 1 fd via SCM_RIGHTS) ────────────── */
+/* ── Frame header (28 bytes, sent with fds via transport) ─────────────── */
 
 #define IDK_FRAME_FLAG_VISIBLE  0x01  /* bit0: overlay visible */
 #define IDK_FRAME_FLAG_DMABUF   0x02  /* bit1: 1=dmabuf fd, 0=SHM fd */
@@ -67,6 +65,15 @@ static_assert(sizeof(idk_frame_header_t) == 28,
 _Static_assert(sizeof(idk_frame_header_t) == 28,
                "idk_frame_header_t must be 28 bytes");
 #endif
+
+/* ── ACK message (1B ack + 4B w + 4B h + 3B pad = 16B w/ natural align) */
+
+typedef struct idk_ack_msg {
+    uint8_t  ack;     /* 0 = accepted, 1 = rejected (DMABUF not supported) */
+    int32_t  w;       /* game width (0 = no resize) */
+    int32_t  h;       /* game height (0 = no resize) */
+    uint8_t  _pad[3]; /* reserved */
+} idk_ack_msg_t;
 
 /* ── Input event (16 bytes, separate socket, no fd passing) ────────────── */
 /*
@@ -125,45 +132,6 @@ static_assert(sizeof(idk_input_event_t) == 20,
 _Static_assert(sizeof(idk_input_event_t) == 20,
                "idk_input_event_t must be 20 bytes");
 #endif
-
-/* ── IPC socket management ─────────────────────────────────────────────── */
-
-/**
- * Connect to the render process via Unix domain socket.
- * Creates the socket if it doesn't exist yet.
- */
-int idk_ipc_connect(const char *sockpath, int *out_fd);
-
-/**
- * Close the IPC socket connection.
- */
-void idk_ipc_close(int fd);
-
-/* ── Sending frames ────────────────────────────────────────────────────── */
-
-/**
- * Send a frame header + fd over the IPC socket.
- * Uses SCM_RIGHTS to pass the fd atomically with the metadata.
- *
- * @param socket_fd   Connected socket fd.
- * @param hdr         Frame header (28 bytes, fully populated by caller).
- * @param fd          dmabuf/SHM fd to pass.
- * @return            0 on success, -1 on failure.
- */
-int idk_ipc_send_frame(int socket_fd, const idk_frame_header_t *hdr, int fd);
-
-/* ── Receiving frames ─────────────────────────────────────────────────── */
-
-/**
- * Receive a frame header + fd from the IPC socket.
- * Blocks up to 2s waiting for data.
- *
- * @param socket_fd  Connected socket fd.
- * @param hdr        Output: frame header (28 bytes).
- * @param out_fd     Output: received fd (must be closed by caller).
- * @return           0 on success, -1 on EOF/error/timeout.
- */
-int idk_ipc_recv_frame(int socket_fd, idk_frame_header_t *hdr, int *out_fd);
 
 /* ── Input events (separate socket, no fd passing) ─────────────────────── */
 

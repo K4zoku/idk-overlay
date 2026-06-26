@@ -72,7 +72,7 @@ TEST(send_dma_buf_nfd_too_high) {
 TEST(wait_ack_not_connected) {
     idk_fs_shutdown();
     errno = 0;
-    ASSERT_EQ(idk_fs_wait_ack(), -1);
+    ASSERT_EQ(idk_fs_wait_ack(NULL, 0), -1);
     ASSERT_EQ(errno, ENOTCONN);
 }
 

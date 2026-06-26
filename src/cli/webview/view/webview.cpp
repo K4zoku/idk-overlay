@@ -21,7 +21,6 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
-#include <poll.h>
 
 #include "public/idk_fs.h"
 #include "core/log.h"
@@ -168,51 +167,40 @@ void WebView::doRenderAndSend()
 
     /* ACK flow control: non-blocking poll + 100ms safety timeout */
     if (m_pending) {
-        int ack_fd = idk_fs_get_fd();
-        if (ack_fd >= 0) {
-            struct pollfd pfd = { .fd = ack_fd, .events = POLLIN, .revents = 0 };
-            if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
-                struct {
-                    uint8_t ack;
-                    int32_t w;
-                    int32_t h;
-                } ack_msg;
-                memset(&ack_msg, 0, sizeof(ack_msg));
-                if (read(ack_fd, &ack_msg, sizeof(ack_msg)) > 0) {
-                    m_pending = false;
-                    if (ack_msg.ack == 1) {
-                        /* Compositor rejected this frame's DMABUF. Could be
-                         * transient (e.g. first frame after resize when Qt
-                         * RHI's texture isn't fully rebuilt yet, or NVIDIA
-                         * driver hiccup on vkGetMemoryFdPropertiesKHR).
-                         * Only fall back to SHM permanently after N
-                         * CONSECUTIVE failures — a single success resets
-                         * the counter. */
-                        m_dmabufRejectCount++;
-                        if (m_dmabufRejectCount >= 5 && !m_dmaBufFailed) {
-                            IDK_LOG("webview-qt", "compositor rejected DMABUF %d times — falling back to SHM\n",
-                                    m_dmabufRejectCount);
-                            m_dmaBufFailed = true;
-                        } else if (!m_dmaBufFailed) {
-                            IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) — will retry\n",
-                                    m_dmabufRejectCount);
-                        }
-                    } else {
-                        /* ack=0: frame accepted. Reset the consecutive
-                         * failure counter — DMABUF is working. */
-                        if (m_dmabufRejectCount > 0) {
-                            IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) — counter reset\n",
-                                    m_dmabufRejectCount);
-                            m_dmabufRejectCount = 0;
-                        }
-                    }
-                    if (ack_msg.w > 0 && ack_msg.h > 0) {
-                        IDK_LOG("webview-qt", "ACK received with game size: %dx%d\n",
-                                ack_msg.w, ack_msg.h);
-                        resizeForGame(ack_msg.w, ack_msg.h);
-                        m_resizePending = true;
-                    }
+        idk_ack_msg_t ack_msg;
+        if (idk_fs_wait_ack(&ack_msg, 0) == 0) {
+            m_pending = false;
+            if (ack_msg.ack == 1) {
+                /* Compositor rejected this frame's DMABUF. Could be
+                 * transient (e.g. first frame after resize when Qt
+                 * RHI's texture isn't fully rebuilt yet, or NVIDIA
+                 * driver hiccup on vkGetMemoryFdPropertiesKHR).
+                 * Only fall back to SHM permanently after N
+                 * CONSECUTIVE failures — a single success resets
+                 * the counter. */
+                m_dmabufRejectCount++;
+                if (m_dmabufRejectCount >= 5 && !m_dmaBufFailed) {
+                    IDK_LOG("webview-qt", "compositor rejected DMABUF %d times — falling back to SHM\n",
+                            m_dmabufRejectCount);
+                    m_dmaBufFailed = true;
+                } else if (!m_dmaBufFailed) {
+                    IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) — will retry\n",
+                            m_dmabufRejectCount);
                 }
+            } else {
+                /* ack=0: frame accepted. Reset the consecutive
+                 * failure counter — DMABUF is working. */
+                if (m_dmabufRejectCount > 0) {
+                    IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) — counter reset\n",
+                            m_dmabufRejectCount);
+                    m_dmabufRejectCount = 0;
+                }
+            }
+            if (ack_msg.w > 0 && ack_msg.h > 0) {
+                IDK_LOG("webview-qt", "ACK received with game size: %dx%d\n",
+                        ack_msg.w, ack_msg.h);
+                resizeForGame(ack_msg.w, ack_msg.h);
+                m_resizePending = true;
             }
         }
         int now = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;

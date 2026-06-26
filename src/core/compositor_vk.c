@@ -20,17 +20,14 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <time.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <poll.h>
-#include <fcntl.h>
 
 #include <vulkan/vulkan.h>
 
 #include "core/compositor_vk.h"
 #include "core/compositor_common.h"
+#include "core/transport.h"
 #include "core/log.h"
 #include "shaders/vk_shaders.h"
 
@@ -48,19 +45,18 @@
 
 /* Frame protocol via compositor_common.h (idk_ipc.h). */
 
-/* ── Socket state ──────────────────────────────────────────────────────── */
+/* ── Transport state ──────────────────────────────────────────────────── */
 
-static int  vk_sock_listen_fd = -1;
-static int  vk_sock_client_fd = -1;
 static char vk_sock_path[512];
+static idk_transport_t vk_tp;
 
 static int vk_sock_init(void) {
-    return idk_comp_sock_init(&vk_sock_listen_fd, vk_sock_path,
-                              sizeof(vk_sock_path), "comp-vk");
+    idk_comp_get_path(vk_sock_path, sizeof(vk_sock_path));
+    return idk_tp_init(&vk_tp, IDK_TP_CONSUMER, vk_sock_path);
 }
 
 static void vk_sock_accept(void) {
-    idk_comp_sock_accept(vk_sock_listen_fd, &vk_sock_client_fd, "comp-vk");
+    idk_tp_accept(&vk_tp);
 }
 
 /* ── ACK + resize state ───────────────────────────────────────────────── */
@@ -100,11 +96,13 @@ void idk_vk_compositor_notify_resize(int w, int h) {
 
 static void vk_send_ack(int processed) {
     uint8_t ack = (vk_dmabuf_failed_this_frame || processed < 0) ? 1 : 0;
-    vk_dmabuf_failed_this_frame = 0;  /* per-frame flag, clear after use */
-    idk_comp_send_ack(vk_sock_client_fd, ack,
-                      vk_game_w, vk_game_h,
-                      &vk_size_pending, &vk_last_resize_ts,
-                      IDK_COMP_RESIZE_DEBOUNCE_MS, "comp-vk");
+    vk_dmabuf_failed_this_frame = 0;
+    idk_ack_msg_t ack_msg;
+    idk_comp_build_ack(&ack_msg, ack,
+                       vk_game_w, vk_game_h,
+                       &vk_size_pending, &vk_last_resize_ts,
+                       IDK_COMP_RESIZE_DEBOUNCE_MS, "comp-vk");
+    idk_tp_send_ack(&vk_tp, &ack_msg);
 }
 
 /* ── Vulkan device state ───────────────────────────────────────────────── */
@@ -1036,17 +1034,22 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 
 int idk_vk_compositor_render(void) {
     vk_sock_accept();
-    if (vk_sock_client_fd < 0) return -1;
+    if (!vk_tp.ready) return -1;
 
     int processed = 0;
     while (1) {
         idk_frame_header_t hdr;
-        int fd = -1;
-        int rc = idk_comp_recv_frame(vk_sock_client_fd, &hdr, &fd, "comp-vk");
+        int fds[4], nfd = 0;
+        int rc = idk_tp_recv(&vk_tp, &hdr, fds, &nfd);
         if (rc <= 0) {
-            if (rc < 0) { close(vk_sock_client_fd); vk_sock_client_fd = -1; }
+            if (rc < 0) {
+                idk_tp_destroy(&vk_tp);
+                vk_tp.ready = false;
+            }
             break;
         }
+
+        int fd = (nfd > 0) ? fds[0] : -1;
 
         if (processed > 0) { close(fd); continue; }
 
@@ -1408,8 +1411,7 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
 /* ── Shutdown ──────────────────────────────────────────────────────────── */
 
 void idk_vk_compositor_shutdown(void) {
-    if (vk_sock_client_fd >= 0) { close(vk_sock_client_fd); vk_sock_client_fd = -1; }
-    if (vk_sock_listen_fd >= 0) { close(vk_sock_listen_fd); vk_sock_listen_fd = -1; }
+    idk_tp_destroy(&vk_tp);
     if (vk_sock_path[0]) unlink(vk_sock_path);
     /* Vulkan objects destroyed by OS on process exit */
     vk_has_frame = 0;
