@@ -38,12 +38,13 @@ static inline bool idk_frame_is_visible(const idk_frame_header_t *hdr) {
     return (hdr->flags & IDK_FRAME_FLAG_VISIBLE) != 0;
 }
 
-/* ── ACK message (9 bytes: 1 byte ack + 4 bytes w + 4 bytes h) ────────── */
+/* ── ACK message (1B ack + 4B w + 4B h + 3B pad) ─────────────────────── */
 
 struct idk_ack_msg {
-    uint8_t  ack;   /* 0 = accepted, 1 = rejected (DMABUF not supported) */
-    int32_t  w;     /* game width (0 = no resize) */
-    int32_t  h;     /* game height (0 = no resize) */
+    uint8_t  ack;     /* 0 = accepted, 1 = rejected (DMABUF not supported) */
+    int32_t  w;       /* game width (0 = no resize) */
+    int32_t  h;       /* game height (0 = no resize) */
+    uint8_t  _pad[3]; /* reserved */
 };
 
 /* ── Resize debounce ──────────────────────────────────────────────────── */

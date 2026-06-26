@@ -11,7 +11,7 @@ TEST(input_event_size) {
 }
 
 TEST(ack_msg_size) {
-    ASSERT_SIZEOF(struct idk_ack_msg, 9);
+    ASSERT_SIZEOF(struct idk_ack_msg, 16);
 }
 
 TEST(frame_header_offsets) {

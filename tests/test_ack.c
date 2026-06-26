@@ -2,15 +2,16 @@
 #include "core/compositor_common.h"
 
 TEST(ack_msg_size) {
-    ASSERT_SIZEOF(struct idk_ack_msg, 9);
+    ASSERT_SIZEOF(struct idk_ack_msg, 16);
 }
 
 TEST(ack_msg_offsets) {
     struct idk_ack_msg msg;
     size_t base = (size_t)&msg;
-    ASSERT_EQ((size_t)&msg.ack - base, 0);
-    ASSERT_EQ((size_t)&msg.w   - base, 1);
-    ASSERT_EQ((size_t)&msg.h   - base, 5);
+    ASSERT_EQ((size_t)&msg.ack  - base, 0);
+    ASSERT_EQ((size_t)&msg.w    - base, 4);
+    ASSERT_EQ((size_t)&msg.h    - base, 8);
+    ASSERT_EQ((size_t)&msg._pad - base, 12);
 }
 
 TEST(ack_accept_value) {

@@ -4,7 +4,7 @@
 int idk_egl_init(void);
 void idk_egl_shutdown(void);
 
-int idk_glx_init(int ipc_fd);
+int idk_glx_init(void);
 void idk_glx_shutdown(void);
 
 int idk_vulkan_init(int ipc_fd, const char *socket_path);

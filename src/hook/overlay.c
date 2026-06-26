@@ -57,6 +57,7 @@ static void *hook_install_thread(void *arg) {
     }
 
     int egl_done = 0;
+    int glx_done = 0;
     int vk_done = 0;
 
     for (int i = 0; i < 150; i++) {
@@ -71,6 +72,26 @@ static void *hook_install_thread(void *arg) {
                     g_hooks_installed = 1;
                 } else {
                     DBG("EGL hook install failed, will retry");
+                }
+            }
+        }
+
+        /* GLX probe — try in parallel with EGL.
+         * Modern Mesa loads libEGL.so.1 even for GLX apps, so EGL hook
+         * may install successfully but never fire (app calls glXSwapBuffers,
+         * not eglSwapBuffers). Both hooks can coexist — whichever the app
+         * calls first will init the compositor. */
+        if (g_enable_gl && !glx_done) {
+            void *h = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libGL.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) {
+                dlclose(h);
+                int r = idk_glx_init();
+                if (r == 0) {
+                    glx_done = 1;
+                    g_hooks_installed = 1;
+                } else {
+                    DBG("GLX hook install failed, will retry");
                 }
             }
         }
@@ -90,10 +111,10 @@ static void *hook_install_thread(void *arg) {
             }
         }
 
-        if (egl_done && vk_done) break;
-        if (!g_enable_gl) egl_done = 1;
+        if (egl_done && glx_done && vk_done) break;
+        if (!g_enable_gl) { egl_done = 1; glx_done = 1; }
         if (!g_enable_vk) vk_done = 1;
-        if (egl_done && vk_done) break;
+        if (egl_done && glx_done && vk_done) break;
 
         usleep(200000);
     }
@@ -117,24 +138,9 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     else
         snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay-%d", getpid());
 
-
-
-    g_ipc_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (g_ipc_fd < 0) {
-        DBG("GLX IPC socket creation failed: %s (EGL path unaffected)", strerror(errno));
-        g_ipc_fd = -1;
-    } else {
-        struct sockaddr_un addr = { .sun_family = AF_UNIX };
-        snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", g_socket_path);
-        if (connect(g_ipc_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            /* ENOENT/ECONNREFUSED is normal at startup — idk-render not running.
-             * GLX path will reconnect when needed; EGL path ignores this fd. */
-            DBG("GLX IPC not connected (idk-render not running) — EGL path unaffected");
-            close(g_ipc_fd);
-            g_ipc_fd = -1;
-        }
-    }
-
+    /* GLX/EGL/Vulkan hooks each init their own compositor socket.
+     * The old idk-render socket connect is removed — GLX now uses
+     * the compositor path (same as EGL), not idk-render. */
 
     void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
     if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
