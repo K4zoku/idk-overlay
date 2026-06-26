@@ -132,10 +132,11 @@ Each message is 20 bytes (`idk_input_event_t`):
 
 ```
 src/
-├── core/               Compositor engine (EGL, VK, GL loader, shader loader)
+├── core/               Compositor engine
 │   ├── compositor_common.c  Shared: socket init, ACK, resize debounce
 │   ├── compositor_egl.c     EGL+GL compositor (DMABUF via EGL_EXT_image_dma_buf)
-│   ├── compositor_vk.c      Vulkan compositor (DMABUF via VK_EXT_external_memory)
+│   └── compositor_vk.c      Vulkan compositor (DMABUF via VK_EXT_external_memory)
+├── gl/                 GL function loader + shader compiler
 │   ├── gl_loader.c          GL function pointer resolution at runtime
 │   └── shader_loader.c      Shader compile (SPIR-V + GLSL fallback)
 ├── hook/               Graphics + input hooks
@@ -144,7 +145,7 @@ src/
 │   ├── glx_hook.c           GLX swap hook plugin
 │   ├── vulkan_hook.c        Vulkan syringe hook plugin
 │   ├── vulkan_layer.c       Vulkan layer (VK_LAYER_PATH)
-│   └── wayland_input.c      Wayland input capture
+│   └── wayland/             Wayland input capture (6 files)
 ├── ipc/                Wire protocol (frame header 28B, input event 20B)
 ├── lib/                libidk-framesource.so (frame sender for webview)
 ├── shaders/            GLSL + Vulkan SPIR-V shaders
@@ -157,11 +158,12 @@ src/
         └── config/     groupconfig.cpp
 
 include/
-├── public/             Public API headers (idk_fs.h, idk_ipc.h)
-├── core/               Compositor + GL loader + shader + log
-├── hook/               Plugin interface, hook utilities, overlay, wayland_input
+├── core/               Compositor + log headers
+├── gl/                 GL loader + shader headers
+├── hook/               Plugin interface, hook utilities, wayland input
+├── public/             Public API (idk_fs.h, idk_ipc.h)
 ├── shaders/            VK shader symbols (SPIR-V embedded)
-└── webview/            Webview private headers (manager, input_receiver, etc.)
+└── webview/            Webview private headers
 ```
 
 ## Plugin interface
