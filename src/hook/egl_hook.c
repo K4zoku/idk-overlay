@@ -73,20 +73,43 @@ static int install_egl_hook(void) {
     if (idk_compositor_egl_init() != 0)
         IDK_LOG("egl", "compositor init queued (no GL context yet)\n");
 
-    /* Try syringe GOT/PLT patching first (covers late inject).
-     * With LD_PRELOAD all GOT entries already point to our function,
-     * so syringe finds nothing to patch and returns 0. */
+    /* Step 1: Resolve eglSwapBuffers address from libEGL.so.
+     * Needed for syringe_hook_install_addr (inline trampoline patching)
+     * which works even when the game calls eglSwapBuffers via dlsym
+     * (e.g. .NET runtime, SDL3 dlopen'd EGL). */
+    void *egl_swap_addr = NULL;
+    void *lib = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+    if (!lib) lib = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+    if (lib) egl_swap_addr = dlsym(lib, "eglSwapBuffers");
+
+    /* Step 2: Try syringe_hook_install_addr (inline trampoline) first.
+     * This patches the actual function code, catching ALL callers
+     * including dlsym-based ones. */
+    if (egl_swap_addr) {
+        int n = syringe_hook_install_addr("eglSwapBuffers",
+                                           egl_swap_addr,
+                                           (void *)eglSwapBuffers,
+                                           (void **)&orig_eglSwapBuffers);
+        if (n > 0) {
+            g_hook_installed = 1;
+            IDK_LOG("egl", "hook installed via install_addr (trampoline)\n");
+            pthread_mutex_unlock(&g_hook_mutex);
+            return 0;
+        }
+    }
+
+    /* Step 3: Try syringe GOT/PLT walk. */
     int n = syringe_hook_install("eglSwapBuffers",
                                   (void *)eglSwapBuffers,
                                   (void **)&orig_eglSwapBuffers);
     if (n > 0) {
         g_hook_installed = 1;
-        IDK_LOG("egl", "syringe hook installed\n");
+        IDK_LOG("egl", "syringe hook installed (GOT)\n");
         pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
 
-    /* Nothing to patch — LD_PRELOAD already resolved calls to us. */
+    /* Step 4: LD_PRELOAD fallback — RTLD_NEXT resolves the real function. */
     orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))
         hook_orig("eglSwapBuffers");
     if (orig_eglSwapBuffers && orig_eglSwapBuffers != (void *)eglSwapBuffers) {
@@ -108,6 +131,7 @@ int idk_egl_init(void) {
 
 void idk_egl_shutdown(void) {
     if (!g_hook_installed) return;
+    syringe_hook_remove("eglSwapBuffers");
     g_hook_installed = 0;
     g_gl_resources_ready = 0;
 }

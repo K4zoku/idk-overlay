@@ -62,23 +62,41 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
 static int install_glx_hook(void) {
     if (g_hook_installed) return 0;
 
-    /* Try syringe GOT/PLT patching first (covers late inject).
-     * With LD_PRELOAD all GOT entries already point to our function,
-     * so syringe finds nothing to patch and returns 0. */
+    /* Step 1: Resolve glXSwapBuffers address from libGL.
+     * Needed for syringe_hook_install_addr (inline trampoline). */
+    void *glx_swap_addr = NULL;
+    void *lib = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+    if (!lib) lib = dlopen("libGL.so", RTLD_NOW | RTLD_NOLOAD);
+    if (lib) glx_swap_addr = dlsym(lib, "glXSwapBuffers");
+
+    /* Step 2: Try inline trampoline (patches actual function code). */
+    if (glx_swap_addr) {
+        int n = syringe_hook_install_addr("glXSwapBuffers",
+                                           glx_swap_addr,
+                                           (void *)glXSwapBuffers,
+                                           (void **)&orig_glXSwapBuffers);
+        if (n > 0) {
+            g_hook_installed = 1;
+            IDK_LOG("glx", "hook installed via install_addr (trampoline)\n");
+            return 0;
+        }
+    }
+
+    /* Step 3: Try syringe GOT/PLT walk. */
     int n = syringe_hook_install("glXSwapBuffers",
                                   (void *)glXSwapBuffers,
                                   (void **)&orig_glXSwapBuffers);
     if (n > 0) {
         g_hook_installed = 1;
-        IDK_LOG("glx", "syringe hook installed\n");
+        IDK_LOG("glx", "syringe hook installed (GOT)\n");
         return 0;
     }
 
-    /* Nothing to patch — LD_PRELOAD already resolved calls to us. */
+    /* Step 4: LD_PRELOAD fallback. */
     orig_glXSwapBuffers = (GlXSwapBuffersFn)hook_orig("glXSwapBuffers");
     if (orig_glXSwapBuffers && orig_glXSwapBuffers != (void *)glXSwapBuffers) {
         g_hook_installed = 1;
-        IDK_LOG("glx", "LD_PRELOAD mode (syringe not needed)\n");
+        IDK_LOG("glx", "LD_PRELOAD mode\n");
         return 0;
     }
 

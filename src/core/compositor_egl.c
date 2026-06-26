@@ -465,6 +465,13 @@ int idk_compositor_egl_render(void) {
              * Under GLX (e.g. glxgears), there's no EGL display, so
              * eglCreateImageKHR can't work. Fall back to GL_EXT_memory_object
              * which works with any GL context (GLX or EGL). */
+
+            /* Ensure EGL functions are resolved before checking display.
+             * resolve_egl_functions() is lazy (called once, cached). */
+            if (!fn_eglGetCurrentDisplay) {
+                resolve_egl_functions();
+            }
+
             EGLDisplay check_dpy = EGL_NO_DISPLAY;
             if (fn_eglGetCurrentDisplay) {
                 check_dpy = fn_eglGetCurrentDisplay();
