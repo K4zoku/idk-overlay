@@ -23,7 +23,7 @@ public:
     void disconnect();
     bool isConnected() const { return m_fd >= 0; }
 
-    void setWebView(QWebEngineView *view) { m_webview = view; m_focusProxy = nullptr; }
+    void setWebView(QWebEngineView *view) { m_webview = view; }
 
 signals:
     void inputCaptureChanged(bool captured);
@@ -49,7 +49,7 @@ private:
     QSocketNotifier *m_notifier = nullptr;
     bool m_captureState = false;
     QWebEngineView *m_webview = nullptr;
-    QWidget *m_focusProxy = nullptr;
+
 
     int m_mouseX = 0;
     int m_mouseY = 0;

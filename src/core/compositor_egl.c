@@ -160,8 +160,7 @@ static void resolve_gl_memory_functions(void) {
 /* Import dmabuf as GL texture via GL_EXT_memory_object (no EGL needed).
  * Returns texture ID on success, 0 on failure. Caller keeps fd ownership. */
 static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
-                                    uint32_t stride, uint32_t fourcc,
-                                    uint64_t modifier) {
+                                    uint32_t stride) {
     resolve_gl_memory_functions();
     if (!g_gl_mem_available) return 0;
 
@@ -491,8 +490,7 @@ int idk_compositor_egl_render(void) {
             if (tex == 0) {
                 /* EGL failed or unavailable — try GL_EXT_memory_object */
                 tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                            hdr.stride, hdr.fourcc,
-                                            hdr.modifier);
+                                            hdr.stride);
                 if (tex) {
                     /* GL driver consumed the fd — don't close it */
                     fd_consumed = 1;
