@@ -320,6 +320,7 @@ void *direct_overwrite_implementation(struct wl_proxy *proxy, void *new_impl,
 /* Keyboard + xkb helpers (used by both kb.c and sidecar.c) */
 void update_mod_bitmask(void);
 int  is_hotkey(uint32_t key, uint32_t keysym);
+void configure_hotkey(void);
 
 /* Syringe orig pointers + hook targets (set by init, used in respective modules) */
 extern int (*orig_wl_proxy_add_listener)(struct wl_proxy *, void (**)(void), void *);

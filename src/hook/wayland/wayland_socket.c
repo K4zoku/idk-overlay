@@ -87,12 +87,20 @@ void send_capture_state(uint32_t capture) {
     ev.type  = IDK_INPUT_STATE;
     ev.flags = capture ? IDK_INPUT_FLAG_CAPTURE : 0;
     ev.mods  = (uint16_t)g_mods;
+    IDK_LOG("wl-input", "send_capture_state(%u) flags=0x%x mods=0x%x — sending to webview\n",
+            capture, ev.flags, ev.mods);
     send_event_to_webview(&ev);
 }
 
 void send_repeat_info(void) {
     idk_input_event_t ev = { 0 };
     ev.type = IDK_INPUT_REPEAT;
+    /* Set CAPTURE flag so webview's capture-state tracking doesn't
+     * misinterpret this as "capture disabled". The webview checks
+     * (ev.flags & CAPTURE) on every event to track capture state —
+     * REPEAT events are sent right after capture enable, so they
+     * must carry the CAPTURE flag. */
+    ev.flags = IDK_INPUT_FLAG_CAPTURE;
     ev.u.repeat.rate  = (uint16_t)g_repeat_rate;
     ev.u.repeat.delay = (uint16_t)g_repeat_delay;
     ev.u.repeat._p1 = 0;

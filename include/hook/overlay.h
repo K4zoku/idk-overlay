@@ -60,6 +60,15 @@ void idk_overlay_shutdown(void);
  */
 int idk_overlay_try_install_wayland_input(void);
 
+/**
+ * Try to install the X11 input hook (idk_x11_input_init).
+ * Idempotent. The hook only installs if libX11.so.6 is loaded.
+ * Preferred over Wayland for XWayland games to avoid double-toggle.
+ *
+ * @return 0 on success or already-installed, -1 if X11 not available.
+ */
+int idk_overlay_try_install_x11_input(void);
+
 #ifdef __cplusplus
 }
 #endif

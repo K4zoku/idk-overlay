@@ -327,12 +327,26 @@ static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     resolve_gl_memory_functions();
     if (!g_gl_mem_available) return 0;
 
-    /* Drain any stale GL errors so we can detect new ones cleanly */
-    while (idk_fn_glGetError && idk_fn_glGetError() != GL_NO_ERROR) {}
+    /* Drain any stale GL errors so we can detect new ones cleanly.
+     * Multiple iterations because some drivers queue multiple errors. */
+    if (idk_fn_glGetError) {
+        GLenum e;
+        int drains = 0;
+        while ((e = idk_fn_glGetError()) != GL_NO_ERROR && drains < 10) drains++;
+        if (drains > 0) {
+            static int s_drain_logged = 0;
+            if (!s_drain_logged) {
+                IDK_LOG("comp", "gl_dmabuf_to_texture: drained %d stale GL errors\n", drains);
+                s_drain_logged = 1;
+            }
+        }
+    }
 
     /* Create memory object */
     GLuint mem = 0;
     fn_glCreateMemoryObjectsEXT(1, &mem);
+    /* Drain any error from CreateMemoryObjectsEXT */
+    if (idk_fn_glGetError) { while (idk_fn_glGetError() != GL_NO_ERROR); }
     if (!mem) {
         IDK_ERR("comp", "glCreateMemoryObjectsEXT returned 0\n");
         return 0;
@@ -357,7 +371,7 @@ static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 
     GLenum err = idk_fn_glGetError ? idk_fn_glGetError() : GL_NO_ERROR;
     if (err != GL_NO_ERROR) {
-        IDK_ERR("comp", "glImportMemoryFdEXT failed: 0x%04x (fd=%d size=%llu)\n",
+        IDK_ERR("comp", "glImportMemoryFdEXT failed: 0x%04x (fd=%d size=%llu stride=%u h=%u)\n",
                 err, import_fd, (unsigned long long)size);
         close(import_fd);
         fn_glDeleteMemoryObjectsEXT(1, &mem);

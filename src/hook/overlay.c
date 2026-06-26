@@ -14,6 +14,7 @@
 #include "hook/overlay.h"
 #include "hook/hook_plugin.h"
 #include "hook/wayland_input.h"
+#include "hook/x11_input.h"
 #include "core/log.h"
 
 static char g_socket_path[PATH_MAX];
@@ -21,6 +22,8 @@ static int g_enable_vk = 0;
 static int g_enable_gl = 0;
 static int g_initialized = 0;
 static int g_wl_input_tried = 0;
+static int g_x11_input_tried = 0;
+static int g_x11_input_ok = 0;
 static int g_hooks_installed = 0;
 
 /* All registered hook plugins */
@@ -47,15 +50,35 @@ static void *hook_install_thread(void *arg) {
     (void)arg;
 
     usleep(50000);
-    for (int i = 0; i < 150 && !g_wl_input_tried; i++) {
-        void *h = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
-        if (!h) h = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
+
+    /* Probe for X11 FIRST. XWayland games load both libX11 and libwayland,
+     * but should use X11 input (not Wayland) for event interception.
+     * If X11 input hook installs successfully, skip Wayland input to avoid
+     * double-toggle (both hooks share g_captured/g_hotkey_pressed). */
+    for (int i = 0; i < 150 && !g_x11_input_tried; i++) {
+        void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
+        if (!h) h = dlopen("libX11.so", RTLD_NOW | RTLD_NOLOAD);
         if (h) {
             dlclose(h);
-            idk_overlay_try_install_wayland_input();
+            idk_overlay_try_install_x11_input();
             break;
         }
         usleep(10000);
+    }
+
+    /* Only install Wayland input if X11 input failed.
+     * This prevents double-toggle when both libs are loaded (XWayland). */
+    if (!g_x11_input_ok) {
+        for (int i = 0; i < 150 && !g_wl_input_tried; i++) {
+            void *h = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) {
+                dlclose(h);
+                idk_overlay_try_install_wayland_input();
+                break;
+            }
+            usleep(10000);
+        }
     }
 
     int n_plugins = sizeof(g_plugins) / sizeof(g_plugins[0]);
@@ -117,11 +140,22 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     else
         snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay-%d", getpid());
 
-    void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
-    if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
-    if (wlh) {
-        idk_overlay_try_install_wayland_input();
-        dlclose(wlh);
+    /* Try X11 input first (synchronous probe). XWayland games should use X11. */
+    void *xh = dlopen("libX11.so.6", RTLD_NOW);
+    if (!xh) xh = dlopen("libX11.so", RTLD_NOW);
+    if (xh) {
+        idk_overlay_try_install_x11_input();
+        dlclose(xh);
+    }
+
+    /* Only try Wayland if X11 failed. */
+    if (!g_x11_input_ok) {
+        void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
+        if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
+        if (wlh) {
+            idk_overlay_try_install_wayland_input();
+            dlclose(wlh);
+        }
     }
 
     pthread_t t;
@@ -137,12 +171,22 @@ void idk_overlay_shutdown(void) {
         g_plugins[p]->shutdown();
 
     idk_wayland_input_shutdown();
+    idk_x11_input_shutdown();
 }
 
 int idk_overlay_try_install_wayland_input(void) {
     if (g_wl_input_tried) return 0;
     g_wl_input_tried = 1;
-    return idk_wayland_input_init();
+    int r = idk_wayland_input_init();
+    return r;
+}
+
+int idk_overlay_try_install_x11_input(void) {
+    if (g_x11_input_tried) return g_x11_input_ok ? 0 : -1;
+    g_x11_input_tried = 1;
+    int r = idk_x11_input_init();
+    g_x11_input_ok = (r == 0);
+    return r;
 }
 
 __attribute__((constructor))

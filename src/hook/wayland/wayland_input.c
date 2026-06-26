@@ -174,7 +174,7 @@ static const struct hotkey_name_to_scancode HOTKEY_TABLE[] = {
     { "Pause",         IDK_KEY_PAUSE,        IDK_XKB_KEY_Pause },
 };
 
-static void configure_hotkey(void) {
+void configure_hotkey(void) {
     const char *env = getenv("IDK_TOGGLE_KEY");
     if (!env || !env[0]) env = "Shift+Tab";
 
