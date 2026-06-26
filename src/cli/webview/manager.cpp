@@ -251,7 +251,7 @@ void Manager::startInputReceiver()
     if (!m_inputRx) {
         m_inputRx = new InputReceiver(m_socketPath, this);
         connect(m_inputRx, &InputReceiver::inputCaptureChanged,
-                this, &Manager::inputCaptureChanged);
+                this, &Manager::onInputCaptureChanged);
     }
 
     /* Always refresh the webview — may be called before initWebViews()
@@ -300,5 +300,23 @@ void Manager::stopInputReceiver()
     }
     if (m_inputRx) {
         m_inputRx->disconnect();
+    }
+}
+
+void Manager::onInputCaptureChanged(bool captured)
+{
+    emit inputCaptureChanged(captured);
+
+    if (m_views.isEmpty()) return;
+    QString js = QStringLiteral(
+        "(function(c){"
+        "var e=new CustomEvent('overlayinputcaptured',{detail:{captured:c}});"
+        "if(typeof window.onOverlayInputCaptured==='function')"
+        "  window.onOverlayInputCaptured(c);"
+        "window.dispatchEvent(e);"
+        "})(%1)").arg(captured ? "true" : "false");
+    for (auto *view : m_views) {
+        if (view->page())
+            view->page()->runJavaScript(js);
     }
 }

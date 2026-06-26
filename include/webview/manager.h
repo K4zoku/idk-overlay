@@ -46,6 +46,7 @@ signals:
 private slots:
     void onSocketReadyRead();
     void onReconnectTimer();
+    void onInputCaptureChanged(bool captured);
 
 private:
     void initWebViews();
