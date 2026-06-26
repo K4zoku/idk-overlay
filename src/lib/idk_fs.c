@@ -25,8 +25,8 @@ static int g_sock_fd = -1;
 static char g_sock_path[IDK_IPC_SOCKNAME_MAX];
 
 /* Build the 24-byte wire header from the client-facing frame struct. */
-static void build_frame_hdr(const idk_fs_frame_t *frame,
-                            idk_frame_header_t *hdr) {
+void build_frame_hdr(const idk_fs_frame_t *frame,
+                     idk_frame_header_t *hdr) {
     hdr->modifier = frame->modifier;
     hdr->width    = frame->width;
     hdr->height   = frame->height;

@@ -106,6 +106,11 @@ if not meson.is_subproject()
     subdir('src/cli')
 endif
 
+# ── Tests ──────────────────────────────────────────────────────────────
+if not meson.is_subproject()
+    subdir('tests')
+endif
+
 # ── Build summary ──────────────────────────────────────────────────────
 message('\n=== idk-overlay build configuration ===')
 message('  libidk-overlay.so:    inject path (EGL + Vulkan hooks)')

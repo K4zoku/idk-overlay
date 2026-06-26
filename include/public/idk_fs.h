@@ -22,6 +22,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "public/idk_ipc.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +48,10 @@ typedef struct idk_fs_frame {
     uint8_t  flags;     /* IDK_FRAME_FLAG_* bitmask                          */
     uint8_t  nfd;       /* Number of fds to send (1 for single-plane)        */
 } idk_fs_frame_t;
+
+/* Build the wire header from the client-facing frame struct.
+ * Copies all fields and zeroes padding. */
+void build_frame_hdr(const idk_fs_frame_t *frame, idk_frame_header_t *hdr);
 
 /* ── Client initialization ────────────────────────────────────────────── */
 
