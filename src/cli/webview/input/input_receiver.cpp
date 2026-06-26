@@ -107,6 +107,7 @@ InputReceiver::InputReceiver(const QString &frameSocketPath, QObject *parent)
 
 InputReceiver::~InputReceiver()
 {
+    stopRepeatTimer();
     closeFd();
 }
 

@@ -782,6 +782,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             IDK_LOG("comp-vk", "dmabuf: cross-GPU vendor mismatch (modifier vendor=0x%02x, our vendor=0x%02x) — rejecting, force SHM\n",
                     mod_vendor, vk_drm_vendor_id);
             vk_dmabuf_failed_this_frame = 1;
+            /* fd NOT consumed by ICD — caller will close it. */
             return -1;
         }
     }
@@ -882,6 +883,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             IDK_ERR("comp-vk", "dmabuf: CreateImage failed: %d (fmt=0x%x mod=0x%lx) — frame rejected\n",
                     r, fourcc, (unsigned long)modifier);
             vk_dmabuf_failed_this_frame = 1;
+            /* fd NOT consumed by ICD — caller will close it. */
             return -1;
         }
 
@@ -915,6 +917,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
             vk_dmabuf_failed_this_frame = 1;
+            /* fd NOT consumed by ICD — caller will close it. */
             return -1;
         }
 
@@ -923,6 +926,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             IDK_ERR("comp-vk", "dmabuf: vk_fn_GetPhysMemProps not loaded\n");
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
+            /* fd NOT consumed by ICD — caller will close it. */
             return -1;
         }
         VkPhysicalDeviceMemoryProperties mp;
@@ -949,6 +953,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
             vk_dmabuf_failed_this_frame = 1;
+            /* fd NOT consumed by ICD — caller will close it. */
             return -1;
         }
 
@@ -971,6 +976,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
             vk_dmabuf_failed_this_frame = 1;
+            /* fd NOT consumed by ICD (vkAllocateMemory failed) — caller will close it. */
             return -1;
         }
         /* ICD took ownership of fd on success → don't close it ourselves.
@@ -991,6 +997,10 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             IDK_ERR("comp-vk", "dmabuf: CreateImageView failed: %d\n", r);
             vkFreeMemory(vk_dev, vk_dmabuf_img_mem, NULL); vk_dmabuf_img_mem = VK_NULL_HANDLE;
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL); vk_dmabuf_img = VK_NULL_HANDLE;
+            /* vkFreeMemory already closed the imported fd (ICD owned it
+             * via successful vkAllocateMemory). Set vk_dmabuf_fd = -1
+             * to signal caller NOT to close vk_dmabuf_pending_fd. */
+            vk_dmabuf_fd = -1;
             return -1;
         }
 
@@ -1184,27 +1194,33 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
      * SHM path: mmap + copy to staging buffer + vkCmdCopyBufferToImage.
      * DMABUF is preferred when available — no host→device copy. */
     if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
-        if (vk_upload_dmabuf(vk_dmabuf_pending_fd,
+        int pending_fd = vk_dmabuf_pending_fd;
+        vk_dmabuf_pending_fd = -1;  /* clear before call so vk_upload_dmabuf
+                                     * can set vk_dmabuf_fd = -1 if ICD
+                                     * consumed the fd */
+        vk_has_dmabuf_pending = 0;
+
+        if (vk_upload_dmabuf(pending_fd,
                               vk_dmabuf_pending_w, vk_dmabuf_pending_h,
                               vk_dmabuf_pending_stride,
                               vk_dmabuf_pending_fourcc,
                               vk_dmabuf_pending_modifier,
                               recording_cmd) != 0) {
             IDK_ERR("comp-vk", "render_overlay: dmabuf import failed (fd=%d)\n",
-                    vk_dmabuf_pending_fd);
-            /* Close the pending fd so we don't leak it; clear pending state. */
-            close(vk_dmabuf_pending_fd);
-            vk_dmabuf_pending_fd = -1;
-            vk_has_dmabuf_pending = 0;
+                    pending_fd);
+            /* Only close fd if ICD didn't consume it.
+             * vk_upload_dmabuf sets vk_dmabuf_fd = -1 when ICD takes
+             * ownership (vkAllocateMemory succeeded). If vk_dmabuf_fd
+             * is still pending_fd, ICD didn't take it → close it. */
+            if (vk_dmabuf_fd == pending_fd) {
+                close(pending_fd);
+                vk_dmabuf_fd = -1;
+            }
             vkEndCommandBuffer(recording_cmd);
             vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
             return;
         }
-        /* Import succeeded — the ICD owns the fd now (via VkImportMemoryFdInfoKHR).
-         * Clear pending state but DON'T close the fd (vk_upload_dmabuf tracked it
-         * in vk_dmabuf_fd for cache-hit detection on subsequent frames). */
-        vk_dmabuf_pending_fd = -1;
-        vk_has_dmabuf_pending = 0;
+        /* Import succeeded — ICD owns the fd, vk_dmabuf_fd tracks it. */
     } else if (vk_shm_fd >= 0) {
         if (vk_upload_shm(vk_shm_fd, vk_overlay_w, vk_overlay_h,
                           vk_overlay_w * vk_overlay_h * 4, 0, recording_cmd) != 0) {

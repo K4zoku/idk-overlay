@@ -276,6 +276,10 @@ static char g_sock_path[512];
 
 /* Init compositor — bind socket, accept client */
 int idk_compositor_egl_init(void) {
+    static int g_inited = 0;
+    if (g_inited) return 0;
+    g_inited = 1;
+
     if (idk_comp_sock_init(&g_listen_fd, g_sock_path, sizeof(g_sock_path), "comp") != 0) {
         return -1;
     }
