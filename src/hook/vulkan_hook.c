@@ -11,9 +11,14 @@
 #include "core/log.h"
 
 /* Forward declaration — see compositor_vk.h for the real declaration.
- * We only need notify_resize here, so avoid pulling in the full Vulkan
- * header which may not be available in all build configs. */
+ * When IDK_HAVE_VK_LAYER is not defined (no Vulkan layer headers at
+ * build time), compositor_vk.c compiles to an empty object and the
+ * symbol is absent. Provide a stub so this TU links in any config. */
+#ifndef IDK_HAVE_VK_LAYER
+static void idk_vk_compositor_notify_resize(int w, int h) { (void)w; (void)h; }
+#else
 void idk_vk_compositor_notify_resize(int w, int h);
+#endif
 
 typedef void* VkInstance;
 typedef void* VkPhysicalDevice;

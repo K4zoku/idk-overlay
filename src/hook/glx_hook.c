@@ -1,18 +1,10 @@
-/* glx_hook.c — GLX swap hook for overlay compositing.
- *
- * Mirrors the EGL hook: hooks glXSwapBuffers, inits compositor,
- * per-swap calls idk_compositor_egl_render() (receive overlay frame from
- * webview) + idk_compositor_egl_render_overlay() (draw overlay on top).
- *
- * The compositor code (src/core/compositor_egl.c) uses gl/gl_loader.h
- * function pointers which work under any current GL context — GLX
- * or EGL. No GLX-specific GL code needed.
- */
+/* glx_hook.c — GLX swap hook for overlay compositing. */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <pthread.h>
 
 #include "hook/syringe_hook.h"
 #include "hook/hook_util.h"
@@ -29,6 +21,7 @@ static GlXSwapBuffersFn orig_glXSwapBuffers = NULL;
 static int g_hook_installed = 0;
 static int g_compositor_inited = 0;
 static int g_gl_resources_ready = 0;
+static pthread_mutex_t g_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
     if (!orig_glXSwapBuffers)
@@ -59,47 +52,38 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
 }
 
 static int install_glx_hook(void) {
-    if (g_hook_installed) return 0;
-
-    /* Step 1: Resolve glXSwapBuffers address from libGL.
-     * Needed for syringe_hook_install_addr (inline trampoline). */
-    void *glx_swap_addr = NULL;
-    void *lib = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib) lib = dlopen("libGL.so", RTLD_NOW | RTLD_NOLOAD);
-    if (lib) glx_swap_addr = dlsym(lib, "glXSwapBuffers");
-
-    /* Step 2: Try inline trampoline (patches actual function code). */
-    if (glx_swap_addr) {
-        int n = syringe_hook_install_addr("glXSwapBuffers",
-                                           glx_swap_addr,
-                                           (void *)glXSwapBuffers,
-                                           (void **)&orig_glXSwapBuffers);
-        if (n > 0) {
-            g_hook_installed = 1;
-            IDK_LOG("glx", "hook installed via install_addr (trampoline)\n");
-            return 0;
-        }
+    pthread_mutex_lock(&g_hook_mutex);
+    if (g_hook_installed) {
+        pthread_mutex_unlock(&g_hook_mutex);
+        return 0;
     }
 
-    /* Step 3: Try syringe GOT/PLT walk. */
+    /* Skip install_addr inline trampoline — it patches function code
+     * directly and races with the game's main loop calling glXSwapBuffers,
+     * causing SIGSEGV at unmapped addresses near xshmfence regions.
+     * Let syringe_hook_install do GOT walk first (no code patching),
+     * which redirects callers via GOT entries before any inline patch
+     * is attempted. */
     int n = syringe_hook_install("glXSwapBuffers",
                                   (void *)glXSwapBuffers,
                                   (void **)&orig_glXSwapBuffers);
     if (n > 0) {
         g_hook_installed = 1;
         IDK_LOG("glx", "syringe hook installed (GOT)\n");
+        pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
 
-    /* Step 4: LD_PRELOAD fallback. */
     orig_glXSwapBuffers = (GlXSwapBuffersFn)hook_orig("glXSwapBuffers");
     if (orig_glXSwapBuffers && orig_glXSwapBuffers != (void *)glXSwapBuffers) {
         g_hook_installed = 1;
         IDK_LOG("glx", "LD_PRELOAD mode\n");
+        pthread_mutex_unlock(&g_hook_mutex);
         return 0;
     }
 
     IDK_LOG("glx", "hook install failed\n");
+    pthread_mutex_unlock(&g_hook_mutex);
     return -1;
 }
 
