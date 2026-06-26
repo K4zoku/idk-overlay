@@ -30,7 +30,7 @@ static pthread_mutex_t g_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static EGLBoolean (*fn_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint*) = NULL;
 
-static EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
+EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     if (!orig_eglSwapBuffers)
         orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))hook_orig("eglSwapBuffers");
 

@@ -31,7 +31,7 @@ static int g_hook_installed = 0;
 static int g_compositor_inited = 0;
 static int g_gl_resources_ready = 0;
 
-static void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
+void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
     if (!orig_glXSwapBuffers)
         orig_glXSwapBuffers = (GlXSwapBuffersFn)hook_orig("glXSwapBuffers");
 
