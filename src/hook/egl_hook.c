@@ -10,7 +10,6 @@
 #include "hook/graphic_hooks.h"
 #include "hook/hook_util.h"
 #include "hook/hook_plugin.h"
-#include "hook/overlay.h"
 #include "hook/wayland_input.h"
 #include "gl/gl_loader.h"
 #include "core/compositor_egl.h"

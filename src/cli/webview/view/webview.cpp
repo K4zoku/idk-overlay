@@ -18,12 +18,6 @@
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat"
-#pragma GCC diagnostic ignored "-Wsfinae-incomplete"
-#include <QtGui/private/qrhi_p.h>  // Private header for RHI access
-#pragma GCC diagnostic pop
-
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>

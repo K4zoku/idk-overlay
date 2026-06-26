@@ -28,7 +28,6 @@
 #include "core/compositor_vk.h"
 #include "core/log.h"
 #include "hook/overlay.h"
-#include "hook/wayland_input.h"
 
 /* ── Layer mode flag ────────────────────────────────────────────────────
  * Set when vkNegotiateLoaderLayerInterfaceVersion is called.

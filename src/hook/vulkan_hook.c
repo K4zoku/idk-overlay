@@ -6,7 +6,6 @@
 #include <unistd.h>
 
 #include "hook/syringe_hook.h"
-#include "hook/graphic_hooks.h"
 #include "hook/hook_util.h"
 #include "hook/hook_plugin.h"
 #include "core/log.h"

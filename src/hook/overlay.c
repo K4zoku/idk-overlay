@@ -11,10 +11,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include "hook/syringe_hook.h"
 #include "hook/overlay.h"
 #include "hook/hook_plugin.h"
-#include "hook/graphic_hooks.h"
 #include "hook/wayland_input.h"
 #include "core/log.h"
 
