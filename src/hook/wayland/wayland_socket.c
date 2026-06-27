@@ -34,12 +34,29 @@ static void *accept_thread_main(void *arg) {
 }
 
 int init_input_socket(void) {
-    char path[128];
+    /* Use a buffer large enough for any reasonable XDG_RUNTIME_DIR +
+     * "/idk-overlay-<pid>-input" suffix. sun_path is 108 bytes on
+     * Linux, so we cap at 107 + NUL. If the path would exceed sun_path,
+     * log an error and fail rather than silently truncating to a
+     * different value than the frame socket (which uses a 512-byte
+     * buffer) → input socket mismatch, webview can't connect. */
+    char path[256];
     const char *base = getenv("IDK_SOCKET");
-    if (base && base[0])
-        snprintf(path, sizeof(path), "%.107s-input", base);
-    else
+    if (base && base[0]) {
+        snprintf(path, sizeof(path), "%s-input", base);
+    } else {
         idk_comp_get_default_socket_path(path, sizeof(path), 1);
+    }
+    /* Validate against sun_path limit. sizeof(sun_path) is 108 on
+     * Linux. If the path is too long, the frame socket (which uses
+     * the same path minus "-input") would also be too long, so the
+     * compositor's bind would have already failed. Still, guard
+     * explicitly here for robustness. */
+    if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        WERR("input socket path too long (%zu >= %zu): %s",
+             strlen(path), sizeof(((struct sockaddr_un *)0)->sun_path), path);
+        return -1;
+    }
 
     unlink(path);
 
@@ -50,7 +67,7 @@ int init_input_socket(void) {
     }
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", path);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         WERR("input bind(%s) failed: %s", path, strerror(errno));
         close(fd);

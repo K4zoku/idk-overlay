@@ -15,6 +15,13 @@
 #include <sys/mman.h>
 #include <time.h>
 
+/* PATH_MAX is not guaranteed by POSIX (e.g. GNU/Hurd leaves it
+ * undefined). Fall back to 4096 (Linux's value) so the build doesn't
+ * break on systems without it. */
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 #include "core/compositor_common.h"
 #include "core/log.h"
 
