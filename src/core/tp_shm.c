@@ -229,7 +229,16 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
             close(shm_fd);
             return -1;
         }
-        int rc = futex_wait(cons_state, 1, 1000);  /* wait while cons_state==1 */
+        /* futex_wait(addr, val, timeout) only blocks if *addr == val.
+         * If cons_state is 0 (consumer created SHM but hasn't set
+         * CONS_STATE=1 yet — shouldn't happen per current code, but
+         * defensively), futex_wait(cons_state, 1, ...) returns
+         * immediately with EAGAIN and the loop would busy-spin,
+         * burning CPU and racing the 30s timeout accumulator (which
+         * increments by 1000 per spin). Use the current value as the
+         * futex wait condition so we block regardless of state. */
+        int cur_state = atomic_load(cons_state);
+        int rc = futex_wait(cons_state, cur_state, 1000);
         (void)rc;
         waited_ms += 1000;
         if (waited_ms >= 30000) {

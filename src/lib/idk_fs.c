@@ -26,7 +26,12 @@ static int copy_to_shm(const void *src, size_t size) {
     char shm_name[64];
     snprintf(shm_name, sizeof(shm_name), "/idk-framesource-%d", (int)getpid());
 
-    int fd = shm_open(shm_name, O_RDWR | O_CREAT, 0666);
+    /* Use 0600 (owner read/write only) instead of 0666 (world r/w).
+     * The predictable name + 0666 meant any local user could open the
+     * SHM and read/modify overlay pixel data. With 0600, only the
+     * owning user can access it. The umask may further restrict but
+     * never widen these perms. */
+    int fd = shm_open(shm_name, O_RDWR | O_CREAT, 0600);
     if (fd < 0) {
         IDK_ERR("fs", "shm_open failed: %s\n", strerror(errno));
         return -1;
@@ -107,6 +112,22 @@ int idk_fs_send_pixels(const void *pixels, const idk_frame_header_t *hdr) {
     idk_frame_header_t f = *hdr;
     f.flags = IDK_FRAME_FLAG_VISIBLE;
     f.stride = 0;
+
+    /* Validate dimensions to prevent integer overflow in pixel_size.
+     * If width and height are both near UINT32_MAX, the multiplication
+     * overflows size_t on 64-bit (max ~2^64) only at extreme values,
+     * but on 32-bit it wraps much earlier. Cap at 65536x65536 (4 GiB
+     * at 4 bytes/pixel) which is far beyond any realistic overlay
+     * resolution. A malicious/corrupted header with huge dimensions
+     * would otherwise produce a tiny pixel_size → undersized SHM →
+     * truncated memcpy. */
+    if (f.width == 0 || f.height == 0 ||
+        f.width > 65536 || f.height > 65536) {
+        IDK_ERR("fs", "idk_fs_send_pixels: invalid dimensions %ux%u\n",
+                (unsigned)f.width, (unsigned)f.height);
+        errno = EINVAL;
+        return -1;
+    }
 
     size_t pixel_size = (size_t)f.width * (size_t)f.height * 4;
     int shm_fd = copy_to_shm(pixels, pixel_size);
