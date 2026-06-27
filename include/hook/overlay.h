@@ -15,17 +15,6 @@
 extern "C" {
 #endif
 
-/* ── Frame metadata (sent alongside dmabuf fd via Unix socket) ─────────── */
-
-typedef struct idk_frame_info {
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride;       /* pixels per row in the dmabuf (may differ from width) */
-    uint32_t format;       /* DRM_FORMAT_ABGR8888 / ARGB8888 / etc. (linux/drm_fourcc.h) */
-    uint32_t num_planes;   /* 1 for single-plane formats */
-    uint32_t pid;          /* capturing process PID (for debugging) */
-} idk_frame_info_t;
-
 /* ── Initialization ────────────────────────────────────────────────────── */
 
 /**

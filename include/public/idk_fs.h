@@ -31,12 +31,7 @@ extern "C" {
 
 /* ── Constants ────────────────────────────────────────────────────────── */
 
-#define IDK_CLIENT_MAX_OVERLAYS  16
 #define IDK_CLIENT_PIXEL_SIZE(w, h)  ((w) * (h) * 4)
-
-/* Frame flags — bit positions in idk_fs_frame_t.flags */
-#define IDK_FRAME_FLAG_VISIBLE  0x01  /* bit0: overlay visible */
-#define IDK_FRAME_FLAG_DMABUF   0x02  /* bit1: 1=dmabuf fd, 0=SHM fd */
 
 /* ── Frame info for client (maps 1:1 to wire header) ──────────────────── */
 
@@ -58,25 +53,12 @@ void build_frame_hdr(const idk_fs_frame_t *frame, idk_frame_header_t *hdr);
 
 /**
  * Initialize the client — connect to the idk-overlay server socket.
- * Blocks up to ~3s (30 retries × 100ms) waiting for the server to come up.
+ * Non-blocking: delegates to transport layer which handles retries.
  *
  * @param sockpath   Socket path (e.g., "/tmp/idk-overlay-1234").
- * @param reuse_fd   If non-zero, reuses this fd instead of connecting.
  * @return           0 on success, -1 on failure.
  */
-int idk_fs_init(const char *sockpath, int reuse_fd);
-
-/**
- * Variant with configurable retry count.
- * 0 retries = single attempt (non-blocking, for use in event loops).
- * 30 retries = ~3s total (legacy behavior, blocks the caller).
- */
-int idk_fs_init2(const char *sockpath, int reuse_fd, int retries);
-
-/**
- * Get the connected socket fd. Returns -1 if not connected.
- */
-int idk_fs_get_fd(void);
+int idk_fs_init(const char *sockpath);
 
 /**
  * Shut down the client and close the socket.

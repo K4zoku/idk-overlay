@@ -67,13 +67,7 @@ static int copy_to_shm(const void *src, size_t size) {
     return fd;
 }
 
-int idk_fs_init(const char *sockpath, int reuse_fd) {
-    return idk_fs_init2(sockpath, reuse_fd, 30);
-}
-
-int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
-    (void)reuse_fd;
-    (void)retries;
+int idk_fs_init(const char *sockpath) {
     if (!sockpath) {
         errno = EINVAL;
         return -1;
@@ -84,10 +78,6 @@ int idk_fs_init2(const char *sockpath, int reuse_fd, int retries) {
         return -1;
     }
     return idk_tp_init(&g_tp, IDK_TP_PRODUCER, sockpath);
-}
-
-int idk_fs_get_fd(void) {
-    return g_tp._client_fd;
 }
 
 bool idk_fs_is_connected(void) {

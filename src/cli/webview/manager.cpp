@@ -16,6 +16,12 @@
 #include "public/idk_fs.h"
 #include "core/log.h"
 
+static QString resolveConfigPath()
+{
+    const QString xdg = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
+    return xdg + QStringLiteral("/idk-overlay.conf");
+}
+
 Manager::Manager(const QString &confFile,
                  const QString &cliSocketPath,
                  bool noDmaBuf,
@@ -62,14 +68,14 @@ Manager::Manager(const QString &confFile,
 
     if (fd >= 0) {
         /* Reusing existing fd — idk_fs_init stores it, no connect() */
-        if (idk_fs_init(m_socketPath.toUtf8().data(), true) == 0) {
+        if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
             m_was_connected = true;
             emit socketConnected();
             startInputReceiver();
         }
     } else {
         /* Try blocking connect (retry timer handles failure) */
-        if (idk_fs_init(m_socketPath.toUtf8().data(), false) == 0) {
+        if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
             m_was_connected = true;
             IDK_LOG("webview", "idk_fs connected to %s\n",
                     m_socketPath.toUtf8().data());
@@ -93,7 +99,7 @@ Manager::Manager(const QString &confFile,
                 IDK_LOG("webview", "idk_fs disconnected — attempting reconnect\n");
                 emit socketDisconnected();
                 stopInputReceiver();
-                if (idk_fs_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
                     IDK_LOG("webview", "idk_fs reconnected\n");
                     emit socketConnected();
                     startInputReceiver();
@@ -113,7 +119,7 @@ Manager::Manager(const QString &confFile,
                     IDK_LOG("webview", "idk_fs waiting for compositor (attempt %d)\n",
                             m_disconnect_count);
                 }
-                if (idk_fs_init2(m_socketPath.toUtf8().data(), false, 0) == 0) {
+                if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
                     IDK_LOG("webview", "idk_fs connected after %d attempts\n",
                             m_disconnect_count);
                     m_disconnect_count = 0;
@@ -294,12 +300,6 @@ void Manager::updateStatus()
 {
     const QString s = isConnected() ? "Connected" : "Connecting...";
     m_statusLabel->setText(QString("Socket: %1 | Status: %2").arg(m_socketPath, s));
-}
-
-static QString resolveConfigPath()
-{
-    const QString xdg = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
-    return xdg + QStringLiteral("/idk-overlay.conf");
 }
 
 QString Manager::resolvePath(const QString &path) const

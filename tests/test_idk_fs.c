@@ -6,7 +6,7 @@
 
 TEST(init2_null_path) {
     errno = 0;
-    ASSERT_EQ(idk_fs_init2(NULL, 0, 0), -1);
+    ASSERT_EQ(idk_fs_init(NULL), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
@@ -15,7 +15,7 @@ TEST(init2_path_too_long) {
     memset(long_path, 'a', sizeof(long_path) - 1);
     long_path[sizeof(long_path) - 1] = '\0';
     errno = 0;
-    ASSERT_EQ(idk_fs_init2(long_path, 0, 0), -1);
+    ASSERT_EQ(idk_fs_init(long_path), -1);
     ASSERT_EQ(errno, ERANGE);
 }
 
@@ -76,11 +76,6 @@ TEST(wait_ack_not_connected) {
     ASSERT_EQ(errno, ENOTCONN);
 }
 
-TEST(get_fd_default) {
-    idk_fs_shutdown();
-    ASSERT_EQ(idk_fs_get_fd(), -1);
-}
-
 TEST(shutdown_idempotent) {
     idk_fs_shutdown();
     idk_fs_shutdown();
@@ -98,7 +93,6 @@ int main(void) {
     RUN(send_dma_buf_nfd_zero);
     RUN(send_dma_buf_nfd_too_high);
     RUN(wait_ack_not_connected);
-    RUN(get_fd_default);
     RUN(shutdown_idempotent);
     return 0;
 }

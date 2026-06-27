@@ -200,6 +200,16 @@ static int find_webview_bin(char *buf, size_t bufsz) {
     return -1;
 }
 
+static void get_process_name(char *buf, size_t bufsz) {
+    buf[0] = '\0';
+    int fd = open("/proc/self/comm", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, buf, bufsz - 1);
+        if (n > 0) { buf[n] = '\0'; char *nl = strchr(buf, '\n'); if (nl) *nl = '\0'; }
+        close(fd);
+    }
+}
+
 /* Fork+exec the webview process as a child of the game.
  * The child inherits IDK_SOCKET, IDK_TP_BACKEND (default "shm"), and
  * any IDK_* env vars. Game name is passed via --match so the webview
@@ -211,20 +221,8 @@ static void fork_webview(void) {
         return;
     }
 
-    /* Pass game process name so webview can match config sections.
-     * Read from /proc/self/comm (truncated to 15 chars by kernel). */
     char comm[64] = {0};
-    int fd = open("/proc/self/comm", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, comm, sizeof(comm) - 1);
-        if (n > 0) {
-            comm[n] = '\0';
-            /* Strip trailing newline */
-            char *nl = strchr(comm, '\n');
-            if (nl) *nl = '\0';
-        }
-        close(fd);
-    }
+    get_process_name(comm, sizeof(comm));
 
     g_webview_pid = fork();
     if (g_webview_pid < 0) {
@@ -264,16 +262,6 @@ static void fork_webview(void) {
 }
 
 /* ── Hotkey config ───────────────────────────────────────────────────── */
-
-static void get_process_name(char *buf, size_t bufsz) {
-    buf[0] = '\0';
-    int fd = open("/proc/self/comm", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, buf, bufsz - 1);
-        if (n > 0) { buf[n] = '\0'; char *nl = strchr(buf, '\n'); if (nl) *nl = '\0'; }
-        close(fd);
-    }
-}
 
 static void get_config_path(char *buf, size_t bufsz) {
     const char *env = getenv("IDK_CONFIG");

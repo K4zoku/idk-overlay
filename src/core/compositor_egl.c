@@ -102,14 +102,7 @@ static PFN_eglDestroyContext_fn      fn_eglDestroyContext      = NULL;
 static PFN_eglDestroySurface_fn      fn_eglDestroySurface      = NULL;
 static PFN_eglBindAPI_fn             fn_eglBindAPI             = NULL;
 
-/* Hidden compositor EGL context state — UNUSED after GLX→SHM fallback fix.
- * See ensure_compositor_egl_context() (also #if 0'd) for context. */
-#if 0
-static EGLDisplay g_compositor_dpy   = NULL;
-static EGLSurface g_compositor_surf  = NULL;
-static EGLContext g_compositor_ctx   = NULL;
-static int g_compositor_egl_inited   = 0;
-#endif
+
 
 static void resolve_egl_functions(void) {
     if (fn_eglGetDisplay) return;
@@ -150,100 +143,7 @@ static void resolve_egl_functions(void) {
             (void*)fn_eglGetDisplay, (void*)fn_eglCreateImageKHR);
 }
 
-/* Hidden compositor-side EGL context — UNUSED after GLX→SHM fallback fix.
- *
- * Previously created to enable DMABUF import for GLX apps (which have no
- * current EGL display). But Mesa's glEGLImageTargetTexStorageEXT crashes
- * when binding an EGLImage from one EGLDisplay to a texture in a GLX-backed
- * GL context (the EGLImage's display must match the current context's
- * display). For GLX apps, we now reject DMABUF and use the SHM path.
- *
- * Kept here for reference — re-enable if Mesa ever adds cross-display
- * EGLImage sharing, or if we implement a CPU-copy fallback path.
- */
-#if 0
-static EGLDisplay ensure_compositor_egl_context(void) {
-    if (g_compositor_egl_inited) return g_compositor_dpy;
-    g_compositor_egl_inited = 1;
 
-    if (!fn_eglGetDisplay) resolve_egl_functions();
-    if (!fn_eglGetDisplay || !fn_eglInitialize || !fn_eglChooseConfig ||
-        !fn_eglCreateContext || !fn_eglCreatePbufferSurface ||
-        !fn_eglBindAPI || !fn_eglMakeCurrent) {
-        IDK_ERR("comp", "EGL context functions not resolved\n");
-        return NULL;
-    }
-
-    g_compositor_dpy = fn_eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (!g_compositor_dpy) {
-        IDK_ERR("comp", "eglGetDisplay(default) failed: 0x%x\n",
-                fn_eglGetError ? fn_eglGetError() : 0);
-        return NULL;
-    }
-
-    EGLint major = 0, minor = 0;
-    if (!fn_eglInitialize(g_compositor_dpy, &major, &minor)) {
-        IDK_ERR("comp", "eglInitialize failed: 0x%x\n",
-                fn_eglGetError ? fn_eglGetError() : 0);
-        g_compositor_dpy = NULL;
-        return NULL;
-    }
-
-    if (!fn_eglBindAPI(EGL_OPENGL_API)) {
-        IDK_ERR("comp", "eglBindAPI(OpenGL) failed: 0x%x\n",
-                fn_eglGetError ? fn_eglGetError() : 0);
-        return NULL;
-    }
-
-    EGLint cfg_attrs[] = {
-        EGL_SURFACE_TYPE,    EGL_PBUFFER_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_RED_SIZE,        8,
-        EGL_GREEN_SIZE,      8,
-        EGL_BLUE_SIZE,       8,
-        EGL_ALPHA_SIZE,      8,
-        EGL_NONE,
-    };
-    EGLSurface configs[8];
-    EGLint num_config = 0;
-    if (!fn_eglChooseConfig(g_compositor_dpy, cfg_attrs, configs, 8, &num_config) ||
-        num_config == 0) {
-        IDK_ERR("comp", "eglChooseConfig failed: 0x%x (num=%d)\n",
-                fn_eglGetError ? fn_eglGetError() : 0, num_config);
-        return NULL;
-    }
-    EGLSurface cfg = configs[0];
-
-    EGLint pbuf_attrs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
-    g_compositor_surf = fn_eglCreatePbufferSurface(g_compositor_dpy, cfg, pbuf_attrs);
-    if (!g_compositor_surf) {
-        IDK_ERR("comp", "eglCreatePbufferSurface failed: 0x%x\n",
-                fn_eglGetError ? fn_eglGetError() : 0);
-        return NULL;
-    }
-
-    EGLint ctx_attrs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 3,
-        EGL_CONTEXT_MINOR_VERSION, 2,
-        EGL_NONE,
-    };
-    g_compositor_ctx = fn_eglCreateContext(g_compositor_dpy, cfg, NULL, ctx_attrs);
-    if (!g_compositor_ctx) {
-        /* Retry with no version attrs (let driver pick default) */
-        g_compositor_ctx = fn_eglCreateContext(g_compositor_dpy, cfg, NULL, NULL);
-    }
-    if (!g_compositor_ctx) {
-        IDK_ERR("comp", "eglCreateContext failed: 0x%x\n",
-                fn_eglGetError ? fn_eglGetError() : 0);
-        return NULL;
-    }
-
-    IDK_LOG("comp", "compositor EGL context ready (dpy=%p surf=%p ctx=%p, EGL %d.%d)\n",
-            (void*)g_compositor_dpy, (void*)g_compositor_surf, (void*)g_compositor_ctx,
-            major, minor);
-    return g_compositor_dpy;
-}
-#endif
 
 /* ── GL_EXT_memory_object dmabuf import (MangoHud approach) ────────────
  *
