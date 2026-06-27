@@ -30,7 +30,6 @@ class Manager : public QObject
 public:
     explicit Manager(const QString &confFile,
                      const QString &socketPath,
-                     bool tray,
                      bool noDmaBuf = false,
                      const QString &cliUrl = QString(),
                      int cliWidth = 0,

@@ -17,7 +17,6 @@
 
 Manager::Manager(const QString &confFile,
                  const QString &cliSocketPath,
-                 bool tray,
                  bool noDmaBuf,
                  const QString &cliUrl,
                  int cliWidth,
@@ -40,8 +39,6 @@ Manager::Manager(const QString &confFile,
     , m_statusLabel(new QLabel())
     , m_tray(new QSystemTrayIcon(this))
 {
-    (void)tray;
-
     /* Socket path priority: CLI > IDK_SOCKET env > default.
      * Socket is no longer in config — it's always dynamic (set by the
      * injected lib's fork+exec, or by the user via --socket/IDK_SOCKET). */

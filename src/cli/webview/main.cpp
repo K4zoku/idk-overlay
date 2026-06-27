@@ -17,9 +17,6 @@ int main(int argc, char *argv[])
     parser.addVersionOption();
     parser.addPositionalArgument("config", "Config file path");
 
-    QCommandLineOption trayOption({ "t", "tray" },
-                                  "Start minimized in system tray.");
-
     QCommandLineOption socketOption({ "s", "socket" },
                                     "Socket path (overrides env/config).",
                                     "path");
@@ -44,7 +41,6 @@ int main(int argc, char *argv[])
                                    "(regex). Used when forked by injected lib.",
                                    "regex");
 
-    parser.addOption(trayOption);
     parser.addOption(socketOption);
     parser.addOption(noDmaBufOption);
     parser.addOption(urlOption);
@@ -53,7 +49,6 @@ int main(int argc, char *argv[])
     parser.addOption(matchOption);
     parser.process(app);
 
-    bool tray = parser.isSet(trayOption);
     QString configPath = parser.positionalArguments().value(0);
     QString socketPath = parser.value(socketOption);
     bool noDmaBuf = parser.isSet(noDmaBufOption);
@@ -62,7 +57,7 @@ int main(int argc, char *argv[])
     int height = parser.value(heightOption).toInt();
     QString match = parser.value(matchOption);
 
-    Manager manager(configPath, socketPath, tray, noDmaBuf,
+    Manager manager(configPath, socketPath, noDmaBuf,
                     url, width, height, match);
     return app.exec();
 }
