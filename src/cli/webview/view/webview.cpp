@@ -198,13 +198,13 @@ void WebView::doRenderAndSend()
     if (m_resizePending)
         return;
 
-    /* ── Try zero-copy DMABUF export ── */
+    /* Try zero-copy DMABUF export */
     if (m_useDmaBuf && !m_dmaBufFailed) {
         if (m_extractor->tryExportDMABuf())
             return;  /* frameSent emitted → starts ackPollTimer */
     }
 
-    /* ── SHM fallback ── */
+    /* SHM fallback */
     if (!m_memory)
         return;
 

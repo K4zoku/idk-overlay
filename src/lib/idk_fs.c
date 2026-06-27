@@ -17,7 +17,7 @@
 #include "core/transport.h"
 #include "core/log.h"
 
-/* ── Internal state ── */
+/* Internal state */
 
 static idk_transport_t g_tp;
 

@@ -20,7 +20,6 @@
 
 #include "syringe.h"
 #include "core/log.h"
-#include "core/compositor_common.h"
 
 static void usage(const char *prog) {
     fprintf(stderr,

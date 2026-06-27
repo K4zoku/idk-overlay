@@ -1,4 +1,4 @@
-/* ipc.c — Input event IPC for idk-overlay.
+/* Input event IPC for idk-overlay.
  *
  * Implements input event send/recv (16-byte event, no fd passing) over
  * a separate Unix domain socket.  Frame transfer now uses the transport

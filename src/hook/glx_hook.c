@@ -1,4 +1,4 @@
-/* glx_hook.c — GLX swap hook for overlay compositing. */
+/* GLX swap hook for overlay compositing. */
 
 #include <stdio.h>
 #include <stdlib.h>

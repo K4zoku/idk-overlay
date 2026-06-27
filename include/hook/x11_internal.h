@@ -193,7 +193,7 @@ typedef KeySym (*XStringToKeysym_fn)(const char *);
 typedef int    (*XFlush_fn)(Display *);
 typedef int    (*XSync_fn)(Display *, Bool);
 
-/* ── Shared globals (mirror wayland_internal.h names where applicable) ── */
+/* Shared globals (mirror wayland_internal.h names where applicable) */
 extern _Atomic int g_captured;
 extern _Atomic int g_hotkey_pressed;
 extern uint32_t g_hotkey_keysym;

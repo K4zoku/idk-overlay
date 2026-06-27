@@ -21,7 +21,7 @@ extern "C" {
  */
 unsigned int idk_shader_loader_init(int *out_gl_version, bool *out_is_gles);
 
-/* ── SPIR-V support check (exposed for callers that want to log it) ── */
+/* SPIR-V support check (exposed for callers that want to log it) */
 int idk_shader_loader_has_spirv(void);
 
 #ifdef __cplusplus

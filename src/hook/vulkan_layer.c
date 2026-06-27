@@ -1,4 +1,4 @@
-/* vulkan_layer.c — Vulkan Layer implementation for idk-overlay
+/* Vulkan Layer implementation for idk-overlay
  *
  * This file implements the official Vulkan Layer interface so that
  * libidk-overlay.so can be loaded as a Vulkan layer (via VK_LAYER_PATH +

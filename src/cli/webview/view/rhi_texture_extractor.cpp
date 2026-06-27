@@ -15,7 +15,7 @@
 #include <QtGui/private/qrhi_p.h>
 #pragma GCC diagnostic pop
 
-// ── Static GL helper pointers ──
+// Static GL helper pointers
 
 void *RhiTextureExtractor::s_fn_glFenceSync = nullptr;
 void *RhiTextureExtractor::s_fn_glClientWaitSync = nullptr;
@@ -36,7 +36,7 @@ RhiTextureExtractor::~RhiTextureExtractor()
 {
 }
 
-// ── Fence sync ──
+// Fence sync
 
 void RhiTextureExtractor::resolveFenceGL()
 {
@@ -71,7 +71,7 @@ bool RhiTextureExtractor::fenceSyncGL()
     return true;
 }
 
-// ── FBO resolution ──
+// FBO resolution
 
 void RhiTextureExtractor::resolveFBOGL()
 {
@@ -88,7 +88,7 @@ void RhiTextureExtractor::resolveFBOGL()
     }
 }
 
-// ── Shared context ──
+// Shared context
 
 bool RhiTextureExtractor::ensureDmaBufSharedCtx()
 {
@@ -165,7 +165,7 @@ bool RhiTextureExtractor::ensureDmaBufSharedCtx()
     return true;
 }
 
-// ── DMABUF dispatcher ──
+// DMABUF dispatcher
 
 bool RhiTextureExtractor::tryExportDMABuf()
 {
@@ -190,7 +190,7 @@ bool RhiTextureExtractor::tryExportDMABuf()
     }
 }
 
-// ── OpenGL DMABUF export ──
+// OpenGL DMABUF export
 
 bool RhiTextureExtractor::tryExportDMABufOpenGL()
 {
@@ -426,7 +426,7 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
     return true;
 }
 
-// ── SHM via glReadPixels ──
+// SHM via glReadPixels
 
 bool RhiTextureExtractor::tryReadPixelsToSHM(unsigned char *shm, int w, int h)
 {
@@ -503,7 +503,7 @@ bool RhiTextureExtractor::tryReadPixelsToSHM(unsigned char *shm, int w, int h)
     return true;
 }
 
-// ── Vulkan DMABUF export ──
+// Vulkan DMABUF export
 
 bool RhiTextureExtractor::tryExportDMABufVulkan()
 {
