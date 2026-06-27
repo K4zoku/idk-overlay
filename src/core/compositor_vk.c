@@ -21,6 +21,7 @@
 #include <stdatomic.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
