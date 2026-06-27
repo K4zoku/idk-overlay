@@ -12,6 +12,7 @@ GroupConfig::GroupConfig(const QString &confFile, const QString &group)
     m_width = value("Width").toInt();
     m_height = value("Height").toInt();
     m_url = value("Url").toUrl();
+    m_match = value("Match").toString();
 }
 
 QVariant GroupConfig::value(const QString &key) const

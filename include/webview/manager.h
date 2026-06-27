@@ -32,6 +32,10 @@ public:
                      const QString &socketPath,
                      bool tray,
                      bool noDmaBuf = false,
+                     const QString &cliUrl = QString(),
+                     int cliWidth = 0,
+                     int cliHeight = 0,
+                     const QString &cliMatch = QString(),
                      QObject *parent = nullptr);
     ~Manager();
 
@@ -61,6 +65,10 @@ private:
     int m_disconnect_count = 0;  // throttle disconnect log spam
     bool m_was_connected = false; // track idk_fs fd state transitions
     bool m_noDmaBuf = false;     // force SHM mode
+    QString m_cliUrl;            // CLI --url override
+    int m_cliWidth = 0;          // CLI --width override
+    int m_cliHeight = 0;         // CLI --height override
+    QString m_cliMatch;          // CLI --match (process name regex)
     InputReceiver *m_inputRx = nullptr;
     QTimer *m_inputRetryTimer = nullptr;
 

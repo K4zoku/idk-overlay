@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QMenu>
 #include <QDebug>
+#include <QRegularExpression>
 
 #include "public/idk_fs.h"
 #include "core/log.h"
@@ -18,6 +19,10 @@ Manager::Manager(const QString &confFile,
                  const QString &cliSocketPath,
                  bool tray,
                  bool noDmaBuf,
+                 const QString &cliUrl,
+                 int cliWidth,
+                 int cliHeight,
+                 const QString &cliMatch,
                  QObject *parent)
     : QObject(parent)
     , m_settings(new QSettings(
@@ -25,6 +30,10 @@ Manager::Manager(const QString &confFile,
         QSettings::IniFormat, this))
     , m_reconnectTimer(new QTimer(this))
     , m_noDmaBuf(noDmaBuf)
+    , m_cliUrl(cliUrl)
+    , m_cliWidth(cliWidth)
+    , m_cliHeight(cliHeight)
+    , m_cliMatch(cliMatch)
     , m_window(new QWidget())
     , m_tabBar(new QTabBar())
     , m_container(new QWidget())
@@ -33,14 +42,19 @@ Manager::Manager(const QString &confFile,
 {
     (void)tray;
 
-    /* Priority: CLI > env > config > default */
-    const char *envSocket = getenv("IDK_SOCKET_PATH");
+    /* Socket path priority: CLI > IDK_SOCKET env > default.
+     * Socket is no longer in config — it's always dynamic (set by the
+     * injected lib's fork+exec, or by the user via --socket/IDK_SOCKET). */
     if (!cliSocketPath.isEmpty()) {
         m_socketPath = cliSocketPath;
-    } else if (envSocket && *envSocket) {
-        m_socketPath = QString::fromUtf8(envSocket);
     } else {
-        m_socketPath = resolvePath(m_settings->value("Socket", "/tmp/idk-overlay").toString());
+        const char *envSocket = getenv("IDK_SOCKET");
+        if (envSocket && *envSocket) {
+            m_socketPath = QString::fromUtf8(envSocket);
+        } else {
+            /* Fallback for manual launch without env — use default */
+            m_socketPath = QStringLiteral("/tmp/idk-overlay");
+        }
     }
 
     /* Connection: use idk_fs as sole connection */
@@ -192,8 +206,64 @@ void Manager::initWebViews()
 {
     uint8_t i = 1;
     const auto groups = m_settings->childGroups();
+
+    /* Determine process name for config section matching.
+     * Priority: CLI --match > IDK_MATCH env > /proc/$PPID/comm (when forked).
+     * When the injected lib forks webview, it passes --match <comm>. */
+    QString processName = m_cliMatch;
+    if (processName.isEmpty()) {
+        const char *envMatch = getenv("IDK_MATCH");
+        if (envMatch && *envMatch) processName = QString::fromUtf8(envMatch);
+    }
+
+    /* If CLI url is set, create a single overlay from CLI args (bypass config). */
+    if (!m_cliUrl.isEmpty()) {
+        GroupConfig conf(m_cliUrl, m_cliWidth > 0 ? m_cliWidth : 1280,
+                         m_cliHeight > 0 ? m_cliHeight : 720);
+        WebView *view = new WebView(i++, conf, this, m_noDmaBuf);
+        view->setParent(m_container);
+        view->show();
+        m_views.append(view);
+        m_tabBar->addTab("CLI");
+        if (!m_views.isEmpty()) showView(0);
+        qDebug() << "Loaded 1 view from CLI args";
+        return;
+    }
+
+    /* Iterate config sections. If Match= regex is set, only load sections
+     * whose Match matches the process name. If no Match= in any section,
+     * load all (backwards compat). */
+    QRegularExpression re;
+    bool hasMatchSections = false;
+    if (!processName.isEmpty()) {
+        /* Check if any section has Match= */
+        for (const QString &group : groups) {
+            QSettings s(m_settings->fileName(), QSettings::IniFormat);
+            s.beginGroup(group);
+            if (s.contains("Match")) { hasMatchSections = true; break; }
+            s.endGroup();
+        }
+        if (hasMatchSections) {
+            re.setPattern(processName);
+        }
+    }
+
     for (const QString &group : groups) {
         GroupConfig conf(m_settings->fileName(), group);
+
+        /* If Match= regex sections exist, filter by process name */
+        if (hasMatchSections && re.isValid()) {
+            QString matchPattern = conf.match();
+            if (!matchPattern.isEmpty()) {
+                QRegularExpression sectionRe(matchPattern);
+                if (!sectionRe.isValid() || !sectionRe.match(processName).hasMatch()) {
+                    continue;  /* skip — doesn't match */
+                }
+            } else {
+                continue;  /* skip sections without Match= when filtering */
+            }
+        }
+
         if (conf.url().isEmpty()) {
             qWarning() << "Invalid config" << group;
             continue;
@@ -207,7 +277,8 @@ void Manager::initWebViews()
     if (!m_views.isEmpty()) {
         showView(0);
     }
-    qDebug() << "Loaded" << m_views.size() << "views";
+    qDebug() << "Loaded" << m_views.size() << "views"
+             << (hasMatchSections ? QStringLiteral("(matched '%1')").arg(processName) : QString());
 }
 
 void Manager::showView(int index)
