@@ -173,6 +173,7 @@ typedef int  (*XCheckTypedWindowEvent_fn)(Display *, Window, int, XEventStorage 
 typedef int  (*XWindowEvent_fn)(Display *, Window, long, XEventStorage *);
 typedef int  (*XPending_fn)(Display *);
 typedef int  (*XEventsQueued_fn)(Display *, int);
+typedef int  (*XSelectInput_fn)(Display *, Window, long);
 
 /* For cursor manipulation */
 typedef Cursor (*XCreatePixmapCursor_fn)(Display *, void *, void *,
@@ -218,6 +219,7 @@ extern XCheckTypedWindowEvent_fn   orig_XCheckTypedWindowEvent;
 extern XWindowEvent_fn             orig_XWindowEvent;
 extern XPending_fn                 orig_XPending;
 extern XEventsQueued_fn            orig_XEventsQueued;
+extern XSelectInput_fn             orig_XSelectInput;
 
 extern XCreatePixmapCursor_fn  fn_XCreatePixmapCursor;
 extern XFreePixmap_fn          fn_XFreePixmap;

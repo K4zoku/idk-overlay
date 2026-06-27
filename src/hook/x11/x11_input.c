@@ -40,6 +40,7 @@ XCheckTypedWindowEvent_fn   orig_XCheckTypedWindowEvent = NULL;
 XWindowEvent_fn             orig_XWindowEvent = NULL;
 XPending_fn                 orig_XPending = NULL;
 XEventsQueued_fn            orig_XEventsQueued = NULL;
+XSelectInput_fn             orig_XSelectInput = NULL;
 
 XCreatePixmapCursor_fn  fn_XCreatePixmapCursor = NULL;
 XFreePixmap_fn          fn_XFreePixmap = NULL;
@@ -272,6 +273,24 @@ static int hook_XWindowEvent(Display *dpy, Window w, long mask, XEventStorage *e
 
 /* ── Init / shutdown ─────────────────────────────────────────────────── */
 
+/* XSelectInput hook — inject pointer event masks so we receive mouse events
+ * even if the game didn't request them (e.g. glxgears only selects KeyPress).
+ * We OR-in ButtonPressMask | ButtonReleaseMask | PointerMotionMask so that
+ * ButtonPress/ButtonRelease/MotionNotify events flow into the X event queue
+ * where our XNextEvent-family hooks can intercept them when captured. */
+static int hook_XSelectInput(Display *dpy, Window w, long mask) {
+    if (!orig_XSelectInput)
+        orig_XSelectInput = (XSelectInput_fn)hook_orig("XSelectInput");
+    if (!g_game_display) g_game_display = dpy;
+    if (!g_game_window && w) g_game_window = w;
+
+    /* Inject pointer + key release masks. KeyReleaseMask so we get
+     * KeyRelease events (needed to stop webview key repeat timer). */
+    mask |= ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyReleaseMask;
+
+    return orig_XSelectInput(dpy, w, mask);
+}
+
 int idk_x11_input_init(void) {
     if (g_hook_installed) return 0;
 
@@ -301,6 +320,7 @@ int idk_x11_input_init(void) {
     n += INSTALL(XCheckTypedEvent);
     n += INSTALL(XCheckTypedWindowEvent);
     n += INSTALL(XWindowEvent);
+    n += INSTALL(XSelectInput);
 
     #undef INSTALL
 
