@@ -759,7 +759,7 @@ int idk_compositor_egl_render(void) {
         idk_comp_build_ack(&ack_msg, ack,
                            g_game_w, g_game_h,
                            &g_size_pending, &g_last_resize_ts,
-                           0, "comp");
+                            IDK_COMP_RESIZE_DEBOUNCE_MS, "comp");
         idk_tp_send_ack(&g_tp, &ack_msg);
 
         idk_request_msg_t req;
