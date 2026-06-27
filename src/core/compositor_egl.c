@@ -382,22 +382,21 @@ void idk_compositor_egl_notify_resize(int w, int h) {
     bool changed = idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
                                           &g_last_resize_ts, w, h, "comp");
     if (changed) {
-        /* Game viewport changed — invalidate ALL cached DMABUF textures.
-         * Stale EGLImage/fd from pre-resize frames can render as black
-         * or garbage if Qt RHI rebuilds its render-target texture with
-         * new dimensions/modifier. Forcing fresh import on next frame. */
-        for (int i = 0; i < 2; i++) {
-            if (g_tex[i]) {
-                glDeleteTextures(1, &g_tex[i]);
-                g_tex[i] = 0;
-            }
-            release_dmabuf_backing(i);
-            g_tex_w[i] = 0;
-            g_tex_h[i] = 0;
-        }
-        g_has_frame = false;
-        g_tex_idx = 0;
-        IDK_LOG("comp", "resize: invalidated DMABUF texture cache\n");
+        /* Game viewport changed — keep the current texture alive so the
+         * overlay keeps rendering during the 1-2 frame window before the
+         * webview sends a frame at the new size. Previously we deleted
+         * both texture slots here, which produced a black frame; the
+         * normal frame-replacement path (release_dmabuf_backing() +
+         * glDeleteTextures() in idk_compositor_egl_render()) already
+         * releases the old backing when a new frame arrives.
+         *
+         * The old texture is sampled with UV 0..1 over a fullscreen
+         * quad sized to the current viewport, so dimension mismatch
+         * just stretches the stale content rather than producing
+         * garbage. Once the webview's new frame arrives, the slot is
+         * replaced as part of the normal double-buffer swap. */
+        IDK_LOG("comp", "resize: keeping stale texture %dx%d for display until next frame\n",
+                g_tex_w[g_tex_idx], g_tex_h[g_tex_idx]);
     }
 }
 
