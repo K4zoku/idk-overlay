@@ -175,15 +175,7 @@ void WebView::doRenderAndSend()
         return;
 
     /* ── Try zero-copy DMABUF export ── */
-    qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-    if (now_ms < m_dmabufCooldownUntil) {
-        static qint64 s_last_cooldown_log = 0;
-        if (s_last_cooldown_log != m_dmabufCooldownUntil) {
-            IDK_LOG("webview-qt", "DMABUF cooldown active (%lldms remaining) — forcing SHM\n",
-                    m_dmabufCooldownUntil - now_ms);
-            s_last_cooldown_log = m_dmabufCooldownUntil;
-        }
-    } else if (m_useDmaBuf && !m_dmaBufFailed) {
+    if (m_useDmaBuf && !m_dmaBufFailed) {
         if (m_extractor->tryExportDMABuf())
             return;  /* frameSent emitted → starts ackPollTimer */
     }
@@ -336,11 +328,6 @@ void WebView::resizeForGame(int w, int h)
 
     IDK_LOG("webview-qt", "game resize: %dx%d -> %dx%d\n",
             m_renderW, m_renderH, w, h);
-
-    /* Arm DMABUF cooldown: Qt RHI rebuilds its render-target texture during
-     * and after the widget resize; exporting DMABUF mid-rebuild can crash.
-     * 300ms is enough for Qt to settle at any frame rate. */
-    m_dmabufCooldownUntil = QDateTime::currentMSecsSinceEpoch() + 300;
 
     setMinimumSize(w, h);
     setMaximumSize(w, h);
