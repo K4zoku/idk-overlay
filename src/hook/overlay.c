@@ -279,7 +279,11 @@ static void get_config_path(char *buf, size_t bufsz) {
     const char *env = getenv("IDK_CONFIG");
     if (env && env[0]) { snprintf(buf, bufsz, "%s", env); return; }
     const char *home = getenv("HOME"); if (!home) home = "/tmp";
-    snprintf(buf, bufsz, "%s/.config/idk-webview.conf", home);
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && xdg[0])
+        snprintf(buf, bufsz, "%s/idk-overlay.conf", xdg);
+    else
+        snprintf(buf, bufsz, "%s/.config/idk-overlay.conf", home);
 }
 
 static void parse_hotkey_str(const char *str, uint32_t *keysym, uint32_t *mods) {

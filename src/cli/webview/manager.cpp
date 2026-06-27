@@ -4,6 +4,7 @@
 #include "input_receiver.h"
 
 #include <QDir>
+#include <QStandardPaths>
 #include <QApplication>
 #include <QWebEngineProfile>
 #include <QVBoxLayout>
@@ -25,7 +26,7 @@ Manager::Manager(const QString &confFile,
                  QObject *parent)
     : QObject(parent)
     , m_settings(new QSettings(
-        confFile.isEmpty() ? QDir::homePath() + QLatin1String("/.config/idk-webview.conf") : confFile,
+        confFile.isEmpty() ? resolveConfigPath() : confFile,
         QSettings::IniFormat, this))
     , m_reconnectTimer(new QTimer(this))
     , m_noDmaBuf(noDmaBuf)
@@ -293,6 +294,12 @@ void Manager::updateStatus()
 {
     const QString s = isConnected() ? "Connected" : "Connecting...";
     m_statusLabel->setText(QString("Socket: %1 | Status: %2").arg(m_socketPath, s));
+}
+
+static QString resolveConfigPath()
+{
+    const QString xdg = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
+    return xdg + QStringLiteral("/idk-overlay.conf");
 }
 
 QString Manager::resolvePath(const QString &path) const
