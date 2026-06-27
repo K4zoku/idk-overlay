@@ -60,8 +60,13 @@ int idk_ipc_recv_input(int socket_fd, idk_input_event_t *ev, int flags) {
         flags = 0;  /* blocking after first chunk */
     }
 
-    /* Validate type is in range. */
-    if (ev->type < IDK_INPUT_KEY || ev->type > IDK_INPUT_REPEAT) {
+    /* Validate type is in range. IDK_INPUT_OVERLAY (7) was added in a
+     * later commit but the upper bound was never updated, so OVERLAY
+     * state-change events were silently rejected with EBADMSG by any
+     * caller using this function. The webview input path bypasses
+     * this via raw ::read(), so the bug is latent — but any future
+     * caller of idk_ipc_recv_input would drop all OVERLAY messages. */
+    if (ev->type < IDK_INPUT_KEY || ev->type > IDK_INPUT_OVERLAY) {
         errno = EBADMSG;
         return -1;
     }
