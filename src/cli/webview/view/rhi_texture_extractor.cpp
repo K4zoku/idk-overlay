@@ -586,7 +586,15 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
         vkDestroyBuffer(dev, buffer, nullptr);
         return false;
     }
-    vkBindBufferMemory(dev, buffer, memory, 0);
+    /* Check vkBindBufferMemory return — if it fails, vkCmdCopyImageToBuffer
+     * operates on an unbound buffer → UB. Previously the return value was
+     * silently discarded. */
+    if (vkBindBufferMemory(dev, buffer, memory, 0) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkBindBufferMemory failed\n");
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
 
     VkCommandBufferAllocateInfo cmdAI = {};
     cmdAI.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -604,7 +612,15 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmdBuf, &beginInfo);
+    /* Check vkBeginCommandBuffer — if it fails, all subsequent vkCmd*
+     * calls are no-ops or UB. Previously the return value was discarded. */
+    if (vkBeginCommandBuffer(cmdBuf, &beginInfo) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkBeginCommandBuffer failed\n");
+        vkFreeCommandBuffers(dev, m_view->m_vk.cmdPool, 1, &cmdBuf);
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
 
     VkImageMemoryBarrier toTransfer = {};
     toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -647,7 +663,16 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         0, 0, nullptr, 0, nullptr, 1, &back);
 
-    vkEndCommandBuffer(cmdBuf);
+    /* Check vkEndCommandBuffer — if it fails, vkQueueSubmit will fail,
+     * but the error path should free cmdBuf cleanly. Previously the
+     * return value was discarded. */
+    if (vkEndCommandBuffer(cmdBuf) != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkEndCommandBuffer failed\n");
+        vkFreeCommandBuffers(dev, m_view->m_vk.cmdPool, 1, &cmdBuf);
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
 
     VkFenceCreateInfo fenceInfo = {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -673,9 +698,21 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
         return false;
     }
 
-    vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    /* Use a finite timeout (1 second) instead of UINT64_MAX. A GPU
+     * hang (driver bug, TDR, lost device) would otherwise block the
+     * webview forever — it freezes and cannot recover. The compositor's
+     * VK path already uses a 1s timeout for its ring fences. On
+     * timeout, treat as failure and clean up. */
+    VkResult waitResult = vkWaitForFences(dev, 1, &fence, VK_TRUE, 1000000000ULL);
     vkDestroyFence(dev, fence, nullptr);
     vkFreeCommandBuffers(dev, m_view->m_vk.cmdPool, 1, &cmdBuf);
+    if (waitResult != VK_SUCCESS) {
+        IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkWaitForFences %s (GPU hang?)\n",
+                waitResult == VK_TIMEOUT ? "timed out" : "failed");
+        vkDestroyBuffer(dev, buffer, nullptr);
+        vkFreeMemory(dev, memory, nullptr);
+        return false;
+    }
 
     if (!m_view->m_vkGetMemoryFdKHR) {
         vkDestroyBuffer(dev, buffer, nullptr);
