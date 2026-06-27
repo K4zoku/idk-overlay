@@ -14,6 +14,8 @@
 #include "core/log.h"
 #include "gl/gl_loader.h"
 
+extern volatile int g_overlay_visible;
+
 typedef void* Display;
 typedef void* GLXDrawable;
 typedef void (*GlXSwapBuffersFn)(Display *, GLXDrawable);
@@ -37,7 +39,7 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
 
     idk_compositor_egl_render();
 
-    if (idk_compositor_egl_has_overlay() && idk_fn_glGetIntegerv) {
+    if (g_overlay_visible && idk_compositor_egl_has_overlay() && idk_fn_glGetIntegerv) {
         GLint vp[4] = {0, 0, 0, 0};
         idk_fn_glGetIntegerv(GL_VIEWPORT, vp);
         if (vp[2] > 0 && vp[3] > 0) {

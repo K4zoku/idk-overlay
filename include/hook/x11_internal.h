@@ -200,6 +200,12 @@ extern uint32_t g_mods;
 extern int32_t g_repeat_rate;
 extern int32_t g_repeat_delay;
 
+/* Overlay visibility + overlay hotkey (defined in overlay.c) */
+extern volatile int g_overlay_visible;
+extern uint32_t g_hotkey_overlay_keysym;
+extern uint32_t g_hotkey_overlay_scancode;
+extern uint32_t g_hotkey_overlay_mods;
+
 /* X11-specific globals */
 extern void *g_x11_handle;          /* dlopen handle for libX11.so.6 */
 extern int g_hook_installed;

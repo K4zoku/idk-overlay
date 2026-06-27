@@ -15,6 +15,8 @@
 #include "core/compositor_egl.h"
 #include "core/log.h"
 
+extern volatile int g_overlay_visible;
+
 typedef void* EGLDisplay;
 typedef void* EGLSurface;
 typedef unsigned int EGLBoolean;
@@ -52,7 +54,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
             idk_compositor_egl_notify_resize((int)surf_w, (int)surf_h);
     }
 
-    if (idk_compositor_egl_has_overlay() && idk_fn_glGetIntegerv) {
+    if (g_overlay_visible && idk_compositor_egl_has_overlay() && idk_fn_glGetIntegerv) {
         GLint vp[4] = {0, 0, 0, 0};
         idk_fn_glGetIntegerv(GL_VIEWPORT, vp);
         if (vp[2] > 0 && vp[3] > 0)

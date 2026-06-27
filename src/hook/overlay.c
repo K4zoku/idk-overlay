@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <dlfcn.h>
 #include <signal.h>
+#include <regex.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -17,7 +18,16 @@
 #include "hook/hook_plugin.h"
 #include "hook/wayland_input.h"
 #include "hook/x11_input.h"
+#include "public/idk_ipc.h"
 #include "core/log.h"
+
+/* KeySym = unsigned long (same as X11's KeySym / XKB keysym) */
+typedef unsigned long KeySym;
+
+/* Capture hotkey globals — defined in wayland_input.c, shared with X11 */
+extern uint32_t g_hotkey_keysym;
+extern uint32_t g_hotkey_scancode;
+extern uint32_t g_hotkey_mods;
 
 static char g_socket_path[PATH_MAX];
 static int g_enable_vk = 0;
@@ -27,7 +37,19 @@ static int g_wl_input_tried = 0;
 static int g_x11_input_tried = 0;
 static int g_x11_input_ok = 0;
 static int g_hooks_installed = 0;
+static int g_egl_hook_installed = 0;
 static pid_t g_webview_pid = -1;
+
+/* Overlay visibility — controlled by hotkey, checked by compositor render. */
+volatile int g_overlay_visible = 1;
+
+/* Overlay hotkey config — separate from capture hotkey.
+ * If both hotkeys are the same key, combined behavior:
+ *   press when !captured → capture ON + show overlay
+ *   press when captured  → capture OFF (overlay stays) */
+uint32_t g_hotkey_overlay_keysym = 0;
+uint32_t g_hotkey_overlay_scancode = 0;
+uint32_t g_hotkey_overlay_mods = 0;
 
 /* All registered hook plugins */
 static idk_hook_plugin_t *g_plugins[] = {
@@ -105,12 +127,27 @@ static void *hook_install_thread(void *arg) {
                 continue;
             }
 
+            /* Skip GLX if EGL already installed (app uses EGL, not GLX).
+             * Prevents wasteful double-hooking on systems where both
+             * libEGL and libGL are loaded. */
+            if (strcmp(plug->name, "glx") == 0 && g_egl_hook_installed) {
+                IDK_LOG("overlay", "glx: skipped (egl already hooked)\n");
+                done[p] = 1;
+                continue;
+            }
+            if (strcmp(plug->name, "egl") == 0 && g_hooks_installed &&
+                !g_egl_hook_installed) {
+                done[p] = 1;
+                continue;
+            }
+
             if (plugin_lib_loaded(plug)) {
                 IDK_LOG("overlay", "%s: library found, installing hook\n", plug->name);
                 int r = plug->init();
                 if (r == 0) {
                     done[p] = 1;
                     g_hooks_installed = 1;
+                    if (strcmp(plug->name, "egl") == 0) g_egl_hook_installed = 1;
                     IDK_LOG("overlay", "%s: hook installed OK\n", plug->name);
                 } else {
                     IDK_LOG("overlay", "%s: hook install failed, will retry\n", plug->name);
@@ -225,6 +262,72 @@ static void fork_webview(void) {
     IDK_LOG("overlay", "webview forked (pid=%d, bin=%s)\n", (int)g_webview_pid, bin);
 }
 
+/* ── Hotkey config ───────────────────────────────────────────────────── */
+
+static void get_process_name(char *buf, size_t bufsz) {
+    buf[0] = '\0';
+    int fd = open("/proc/self/comm", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, buf, bufsz - 1);
+        if (n > 0) { buf[n] = '\0'; char *nl = strchr(buf, '\n'); if (nl) *nl = '\0'; }
+        close(fd);
+    }
+}
+
+static void get_config_path(char *buf, size_t bufsz) {
+    const char *env = getenv("IDK_CONFIG");
+    if (env && env[0]) { snprintf(buf, bufsz, "%s", env); return; }
+    const char *home = getenv("HOME"); if (!home) home = "/tmp";
+    snprintf(buf, bufsz, "%s/.config/idk-webview.conf", home);
+}
+
+static void parse_hotkey_str(const char *str, uint32_t *keysym, uint32_t *mods) {
+    *keysym = 0; *mods = 0;
+    if (!str || !str[0]) return;
+    const char *keyname = str;
+    const char *plus = strchr(str, '+');
+    if (plus && plus > str) {
+        size_t n = (size_t)(plus - str);
+        char mod[32];
+        if (n < sizeof(mod)) {
+            memcpy(mod, str, n); mod[n] = '\0';
+            if (strcasecmp(mod, "Shift") == 0) *mods = IDK_MOD_SHIFT;
+            else if (strcasecmp(mod, "Ctrl") == 0) *mods = IDK_MOD_CTRL;
+            else if (strcasecmp(mod, "Alt") == 0) *mods = IDK_MOD_ALT;
+            else if (strcasecmp(mod, "Super") == 0) *mods = IDK_MOD_SUPER;
+        }
+        keyname = plus + 1;
+    }
+    static KeySym (*p_xstr)(const char *) = NULL;
+    static int tried = 0;
+    if (!tried) { tried = 1; void *lib = dlopen("libX11.so.6", RTLD_NOW|RTLD_NOLOAD); if (!lib) lib = dlopen("libX11.so.6", RTLD_NOW); if (lib) p_xstr = (KeySym(*)(const char*))dlsym(lib, "XStringToKeysym"); }
+    if (p_xstr) { KeySym ks = p_xstr(keyname); if (ks) *keysym = (uint32_t)ks; }
+    if (!*keysym) { if (!strcasecmp(keyname,"Tab")) *keysym=0xff09; else if (!strcasecmp(keyname,"F8")) *keysym=0xffc5; else if (!strcasecmp(keyname,"F9")) *keysym=0xffc6; else if (!strcasecmp(keyname,"F10")) *keysym=0xffc7; else if (!strcasecmp(keyname,"F11")) *keysym=0xffc8; else if (!strcasecmp(keyname,"F12")) *keysym=0xffc9; }
+}
+
+static void load_hotkey_config(void) {
+    const char *env_cap = getenv("IDK_TOGGLE_KEY"); if (!env_cap||!env_cap[0]) env_cap = "Shift+Tab";
+    const char *env_ovl = getenv("IDK_TOGGLE_OVERLAY"); if (!env_ovl||!env_ovl[0]) env_ovl = "F8";
+    parse_hotkey_str(env_cap, &g_hotkey_keysym, &g_hotkey_mods);
+    parse_hotkey_str(env_ovl, &g_hotkey_overlay_keysym, &g_hotkey_overlay_mods);
+    char proc[64]; get_process_name(proc, sizeof(proc));
+    char cpath[PATH_MAX]; get_config_path(cpath, sizeof(cpath));
+    FILE *f = fopen(cpath, "r");
+    if (!f) { IDK_LOG("overlay", "hotkey: using defaults (cap=%s ovl=%s)\n", env_cap, env_ovl); return; }
+    char line[512], cur_section[128]={0}; int in_match=0; char found_cap[128]={0}, found_ovl[128]={0};
+    while (fgets(line, sizeof(line), f)) {
+        char *s=line; while(*s==' '||*s=='\t')s++; char *e=s+strlen(s)-1; while(e>s&&(*e=='\n'||*e=='\r'||*e==' '))*e--='\0';
+        if (*s=='#'||*s==';'||!*s) continue;
+        if (*s=='[') { char *c=strchr(s,']'); if(c){*c='\0'; snprintf(cur_section,sizeof(cur_section),"%s",s+1); in_match=0;} continue; }
+        char *eq=strchr(s,'='); if(!eq)continue; *eq='\0'; char *v=eq+1; while(*v==' ')v++;
+        if (!strcasecmp(s,"Match")) { if(proc[0]&&v[0]){regex_t re; if(regcomp(&re,v,REG_NOSUB|REG_EXTENDED)==0){if(regexec(&re,proc,0,NULL,0)==0)in_match=1; regfree(&re);}} }
+        else if(in_match){ if(!strcasecmp(s,"HotkeyCapture"))snprintf(found_cap,sizeof(found_cap),"%s",v); else if(!strcasecmp(s,"HotkeyOverlay"))snprintf(found_ovl,sizeof(found_ovl),"%s",v); }
+    }
+    fclose(f);
+    if(found_cap[0]){parse_hotkey_str(found_cap,&g_hotkey_keysym,&g_hotkey_mods); IDK_LOG("overlay","hotkey: capture='%s' from config matching '%s'\n",found_cap,proc);}
+    if(found_ovl[0]){parse_hotkey_str(found_ovl,&g_hotkey_overlay_keysym,&g_hotkey_overlay_mods); IDK_LOG("overlay","hotkey: overlay='%s' from config matching '%s'\n",found_ovl,proc);}
+}
+
 int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     if (g_initialized) return 0;
     g_initialized = 1;
@@ -240,6 +343,9 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
      * (fork in multi-threaded process is unsafe — only async-signal-safe
      * functions can be called between fork and exec). The constructor
      * runs single-threaded, so this is safe. */
+    /* Load hotkey config from env + config file (per-section by process name) */
+    load_hotkey_config();
+
     fork_webview();
 
     /* Try X11 input first (synchronous probe). XWayland games should use X11. */
