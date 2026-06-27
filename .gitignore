@@ -59,6 +59,11 @@ build/
 builddir/
 # External subprojects (wrap-git auto-cloned, e.g. syringe)
 subprojects/*
-!/subprojects/idk-*
 !/subprojects/*.wrap
+
+# debug log files
 *.log
+
+# PKGBUILD
+dist/*
+!dist/PKGBUILD
