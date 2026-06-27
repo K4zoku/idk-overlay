@@ -1,8 +1,4 @@
-/* x11_ptr.c — X11 pointer event mapping.
- *
- * Converts XButtonEvent (ButtonPress/ButtonRelease) and XMotionEvent
- * (MotionNotify) to idk_input_event_t and sends to webview when capture
- * is active.
+/* X11 pointer event mapping.
  *
  * Button code translation:
  *   X11 Button1 (left)   → 0x110 (BTN_LEFT, wayland convention)

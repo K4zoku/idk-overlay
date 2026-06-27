@@ -1,13 +1,4 @@
-/* compositor_vk.c — Vulkan-native compositor
- *
- * Pure Vulkan rendering pipeline for overlay. No GL/EGL dependency.
- *
- * Receives overlay frames (SHM or DMABUF fd) from webview via socket,
- * imports to VkImage, renders fullscreen overlay on swapchain image.
- *
- * DMABUF: zero-copy import via VK_KHR_external_memory_fd
- * SHM: staging buffer upload via vkCmdCopyBufferToImage
- */
+/* Vulkan-native compositor: pure Vulkan rendering, no GL/EGL dependency. */
 
 #ifdef IDK_HAVE_VK_LAYER
 
@@ -33,21 +24,14 @@
 #include "core/log.h"
 #include "shaders/vk_shaders.h"
 
-/* ── SPIR-V shader bytecode ──────────────────────────────────────────────
- * Generated from overlay_vk.vert / overlay_vk.frag via glslc, embedded as
- * object files via ld -b binary + objcopy (same flow as GL SPIR-V shaders).
- *
- * Symbols (declared extern in include/shaders/vk_shaders.h, linked via
- * spv_o_files in meson.build):
- *   spv_overlay_vk_vert, spv_overlay_vk_vert_size
- *   spv_overlay_vk_frag, spv_overlay_vk_frag_size
- *
- * Vertex: fullscreen triangle (3 vertices, no VBO needed)
- * Fragment: sample texture, output premultiplied RGBA */
+/* SPIR-V shader bytecode: embedded from overlay_vk.vert/.frag via glslc + ld -b binary.
+ * Symbols: spv_overlay_vk_vert, spv_overlay_vk_frag (see vk_shaders.h).
+ * Vertex: fullscreen triangle (3 vertices, no VBO needed).
+ * Fragment: sample texture, output premultiplied RGBA. */
 
 /* Frame protocol via compositor_common.h (idk_ipc.h). */
 
-/* ── Transport state ──────────────────────────────────────────────────── */
+/* Transport state */
 
 static char vk_sock_path[512];
 static idk_transport_t vk_tp;
@@ -61,7 +45,7 @@ static void vk_sock_accept(void) {
     idk_tp_accept(&vk_tp);
 }
 
-/* ── ACK + resize state ───────────────────────────────────────────────── */
+/* ACK + resize state */
 
 static int vk_game_w = 0, vk_game_h = 0;
 static bool vk_size_pending = false;
@@ -108,7 +92,7 @@ static void vk_send_ack(int processed) {
     idk_tp_send_ack(&vk_tp, &ack_msg);
 }
 
-/* ── Vulkan device state ───────────────────────────────────────────────── */
+/* Vulkan device state */
 
 static VkDevice           vk_dev = VK_NULL_HANDLE;
 static VkPhysicalDevice   vk_phys = VK_NULL_HANDLE;
@@ -190,11 +174,9 @@ static uint32_t      vk_dmabuf_pending_fourcc = 0;
 static uint64_t      vk_dmabuf_pending_modifier = 0;
 static int           vk_has_dmabuf_pending = 0;
 
-/* ── Async submit ring ───────────────────────────────────────────────────
- * The synchronous vkQueueSubmit + vkWaitForFences pattern blocks the
- * game's QueuePresentKHR for ~5-10ms per frame (GPU pipeline drain).
- * Replace it with a 2-slot rolling-fence ring: each frame waits for
- * the fence from 2 frames ago (which the GPU has long since signaled),
+/* Async submit ring: 2-slot rolling-fence ring to avoid blocking the game's
+ * QueuePresentKHR on GPU pipeline drain (vkWaitForFences).
+ * Each frame waits for the fence from 2 frames ago, which the GPU has
  * reuses that fence + command buffer + framebuffer + image view slot,
  * submits the new work, and returns immediately.
  *
@@ -232,7 +214,7 @@ void comp_vk_set_instance_gpa(PFN_vkGetInstanceProcAddr gpa) {
         vk_fn_GetPhysMemProps = (PFN_vkGetPhysicalDeviceMemoryProperties)gpa(NULL, "vkGetPhysicalDeviceMemoryProperties");
 }
 
-/* ── Init pipeline ─────────────────────────────────────────────────────── */
+/* Init pipeline */
 
 static int vk_create_pipeline_objects(void) {
     VkResult r;
@@ -501,7 +483,7 @@ static int vk_create_pipeline(VkFormat format) {
     return 0;
 }
 
-/* ── SHM upload ────────────────────────────────────────────────────────── */
+/* SHM upload */
 
 static int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size,
                           uint32_t buf_idx, VkCommandBuffer cmd) {
@@ -699,7 +681,7 @@ static int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size,
     return 0;
 }
 
-/* ── DMABUF import ────────────────────────────────────────────────────── */
+/* DMABUF import */
 
 /* Map DRM fourcc → VkFormat.
  *
@@ -811,7 +793,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 
         VkFormat vk_fmt = drm_fourcc_to_vk_format(fourcc);
 
-        /* ── Build pNext chain for VkImageCreateInfo ──
+        /* Build pNext chain for VkImageCreateInfo
          *
          * DMABUF import requires VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT.
          * The modifier info can be passed in 3 ways:
@@ -1055,7 +1037,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
     return 0;
 }
 
-/* ── Frame receive ─────────────────────────────────────────────────────── */
+/* Frame receive */
 
 /* Overlay visibility — same symbol as overlay.c's g_overlay_visible.
  * When 0, drain incoming frames without ACK/REQUEST so the webview
@@ -1165,7 +1147,7 @@ int idk_vk_compositor_render(void) {
     return processed > 0 ? 0 : -1;
 }
 
-/* ── Render overlay ────────────────────────────────────────────────────── */
+/* Render overlay */
 
 /* Mutex serializes render_overlay calls. The Vulkan spec allows
  * vkQueueSubmit from multiple threads, but our vk_async_ring_idx /
@@ -1492,13 +1474,13 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
     pthread_mutex_unlock(&vk_render_lock);
 }
 
-/* ── Has overlay ───────────────────────────────────────────────────────── */
+/* Has overlay */
 
 int idk_vk_compositor_has_overlay(void) {
     return vk_has_frame;
 }
 
-/* ── Init ──────────────────────────────────────────────────────────────── */
+/* Init */
 
 int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
                            uint32_t queueFamily,
@@ -1578,7 +1560,7 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
     return 0;
 }
 
-/* ── Shutdown ──────────────────────────────────────────────────────────── */
+/* Shutdown */
 
 void idk_vk_compositor_shutdown(void) {
     /* Wait for any outstanding async-ring work and free deferred

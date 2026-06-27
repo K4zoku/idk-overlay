@@ -83,10 +83,6 @@ private:
     QLabel *m_statusLabel;
     QSystemTrayIcon *m_tray;
 
-    // Window geometry (for tray toggle show/hide)
-    int m_lastX = 0, m_lastY = 0, m_lastW = 800, m_lastH = 600;
-    bool m_windowVisible = false;  /* tray toggle state */
-
     // Overlays
     QList<WebView*> m_views;
 };

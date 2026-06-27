@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-/* ── Frame protocol helpers ───────────────────────────────────────────── */
+/* Frame protocol helpers */
 
 static inline bool idk_frame_is_dmabuf(const idk_frame_header_t *hdr) {
     return (hdr->flags & IDK_FRAME_FLAG_DMABUF) != 0;
@@ -32,7 +32,7 @@ static inline bool idk_frame_is_visible(const idk_frame_header_t *hdr) {
     return (hdr->flags & IDK_FRAME_FLAG_VISIBLE) != 0;
 }
 
-/* ── Resize debounce ──────────────────────────────────────────────────── */
+/* Resize debounce */
 
 #define IDK_COMP_RESIZE_DEBOUNCE_MS 50
 
@@ -42,7 +42,7 @@ bool idk_comp_notify_resize(int *game_w, int *game_h, bool *size_pending,
 
 bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_ms);
 
-/* ── Path helpers ────────────────────────────────────────────────────── */
+/* Path helpers */
 
 void idk_comp_get_path(char *buf, size_t bufsz);
 
@@ -60,7 +60,7 @@ void idk_comp_get_runtime_dir(char *buf, size_t bufsz);
 void idk_comp_get_default_socket_path(char *buf, size_t bufsz,
                                       int with_input_suffix);
 
-/* ── ACK builder ──────────────────────────────────────────────────────── */
+/* ACK builder */
 
 /* Build an idk_ack_msg_t from resize state. Caller then sends via
  * idk_tp_send_ack(). Replaces the old idk_comp_send_ack() pattern. */
@@ -70,7 +70,7 @@ void idk_comp_build_ack(idk_ack_msg_t *msg, uint8_t ack,
                          const struct timespec *last_resize_ts,
                          int debounce_ms, const char *log_tag);
 
-/* ── SHM mmap cache ───────────────────────────────────────────────────── */
+/* SHM mmap cache */
 /* Caches mmap'd SHM buffers by inode to avoid remapping identical fds. */
 
 typedef struct {
@@ -90,7 +90,7 @@ void *idk_shm_cache_map(idk_shm_cache_t *c, int fd);
 /* Unmap and reset cache. */
 void idk_shm_cache_cleanup(idk_shm_cache_t *c);
 
-/* ── Cross-GPU dmabuf vendor detection ────────────────────────────────── */
+/* Cross-GPU dmabuf vendor detection */
 
 /* DRM modifier vendor bits (56-63). */
 #define IDK_DRM_MOD_VENDOR(mod) (((mod) >> 56) & 0xFF)

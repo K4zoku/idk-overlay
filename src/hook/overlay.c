@@ -24,7 +24,6 @@
 #include "core/log.h"
 #include "core/compositor_common.h"
 
-/* KeySym = unsigned long (same as X11's KeySym / XKB keysym) */
 typedef unsigned long KeySym;
 
 /* Capture hotkey globals — defined in wayland_input.c, shared with X11 */
@@ -58,13 +57,11 @@ uint32_t g_hotkey_overlay_keysym = 0;
 uint32_t g_hotkey_overlay_scancode = 0;
 uint32_t g_hotkey_overlay_mods = 0;
 
-/* All registered hook plugins */
 static idk_hook_plugin_t *g_plugins[] = {
     &idk_plugin_egl,
     &idk_plugin_glx,
 };
 
-/* Probe a plugin by trying to dlopen its libraries (NOLOAD) */
 static int plugin_lib_loaded(const idk_hook_plugin_t *p) {
     for (int i = 0; p->lib_patterns[i]; i++) {
         void *h = dlopen(p->lib_patterns[i], RTLD_NOW | RTLD_NOLOAD);
@@ -76,7 +73,6 @@ static int plugin_lib_loaded(const idk_hook_plugin_t *p) {
     return 0;
 }
 
-/* Background thread: poll for graphics libraries and install hooks */
 static void *hook_install_thread(void *arg) {
     (void)arg;
 
@@ -120,7 +116,6 @@ static void *hook_install_thread(void *arg) {
         for (int p = 0; p < n_plugins; p++) {
             if (done[p]) continue;
 
-            /* Skip based on global enable flags */
             idk_hook_plugin_t *plug = g_plugins[p];
             int enabled = 0;
             if (strcmp(plug->name, "vk-syringe") == 0)
@@ -175,8 +170,6 @@ static void *hook_install_thread(void *arg) {
     return NULL;
 }
 
-/* ── Webview fork+exec ───────────────────────────────────────────────── */
-
 /* Locate the webview binary. Priority:
  *   1. IDK_WEBVIEW_BIN env var (explicit path)
  *   2. PATH search for "idk-webview"
@@ -188,7 +181,6 @@ static int find_webview_bin(char *buf, size_t bufsz) {
         return 0;
     }
 
-    /* Search PATH for "idk-webview" */
     const char *path = getenv("PATH");
     if (!path) path = "/usr/local/bin:/usr/bin:/bin";
     const char *p = path;
@@ -236,15 +228,12 @@ static void fork_webview(void) {
     }
 
     if (g_webview_pid == 0) {
-        /* Child — die when parent dies */
         prctl(PR_SET_PDEATHSIG, SIGTERM);
-        /* Close inherited fds to avoid leaking graphics resources */
         for (int i = 3; i < 1024; i++) close(i);
 
         IDK_LOG("overlay", "forked webview child, exec %s (comm=%s socket=%s backend=%s)\n",
                 bin, comm, g_socket_path, getenv("IDK_TP_BACKEND") ?: "socket");
 
-        /* Build argv: idk-webview --socket <path> --match <comm> */
         char *argv[8];
         int ai = 0;
         argv[ai++] = bin;
@@ -257,16 +246,12 @@ static void fork_webview(void) {
         argv[ai] = NULL;
 
         execv(bin, argv);
-        /* If execv returns, it failed */
         IDK_ERR("overlay", "execv(%s) failed: %s\n", bin, strerror(errno));
         _exit(127);
     }
 
-    /* Parent — webview is now running as child */
     IDK_LOG("overlay", "webview forked (pid=%d, bin=%s)\n", (int)g_webview_pid, bin);
 }
-
-/* ── Hotkey config ───────────────────────────────────────────────────── */
 
 static void get_config_path(char *buf, size_t bufsz) {
     const char *env = getenv("IDK_CONFIG");
@@ -337,16 +322,10 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     else
         idk_comp_get_default_socket_path(g_socket_path, sizeof(g_socket_path), 0);
 
-    /* Fork+exec webview as child process. Done before any threads spawn
-     * (fork in multi-threaded process is unsafe — only async-signal-safe
-     * functions can be called between fork and exec). The constructor
-     * runs single-threaded, so this is safe. */
-    /* Load hotkey config from env + config file (per-section by process name) */
     load_hotkey_config();
 
     fork_webview();
 
-    /* Try X11 input first (synchronous probe). XWayland games should use X11. */
     void *xh = dlopen("libX11.so.6", RTLD_NOW);
     if (!xh) xh = dlopen("libX11.so", RTLD_NOW);
     if (xh) {
@@ -354,7 +333,6 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
         dlclose(xh);
     }
 
-    /* Only try Wayland if X11 failed. */
     if (!g_x11_input_ok) {
         void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
         if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
@@ -379,11 +357,9 @@ void idk_overlay_shutdown(void) {
     idk_wayland_input_shutdown();
     idk_x11_input_shutdown();
 
-    /* Kill forked webview child if still running */
     if (g_webview_pid > 0) {
         kill(g_webview_pid, SIGTERM);
         int status;
-        /* Brief wait, then SIGKILL if still alive */
         if (waitpid(g_webview_pid, &status, WNOHANG) == 0) {
             usleep(100000);  /* 100ms */
             kill(g_webview_pid, SIGKILL);

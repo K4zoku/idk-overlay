@@ -1,6 +1,6 @@
 #include "hook/wayland_internal.h"
 
-/* ── xkb globals ─────────────────────────────────────────────────────── */
+/* xkb globals */
 void *g_xkb_handle = NULL;
 struct xkb_context *g_xkb_ctx = NULL;
 struct xkb_keymap *g_xkb_keymap = NULL;
@@ -28,7 +28,7 @@ uint32_t g_mod_idx_super = UINT32_MAX;
 int32_t g_repeat_rate = 25;
 int32_t g_repeat_delay = 500;
 
-/* ── Forward declarations ────────────────────────────────────────────── */
+/* Forward declarations */
 static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd, uint32_t sz);
 static void wkb_enter(void *d, struct wl_keyboard *kb, uint32_t serial,
                       struct wl_surface *s, struct wl_array *keys);
@@ -40,7 +40,7 @@ static void wkb_modifiers(void *d, struct wl_keyboard *kb, uint32_t serial,
                           uint32_t dep, uint32_t lat, uint32_t lck, uint32_t grp);
 static void wkb_repeat_info(void *d, struct wl_keyboard *kb, int32_t rate, int32_t delay);
 
-/* ── Listener wrapper vtable (non-static — checked by proxy scan) ────── */
+/* Listener wrapper vtable (non-static — checked by proxy scan) */
 const struct wl_keyboard_listener g_kb_wrapper = {
     .keymap       = wkb_keymap,
     .enter        = wkb_enter,
@@ -52,7 +52,7 @@ const struct wl_keyboard_listener g_kb_wrapper = {
 
 static uint32_t decode_keysym(uint32_t key);
 
-/* ── Keyboard callbacks ──────────────────────────────────────────────── */
+/* Keyboard callbacks */
 
 static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd, uint32_t sz) {
     struct kb_state *st = (struct kb_state *)d;

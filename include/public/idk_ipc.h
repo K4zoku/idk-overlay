@@ -38,11 +38,11 @@
 extern "C" {
 #endif
 
-/* ── IPC constants ─────────────────────────────────────────────────────── */
+/* IPC constants */
 
 #define IDK_IPC_SOCKNAME_MAX 108    /* AF_UNIX path max */
 
-/* ── Frame header (28 bytes, sent with fds via transport) ─────────────── */
+/* Frame header (28 bytes, sent with fds via transport) */
 
 #define IDK_FRAME_FLAG_VISIBLE  0x01  /* bit0: overlay visible */
 #define IDK_FRAME_FLAG_DMABUF   0x02  /* bit1: 1=dmabuf fd, 0=SHM fd */
@@ -68,7 +68,7 @@ _Static_assert(sizeof(idk_frame_header_t) == 28,
                "idk_frame_header_t must be 28 bytes");
 #endif
 
-/* ── ACK message (1B ack + 4B w + 4B h + 3B pad = 16B w/ natural align) */
+/* ACK: 1B ack + 4B w + 4B h + 3B pad = 16B */
 
 typedef struct idk_ack_msg {
     uint8_t  ack;     /* 0 = accepted, 1 = rejected (DMABUF not supported) */
@@ -77,7 +77,7 @@ typedef struct idk_ack_msg {
     uint8_t  _pad[3]; /* reserved */
 } idk_ack_msg_t;
 
-/* ── REQUEST message (8 bytes, consumer→producer) ──────────────────────── */
+/* REQUEST message (8 bytes, consumer→producer) */
 /* Compositor sends this after presenting a frame to signal
  * "ready for next frame." Webview responds with a frame send. */
 
@@ -99,7 +99,7 @@ _Static_assert(sizeof(idk_request_msg_t) == 8,
                "idk_request_msg_t must be 8 bytes");
 #endif
 
-/* ── Input event (16 bytes, separate socket, no fd passing) ────────────── */
+/* Input event (16 bytes, separate socket, no fd passing) */
 /*
  * The game (injected .so) hooks wl_proxy_add_listener to intercept
  * wl_pointer/wl_keyboard listeners. When "input capture" is toggled on
@@ -160,7 +160,7 @@ _Static_assert(sizeof(idk_input_event_t) == 20,
                "idk_input_event_t must be 20 bytes");
 #endif
 
-/* ── Input events (separate socket, no fd passing) ─────────────────────── */
+/* Input events (separate socket, no fd passing) */
 
 /**
  * Send an input event to the webview. Non-blocking: if the socket buffer

@@ -16,7 +16,7 @@
 #include "gl/gl_loader.h"
 #include "core/log.h"
 
-/* ── Global function pointers ─────────────────────────────────────────── */
+/* Global function pointers */
 
 PFN_idk_glGetIntegerv          idk_fn_glGetIntegerv          = NULL;
 PFN_idk_glEnable               idk_fn_glEnable               = NULL;
@@ -81,14 +81,8 @@ PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer      = NULL;
 PFN_idk_glShaderBinary         idk_fn_glShaderBinary         = NULL;
 PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader     = NULL;
 
-/* ── Init ──────────────────────────────────────────────────────────────────
- *
- * Try in order:
- *   1. libGL.so.1 (desktop OpenGL, most common)
- *   2. libGLESv2.so.2 (embedded / Wayland EGL apps)
- *   3. libGL.so (unversioned fallback)
- *   4. libGLESv2.so (unversioned fallback)
- *
+/* Init: try in order: libGL.so.1, libGLESv2.so.2, then unversioned.
+ * Uses RTLD_NOLOAD first to grab already-loaded library.
  * RTLD_NOLOAD first — if target already loaded one of these, reuse it.
  * This is important: the GL context the target created is bound to the
  * specific libGL.so.1 it loaded. We must use the SAME library.

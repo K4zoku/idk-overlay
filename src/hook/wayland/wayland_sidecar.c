@@ -1,6 +1,6 @@
 #include "hook/wayland_internal.h"
 
-/* ── Sidecar globals ─────────────────────────────────────────────────── */
+/* Sidecar globals */
 struct wl_display *g_sidecar_display = NULL;
 struct wl_event_queue *g_sidecar_queue = NULL;
 struct wl_seat *g_sidecar_seat = NULL;
@@ -18,7 +18,7 @@ void *g_sidecar_surface = NULL;
 wl_fixed_t g_sidecar_sx = 0;
 wl_fixed_t g_sidecar_sy = 0;
 
-/* ── Cursor shape interface definitions ──────────────────────────────── */
+/* Cursor shape interface definitions */
 static const struct wl_message g_device_requests[] = {
     { "destroy", "", NULL },
     { "set_shape", "uu", NULL },
@@ -39,7 +39,7 @@ static const struct wl_interface g_wp_cursor_shape_manager_v1_interface = {
     "wp_cursor_shape_manager_v1", 2, 2, g_manager_requests, 0, NULL,
 };
 
-/* ── my_wl_* protocol wrappers ───────────────────────────────────────── */
+/* my_wl_* protocol wrappers */
 
 static struct wl_registry *my_wl_display_get_registry(struct wl_display *display) {
     if (!real_wl_proxy_marshal_constructor_versioned || !g_wl_registry_interface)
@@ -89,7 +89,7 @@ void my_wl_pointer_set_cursor(struct wl_proxy *p, uint32_t serial,
         serial, surface, hx, hy);
 }
 
-/* ── Sidecar pointer listener ────────────────────────────────────────── */
+/* Sidecar pointer listener */
 
 static void sidecar_ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                                struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy) {
@@ -140,7 +140,7 @@ static const struct wl_pointer_listener g_sidecar_ptr_listener = {
     .axis_discrete  = sidecar_ptr_axis_discrete,
 };
 
-/* ── Sidecar keyboard listener ───────────────────────────────────────── */
+/* Sidecar keyboard listener */
 
 static void sidecar_kb_keymap(void *d, struct wl_keyboard *kb,
                                uint32_t fmt, int32_t fd, uint32_t sz) {
@@ -268,7 +268,7 @@ static const struct wl_keyboard_listener g_sidecar_kb_listener = {
     .repeat_info  = sidecar_kb_repeat_info,
 };
 
-/* ── Sidecar seat listener ───────────────────────────────────────────── */
+/* Sidecar seat listener */
 
 static void sidecar_seat_capabilities(void *d, struct wl_seat *seat, uint32_t caps) {
     (void)d;
@@ -303,7 +303,7 @@ static const struct wl_seat_listener g_sidecar_seat_listener = {
     .name         = sidecar_seat_name,
 };
 
-/* ── Sidecar registry listener ───────────────────────────────────────── */
+/* Sidecar registry listener */
 
 static void sidecar_registry_global(void *d, struct wl_registry *reg,
                                      uint32_t name, const char *iface, uint32_t ver) {
@@ -340,7 +340,7 @@ static const struct wl_registry_listener g_sidecar_registry_listener = {
     .global_remove = sidecar_registry_global_remove,
 };
 
-/* ── Sidecar init ────────────────────────────────────────────────────── */
+/* Sidecar init */
 
 int sidecar_init(struct wl_display *display) {
     if (g_sidecar_initialized) return 0;
@@ -427,7 +427,7 @@ void idk_wayland_input_sidecar_dispatch(void) {
     orig_wl_display_dispatch_queue_pending(g_sidecar_display, g_sidecar_queue);
 }
 
-/* ── Display connect hooks ───────────────────────────────────────────── */
+/* Display connect hooks */
 
 struct wl_display *(*orig_wl_display_connect)(const char *name) = NULL;
 struct wl_display *(*orig_wl_display_connect_to_fd)(int fd) = NULL;
@@ -488,7 +488,7 @@ int hook_wl_display_dispatch_queue_pending(struct wl_display *display,
     return ret;
 }
 
-/* ── Marshal array flags hook (track cursor state) ───────────────────── */
+/* Marshal array flags hook (track cursor state) */
 
 struct wl_proxy *(*orig_wl_proxy_marshal_array_flags)(
     struct wl_proxy *, uint32_t, const struct wl_interface *,
@@ -510,7 +510,7 @@ struct wl_proxy *hook_wl_proxy_marshal_array_flags(
     return NULL;
 }
 
-/* ── Proxy destroy hook (cleanup cursor shape device) ────────────────── */
+/* Proxy destroy hook (cleanup cursor shape device) */
 
 void (*orig_wl_proxy_destroy)(struct wl_proxy *) = NULL;
 

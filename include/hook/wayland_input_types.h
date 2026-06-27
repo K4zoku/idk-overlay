@@ -27,7 +27,7 @@
 extern "C" {
 #endif
 
-/* ── Opaque wayland object types (forward declarations) ─────────────────── */
+/* Opaque wayland object types (forward declarations) */
 
 struct wl_proxy;
 struct wl_pointer;
@@ -49,7 +49,7 @@ struct wl_message {
     const struct wl_interface **types;
 };
 
-/* ── Fixed-point (24.8 signed) ──────────────────────────────────────────── */
+/* Fixed-point (24.8 signed) */
 
 typedef int32_t wl_fixed_t;
 
@@ -58,7 +58,7 @@ typedef int32_t wl_fixed_t;
 #define WL_FIXED_FROM_INT(i)   ((wl_fixed_t)((i) * 256))
 #define WL_FIXED_FROM_DOUBLE(d) ((wl_fixed_t)((d) * 256.0 + ((d) >= 0 ? 0.5 : -0.5)))
 
-/* ── Pointer listener (version 1, extended in version 5) ────────────────── */
+/* Pointer listener (version 1, extended in version 5) */
 /*
  * Field order is the wire order — DO NOT REARRANGE. Missing callbacks
  * are NULL (set to NULL in the struct literal); libwayland skips them.
@@ -89,7 +89,7 @@ struct wl_pointer_listener {
                           uint32_t axis, int32_t discrete);
 };
 
-/* ── Keyboard listener (version 1, extended in version 4) ───────────────── */
+/* Keyboard listener (version 1, extended in version 4) */
 /*
  * Fields 1-5 are in version 1 (keymap, enter, leave, key, modifiers).
  * Field 6 (repeat_info) was added in v4.
@@ -113,14 +113,14 @@ struct wl_keyboard_listener {
                         int32_t rate, int32_t delay);
 };
 
-/* ── Seat listener (v1: capabilities, v2: name) ────────────────────────── */
+/* Seat listener (v1: capabilities, v2: name) */
 struct wl_seat_listener {
     void (*capabilities)(void *data, struct wl_seat *wl_seat,
                          uint32_t capabilities);
     void (*name)(void *data, struct wl_seat *wl_seat, const char *name);
 };
 
-/* ── Registry listener (v1) ────────────────────────────────────────────── */
+/* Registry listener (v1) */
 struct wl_registry_listener {
     void (*global)(void *data, struct wl_registry *wl_registry,
                    uint32_t name, const char *interface, uint32_t version);
@@ -128,7 +128,7 @@ struct wl_registry_listener {
                           uint32_t name);
 };
 
-/* ── Enum constants (subset, only what we use) ──────────────────────────── */
+/* Enum constants (subset, only what we use) */
 
 #define WL_POINTER_BUTTON_STATE_RELEASED 0u
 #define WL_POINTER_BUTTON_STATE_PRESSED  1u

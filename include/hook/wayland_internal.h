@@ -22,13 +22,13 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* ── Logging ─────────────────────────────────────────────────────────── */
+/* Logging */
 #define WLOG(fmt, ...) IDK_LOG("wl-input", fmt "\n", ##__VA_ARGS__)
 #define WERR(fmt, ...) IDK_ERR("wl-input", fmt "\n", ##__VA_ARGS__)
 
 #define WL_INT_TO_FIXED(i) ((wl_fixed_t)((i) * 256))
 
-/* ── Forward declarations ────────────────────────────────────────────── */
+/* Forward declarations */
 struct wl_compositor;
 struct wl_shm;
 struct wl_buffer;
@@ -37,7 +37,7 @@ struct xkb_context;
 struct xkb_keymap;
 struct xkb_state;
 
-/* ── Wayland proxy type definitions ──────────────────────────────────── */
+/* Wayland proxy type definitions */
 typedef int   (*wl_proxy_add_listener_fn)(struct wl_proxy *,
                                            void (**)(void), void *);
 typedef int   (*wl_proxy_add_dispatcher_fn)(struct wl_proxy *,
@@ -93,7 +93,7 @@ typedef struct wl_proxy *(*wl_proxy_marshal_array_flags_fn)(
     uint32_t version, uint32_t flags,
     union wl_argument *args);
 
-/* ── xkbcommon typedefs ──────────────────────────────────────────────── */
+/* xkbcommon typedefs */
 typedef struct xkb_context *(*xkb_context_new_fn)(int flags);
 typedef void (*xkb_context_unref_fn)(struct xkb_context *);
 typedef struct xkb_keymap *(*xkb_keymap_new_from_string_fn)(
@@ -111,7 +111,7 @@ typedef int (*xkb_state_mod_index_is_active_fn)(struct xkb_state *, uint32_t idx
 typedef uint32_t (*xkb_keymap_mod_get_index_fn)(struct xkb_keymap *, const char *name);
 typedef uint32_t (*xkb_keysym_from_name_fn)(const char *name, int flags);
 
-/* ── Wrapper state structs ───────────────────────────────────────────── */
+/* Wrapper state structs */
 struct ptr_state {
     const struct wl_pointer_listener *game;
     void *game_data;
@@ -122,7 +122,7 @@ struct kb_state {
     void *game_data;
 };
 
-/* ── Opcode constants ────────────────────────────────────────────────── */
+/* Opcode constants */
 #define WL_DISPLAY_GET_REGISTRY          1
 #define WL_REGISTRY_BIND                 0
 #define WL_SEAT_GET_POINTER              0
@@ -191,7 +191,7 @@ struct kb_state {
 #define IDK_XKB_KEY_Scroll_Lock  0xff14
 #define IDK_XKB_KEY_Pause        0xff13
 
-/* ── Resolved wayland function pointers ──────────────────────────────── */
+/* Resolved wayland function pointers */
 extern wl_proxy_add_listener_fn    real_wl_proxy_add_listener;
 extern wl_proxy_add_dispatcher_fn  real_wl_proxy_add_dispatcher;
 extern wl_proxy_get_class_fn       real_wl_proxy_get_class;
@@ -217,7 +217,7 @@ extern const struct wl_interface *g_wl_pointer_interface;
 
 extern void *g_wl_handle;
 
-/* ── xkbcommon function pointers ─────────────────────────────────────── */
+/* xkbcommon function pointers */
 extern xkb_context_new_fn             fn_xkb_context_new;
 extern xkb_context_unref_fn           fn_xkb_context_unref;
 extern xkb_keymap_new_from_string_fn  fn_xkb_keymap_new_from_string;
@@ -242,7 +242,7 @@ extern uint32_t g_mod_idx_shift;
 extern uint32_t g_mod_idx_alt;
 extern uint32_t g_mod_idx_super;
 
-/* ── Capture state ───────────────────────────────────────────────────── */
+/* Capture state */
 extern _Atomic int g_captured;
 extern _Atomic int g_hotkey_pressed;
 extern uint32_t g_hotkey_keysym;
@@ -258,7 +258,7 @@ extern uint32_t g_hotkey_overlay_keysym;
 extern uint32_t g_hotkey_overlay_scancode;
 extern uint32_t g_hotkey_overlay_mods;
 
-/* ── Cursor/pointer globals ──────────────────────────────────────────── */
+/* Cursor/pointer globals */
 extern int32_t g_cursor_x;
 extern int32_t g_cursor_y;
 extern uint32_t g_last_enter_serial;
@@ -269,7 +269,7 @@ extern int g_pointer_in_surface;
 extern int g_game_cursor_hidden;
 extern int g_pre_capture_cursor_hidden;
 
-/* ── Sidecar globals ─────────────────────────────────────────────────── */
+/* Sidecar globals */
 extern struct wl_display *g_sidecar_display;
 extern struct wl_event_queue *g_sidecar_queue;
 extern struct wl_seat *g_sidecar_seat;
@@ -287,21 +287,21 @@ extern void *g_sidecar_surface;
 extern wl_fixed_t g_sidecar_sx;
 extern wl_fixed_t g_sidecar_sy;
 
-/* ── Socket globals ──────────────────────────────────────────────────── */
+/* Socket globals */
 extern int g_input_listen_fd;
 extern int g_client_fd;
 extern int g_accept_thread_started;
 
-/* ── Proxy scan globals ──────────────────────────────────────────────── */
+/* Proxy scan globals */
 extern __thread int g_in_dispatch;
 extern struct wl_proxy *g_intercepted_proxies[];
 extern int g_intercepted_count;
 
-/* ── Listener wrapper vtables (extern — checked by proxy scan) ───────── */
+/* Listener wrapper vtables (extern — checked by proxy scan) */
 extern const struct wl_pointer_listener g_ptr_wrapper;
 extern const struct wl_keyboard_listener g_kb_wrapper;
 
-/* ── Internal function forward declarations ──────────────────────────── */
+/* Internal function forward declarations */
 int  init_input_socket(void);
 void teardown_input_socket(void);
 void teardown_xkb(void);

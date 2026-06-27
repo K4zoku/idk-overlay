@@ -28,7 +28,7 @@
 extern "C" {
 #endif
 
-/* ── GL types (subset, enough for compositor.c) ────────────────────────── */
+/* GL types (subset, enough for compositor.c) */
 
 typedef uint32_t GLenum;
 typedef int GLint;
@@ -87,7 +87,7 @@ typedef void GLvoid;
 #define GL_VERSION              0x1F02
 #define GL_RENDERER             0x1F01
 
-/* ── Function pointer typedefs ──────────────────────────────────────────── */
+/* Function pointer typedefs */
 
 typedef void (*PFN_idk_glGetIntegerv)(GLenum, GLint*);
 typedef void (*PFN_idk_glEnable)(GLenum);
@@ -150,11 +150,11 @@ typedef void (*PFN_idk_glBindSampler)(GLuint, GLuint);
 typedef void (*PFN_idk_glPolygonMode)(GLenum, GLenum);
 typedef void (*PFN_idk_glBindFramebuffer)(GLenum, GLuint);
 
-/* ── SPIR-V function pointer typedefs ────────────────────────────────── */
+/* SPIR-V function pointer typedefs */
 typedef void (*PFN_idk_glShaderBinary)(GLsizei, const GLuint*, GLenum, const GLvoid*, GLsizei);
 typedef void (*PFN_idk_glSpecializeShader)(GLuint, const GLchar*, GLuint, const GLuint*, const GLuint*);
 
-/* ── Global function pointers (resolved by idk_gl_loader_init) ──────────── */
+/* Global function pointers (resolved by idk_gl_loader_init) */
 
 extern PFN_idk_glGetIntegerv          idk_fn_glGetIntegerv;
 extern PFN_idk_glEnable               idk_fn_glEnable;
@@ -219,7 +219,7 @@ extern PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer;
 extern PFN_idk_glShaderBinary         idk_fn_glShaderBinary;
 extern PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader;
 
-/* ── Macro redirect: glGetIntegerv → (*idk_fn_glGetIntegerv) ──────────────
+/* Macro redirect: glGetIntegerv → (*idk_fn_glGetIntegerv)
  *
  * This lets compositor.c call glGetIntegerv(...) as if it were a normal
  * function. The macro rewrites to (*idk_fn_glGetIntegerv)(...) which
@@ -328,19 +328,15 @@ extern PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader;
 #define GL_STENCIL_TEST         0x0B90
 #define GL_ONE                  1
 
-/* ── SPIR-V enums ─────────────────────────────────────────────────────── */
+/* SPIR-V enums */
 #define GL_SHADER_BINARY_FORMAT_SPIR_V   0x9307
 #define GL_SHADER_BINARY_FORMATS         0x8207
 
-/* ── Init ─────────────────────────────────────────────────────────────────
- *
- * Resolves all GL function pointers via dlsym. Tries libGL.so.1 first,
- * then libGLESv2.so.2, then libGL.so / libGLESv2.so. Uses RTLD_NOLOAD
- * to grab the already-loaded library if the target process has one.
- *
- * @return 0 on success, -1 on failure (no GL library found).
- *         Individual function pointers may be NULL even on success —
- *         caller should check critical ones before use. */
+/* Init: resolve GL function pointers via dlsym. Tries libGL.so.1 first,
+ * then libGLESv2.so.2, then libGL.so / libGLESv2.so. Uses the already-
+ * loaded library (RTLD_NOLOAD) if available.
+ * @return 0 on success, -1 on failure. Individual function pointers may
+ *         be NULL even on success — caller should check critical ones. */
 int idk_gl_loader_init(void);
 
 #ifdef __cplusplus

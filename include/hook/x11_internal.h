@@ -19,11 +19,11 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* ── Logging ─────────────────────────────────────────────────────────── */
+/* Logging */
 #define XLOG(fmt, ...) IDK_LOG("x11-input", fmt "\n", ##__VA_ARGS__)
 #define XERR(fmt, ...) IDK_ERR("x11-input", fmt "\n", ##__VA_ARGS__)
 
-/* ── X11 opaque types (we don't include <X11/Xlib.h> to avoid build dep) */
+/* X11 opaque types (avoid including <X11/Xlib.h>) */
 typedef struct _XDisplay Display;
 typedef unsigned long Window;
 typedef unsigned long XID;
@@ -165,7 +165,7 @@ typedef union {
 #define ColormapChangeMask       (1L<<23)
 #define OwnerGrabButtonMask      (1L<<24)
 
-/* ── Function pointer types for X11 functions we hook ────────────────── */
+/* Function pointer types for X11 functions we hook */
 typedef int  (*XNextEvent_fn)(Display *, XEventStorage *);
 typedef int  (*XPeekEvent_fn)(Display *, XEventStorage *);
 typedef int  (*XCheckWindowEvent_fn)(Display *, Window, long, XEventStorage *);
@@ -243,7 +243,7 @@ extern XStringToKeysym_fn      fn_XStringToKeysym;
 extern XFlush_fn               fn_XFlush;
 extern XSync_fn                fn_XSync;
 
-/* ── Input socket (shared with wayland_socket.c structure) ────────────── */
+/* Input socket (shared with wayland_socket.c structure) */
 extern int g_input_listen_fd;
 extern int g_client_fd;
 extern int g_accept_thread_started;
@@ -255,12 +255,12 @@ void send_capture_state(uint32_t capture);
 void send_overlay_state(uint8_t visible);
 void send_repeat_info(void);
 
-/* ── Hotkey ──────────────────────────────────────────────────────────── */
+/* Hotkey */
 void configure_hotkey(void);
 int  is_capture_hotkey(uint32_t key, uint32_t keysym);
 int  is_overlay_hotkey(uint32_t key, uint32_t keysym);
 
-/* ── Event dispatch (called from each XNextEvent-family hook) ─────────── */
+/* Event dispatch (called from each XNextEvent-family hook) */
 /* Returns 1 if the event should be swallowed (captured/hotkey),
  * 0 if it should be returned to the caller. */
 int x11_dispatch_event(XEventStorage *ev);

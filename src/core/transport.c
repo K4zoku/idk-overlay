@@ -1,10 +1,4 @@
-/* transport.c — Transport abstraction dispatch layer.
- *
- * Routes idk_transport API calls to the appropriate backend.
- * Backend selection:
- *   IDK_TP_BACKEND=shm  → SHM+futex (requires kernel 5.6+)
- *   (default)            → Unix domain socket
- */
+/* Transport abstraction: routes idk_transport API calls to SHM or socket backend. */
 
 #include <stdlib.h>
 #include <string.h>

@@ -21,7 +21,7 @@
 #include "hook/syringe_hook.h"
 #include "hook/hook_util.h"
 
-/* ── X11-specific globals (NOT shared with Wayland) ──────────────────── */
+/* X11-specific globals (NOT shared with Wayland) */
 void *g_x11_handle = NULL;
 int g_hook_installed = 0;
 Display *g_game_display = NULL;
@@ -54,7 +54,7 @@ XStringToKeysym_fn      fn_XStringToKeysym = NULL;
 XFlush_fn               fn_XFlush = NULL;
 XSync_fn                fn_XSync = NULL;
 
-/* ── Symbol resolution ───────────────────────────────────────────────── */
+/* Symbol resolution */
 
 static int resolve_x11_symbols(void) {
     if (g_x11_handle) return 0;
@@ -91,7 +91,7 @@ static int resolve_x11_symbols(void) {
     return 0;
 }
 
-/* ── Capture toggle ──────────────────────────────────────────────────── */
+/* Capture toggle */
 
 void idk_x11_input_set_capture(int enable) {
     int new_state = enable ? 1 : 0;
@@ -115,7 +115,7 @@ int idk_x11_input_is_captured(void) {
     return g_captured;
 }
 
-/* ── Event dispatch ──────────────────────────────────────────────────── */
+/* Event dispatch */
 
 /* Forward declarations — defined in x11_kb.c / x11_ptr.c */
 extern int x11_handle_key_event(XEventStorage *ev);
@@ -179,7 +179,7 @@ int x11_dispatch_event(XEventStorage *ev) {
     }
 }
 
-/* ── Hooks ───────────────────────────────────────────────────────────── */
+/* Hooks */
 
 /* Generic wrapper: call orig, if it returned an event, dispatch it.
  * If dispatch says "swallow", loop to get the next event (for blocking
@@ -303,7 +303,7 @@ static int hook_XWindowEvent(Display *dpy, Window w, long mask, XEventStorage *e
     return 0;
 }
 
-/* ── Init / shutdown ─────────────────────────────────────────────────── */
+/* Init / shutdown */
 
 /* XSelectInput hook — inject pointer event masks so we receive mouse events
  * even if the game didn't request them (e.g. glxgears only selects KeyPress).

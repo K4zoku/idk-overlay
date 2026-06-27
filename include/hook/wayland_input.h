@@ -61,8 +61,6 @@ int idk_wayland_input_is_captured(void);
  * Programmatically set the capture state. Useful for tests or for
  * triggering capture from elsewhere in the overlay (e.g. clicking a
  * "lock input" button in the overlay UI itself).
- *
- * @param enable  1 to enable capture, 0 to disable.
  */
 void idk_wayland_input_set_capture(int enable);
 

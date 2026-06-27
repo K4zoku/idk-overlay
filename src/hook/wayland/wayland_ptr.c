@@ -1,6 +1,6 @@
 #include "hook/wayland_internal.h"
 
-/* ── Cursor/pointer globals ──────────────────────────────────────────── */
+/* Cursor/pointer globals */
 int32_t g_cursor_x = 0;
 int32_t g_cursor_y = 0;
 uint32_t g_last_enter_serial = 0;
@@ -11,7 +11,7 @@ int g_pointer_in_surface = 0;
 int g_game_cursor_hidden = 0;
 int g_pre_capture_cursor_hidden = 0;
 
-/* ── Forward declarations ────────────────────────────────────────────── */
+/* Forward declarations */
 static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                        struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy);
 static void wptr_leave(void *d, struct wl_pointer *p, uint32_t serial,
@@ -27,7 +27,7 @@ static void wptr_axis_source(void *d, struct wl_pointer *p, uint32_t src);
 static void wptr_axis_stop(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis);
 static void wptr_axis_discrete(void *d, struct wl_pointer *p, uint32_t axis, int32_t disc);
 
-/* ── Listener wrapper vtable (non-static — checked by proxy scan) ────── */
+/* Listener wrapper vtable (non-static — checked by proxy scan) */
 const struct wl_pointer_listener g_ptr_wrapper = {
     .enter          = wptr_enter,
     .leave          = wptr_leave,
@@ -40,7 +40,7 @@ const struct wl_pointer_listener g_ptr_wrapper = {
     .axis_discrete  = wptr_axis_discrete,
 };
 
-/* ── Pointer callbacks ───────────────────────────────────────────────── */
+/* Pointer callbacks */
 
 static void wptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                        struct wl_surface *s, wl_fixed_t sx, wl_fixed_t sy) {

@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ── Helpers ────────────────────────────────────────────────────────── */
+/* Helpers */
 /* #version line is stripped at build time via sed; compositor prepends
  * the correct #version at runtime based on GL version detection.      */
 
@@ -33,7 +33,7 @@
     GLSL_SHADER(vertex_##ver); \
     GLSL_SHADER(fragment_##ver)
 
-/* ── GLSL embedded shaders (always available ─────────────────────────── */
+/* GLSL embedded shaders (always available */
 
 GLSL_SHADER_PAIR(120);
 GLSL_SHADER_PAIR(130);
@@ -43,7 +43,7 @@ GLSL_SHADER_PAIR(410);
 #undef GLSL_SHADER
 #undef GLSL_SHADER_PAIR
 
-/* ── SPIR-V embedded shaders (per-variant, build-time only) ─────────── */
+/* SPIR-V embedded shaders (per-variant, build-time only) */
 /* Only defined when the variant's glslc compile succeeded at build time.
  * Each variant has its own HAS_SPV_* define — missing ones = SPIR-V
  * couldn't compile that flavour.                                        */

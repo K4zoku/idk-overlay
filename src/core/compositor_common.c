@@ -25,7 +25,7 @@
 #include "core/compositor_common.h"
 #include "core/log.h"
 
-/* ── Resize debounce ──────────────────────────────────────────────────── */
+/* Resize debounce */
 
 bool idk_comp_notify_resize(int *game_w, int *game_h, bool *size_pending,
                             struct timespec *last_resize_ts,
@@ -52,7 +52,7 @@ bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_
     return delta_ms >= debounce_ms;
 }
 
-/* ── Path helpers ────────────────────────────────────────────────────── */
+/* Path helpers */
 
 void idk_comp_get_runtime_dir(char *buf, size_t bufsz) {
     /* XDG_RUNTIME_DIR is the correct per-user runtime location:
@@ -92,7 +92,7 @@ void idk_comp_get_path(char *buf, size_t bufsz) {
     }
 }
 
-/* ── ACK builder ──────────────────────────────────────────────────────── */
+/* ACK builder */
 
 void idk_comp_build_ack(idk_ack_msg_t *msg, uint8_t ack,
                          int game_w, int game_h,
@@ -112,7 +112,7 @@ void idk_comp_build_ack(idk_ack_msg_t *msg, uint8_t ack,
     }
 }
 
-/* ── SHM mmap cache ──────────────────────────────────────────────────── */
+/* SHM mmap cache */
 
 void *idk_shm_cache_map(idk_shm_cache_t *c, int fd) {
     if (fd < 0) return NULL;
@@ -139,7 +139,7 @@ void idk_shm_cache_cleanup(idk_shm_cache_t *c) {
     c->size = 0; c->ino = 0; c->dev = 0;
 }
 
-/* ── Cross-GPU dmabuf vendor detection ────────────────────────────────── */
+/* Cross-GPU dmabuf vendor detection */
 
 uint32_t idk_vk_vendor_to_drm(uint32_t vk_vendor) {
     switch (vk_vendor) {

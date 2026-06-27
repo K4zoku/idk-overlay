@@ -26,7 +26,7 @@ typedef struct idk_transport {
     uint8_t       backend;      /* 0 = socket, 1 = SHM */
     bool          ready;
 
-    /* ── backend-internal ────────────────────────────────────────────── */
+    /* backend-internal */
     int           _server_fd;   /* socket: listen fd, shm: shm_fd   */
     int           _client_fd;   /* socket: connected client fd, shm: pidfd */
     uint8_t       _rsv[48];
@@ -35,7 +35,7 @@ typedef struct idk_transport {
 _Static_assert(sizeof(idk_transport_t) == 64,
                "idk_transport_t must be 64 bytes");
 
-/* ── Lifecycle ──────────────────────────────────────────────────────── */
+/* Lifecycle */
 
 int  idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name);
 void idk_tp_destroy(idk_transport_t *tp);
@@ -61,7 +61,7 @@ void idk_tp_destroy(idk_transport_t *tp);
  * don't have a server fd to keep. */
 void idk_tp_disconnect_client(idk_transport_t *tp);
 
-/* ── Consumer API ───────────────────────────────────────────────────── */
+/* Consumer API */
 
 /* Non-blocking accept. Returns 1 on success, 0 if no pending, -1 on error. */
 int  idk_tp_accept(idk_transport_t *tp);
@@ -84,7 +84,7 @@ int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
  * Returns 0 on success, -1 on timeout/error. */
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
 
-/* ── Producer API ───────────────────────────────────────────────────── */
+/* Producer API */
 
 /* Send frame header + fds. nfd=0 is invalid (use nfd=1 for fd 0 → SHM
  * path where fds[0] is a memfd). nfd=1..4 for DMABUF.

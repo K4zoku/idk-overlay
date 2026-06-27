@@ -33,8 +33,6 @@ public:
     GroupConfig(const QUrl &url, int width, int height)
         : m_width(width), m_height(height), m_url(url) {}
 
-    int x() const { return m_x; }
-    int y() const { return m_y; }
     int width() const { return m_width; }
     int height() const { return m_height; }
     QUrl url() const { return m_url; }
@@ -47,8 +45,6 @@ private:
     QString m_confFile;
     QString m_group;
 
-    int m_x = 0;
-    int m_y = 0;
     int m_width = 640;
     int m_height = 480;
     QUrl m_url;

@@ -1,15 +1,4 @@
-/* tp_shm.c — SHM + futex + pidfd_getfd transport backend.
- *
- * Implements the idk_transport interface using a shared memory ring
- * buffer with futex synchronization and pidfd_getfd(2) for DMABUF fd
- * passing.  Kernel 5.6+ required (pidfd_getfd).
- *
- * Consumer: creates SHM at /dev/shm/idk-<name>, maps it.
- * Producer: opens existing SHM, writes PID, signals ready.
- * Frame data + ACK pass through the shared page; DMABUF fds are
- * transferred via pidfd_getfd (consumer steals fd numbers written
- * into SHM by the producer).
- */
+/* SHM + futex + pidfd_getfd transport backend. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +17,7 @@
 #include "core/transport.h"
 #include "core/log.h"
 
-/* ── SHM layout (single page) ────────────────────────────────────────── */
+/* SHM layout (single page) */
 
 #define SHM_SIZE 4096
 
@@ -56,7 +45,7 @@ _Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
 #define SLOT_ACK     2
 #define SLOT_CONSUMED 3
 
-/* ── _rsv[48] layout for SHM backend ─────────────────────────────────── */
+/* _rsv[48] layout for SHM backend */
 /*  [ 0..7 ]  void *shm_ptr       — mmap'd SHM address
  *  [ 8..43 ]  char  shm_name[36]  — SHM name (for reinit/lookup)
  *  [44..47]  int   last_req_seq   — last seen REQUEST sequence         */
@@ -68,7 +57,7 @@ _Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
 /* Forward declarations (defined later, needed by init error paths) */
 void tp_shm_destroy(idk_transport_t *tp);
 
-/* ── Helpers ─────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static inline atomic_int *shm_atom(void *base, int offset) {
     return (atomic_int *)((char *)base + offset);
@@ -137,9 +126,7 @@ static void *shm_setup(const char *name, int *out_fd, int is_creator) {
     return ptr;
 }
 
-/* ── Consumer init — NON-BLOCKING ──────────────────────────────────────
- *
- * Creates SHM, writes consumer PID, sets CONS_STATE=1, returns immediately.
+/* Consumer init — NON-BLOCKING: creates SHM, writes PID, sets CONS_STATE=1.
  * Does NOT wait for producer — that happens lazily in tp_shm_accept
  * (called every frame from compositor render loop). This avoids blocking
  * the hook install thread, which would race with the game's main thread
@@ -176,7 +163,7 @@ static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     return 0;
 }
 
-/* ── Producer init ────────────────────────────────────────────────────── */
+/* Producer init */
 
 static int shm_init_producer(idk_transport_t *tp, const char *name) {
     char shm_name[64];
@@ -254,7 +241,7 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
     return 0;
 }
 
-/* ── Lifecycle ────────────────────────────────────────────────────────── */
+/* Lifecycle */
 
 int tp_shm_init(idk_transport_t *tp, const char *name) {
     if (tp->role == IDK_TP_CONSUMER)
@@ -334,7 +321,7 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
     tp->ready = false;
 }
 
-/* ── Consumer API ─────────────────────────────────────────────────────── */
+/* Consumer API */
 
 /* Called every frame from compositor render loop. Non-blocking.
  * If not yet ready, checks if producer connected; if so, opens pidfd,
@@ -456,7 +443,7 @@ void tp_shm_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
     futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
 }
 
-/* ── Producer API ─────────────────────────────────────────────────────── */
+/* Producer API */
 
 int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
                 const int *fds, int nfd) {
@@ -581,7 +568,7 @@ int tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
     return 0;
 }
 
-/* ── REQUEST support ────────────────────────────────────────────────────── */
+/* REQUEST support */
 
 int tp_shm_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);

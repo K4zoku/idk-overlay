@@ -1,19 +1,19 @@
 #include "hook/wayland_internal.h"
 
-/* ── Intercepted proxy tracking ──────────────────────────────────────── */
+/* Intercepted proxy tracking */
 struct wl_proxy *g_intercepted_proxies[MAX_INTERCEPTED];
 int g_intercepted_count = 0;
 static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 __thread int g_in_dispatch = 0;
 
-/* ── Orig function pointers (set by syringe install) ─────────────────── */
+/* Orig function pointers (set by syringe install) */
 int (*orig_wl_proxy_add_listener)(struct wl_proxy *, void (**)(void), void *) = NULL;
 int (*orig_wl_proxy_add_dispatcher)(struct wl_proxy *,
     int (*)(const void *, void *, uint32_t, const void *, const void *),
     const void *, void *) = NULL;
 
-/* ── Direct implementation overwrite (bypass "already has listener") ──── */
+/* Direct implementation overwrite (bypass "already has listener") */
 void *direct_overwrite_implementation(struct wl_proxy *proxy,
                                        void *new_impl, void *new_data,
                                        void **old_data_out) {
@@ -29,7 +29,7 @@ void *direct_overwrite_implementation(struct wl_proxy *proxy,
     return old_impl;
 }
 
-/* ── Hook wl_proxy_add_listener ──────────────────────────────────────── */
+/* Hook wl_proxy_add_listener */
 
 int hook_wl_proxy_add_listener(struct wl_proxy *proxy,
                                 void (**impl)(void), void *data) {
@@ -101,7 +101,7 @@ passthrough:
         : real_wl_proxy_add_listener(proxy, impl, data);
 }
 
-/* ── Hook wl_proxy_add_dispatcher (pass-through) ─────────────────────── */
+/* Hook wl_proxy_add_dispatcher (pass-through) */
 
 int hook_wl_proxy_add_dispatcher(struct wl_proxy *proxy,
     int (*disp)(const void *, void *, uint32_t, const void *, const void *),
@@ -119,7 +119,7 @@ int hook_wl_proxy_add_dispatcher(struct wl_proxy *proxy,
            : -1);
 }
 
-/* ── Helpers ─────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static int is_already_intercepted(struct wl_proxy *proxy) {
     for (int i = 0; i < g_intercepted_count; i++) {
@@ -133,7 +133,7 @@ static void mark_intercepted(struct wl_proxy *proxy) {
         g_intercepted_proxies[g_intercepted_count++] = proxy;
 }
 
-/* ── Scan display's proxy list for un-intercepted input devices ──────── */
+/* Scan display's proxy list for un-intercepted input devices */
 
 void scan_and_intercept_input_proxies(struct wl_display *display) {
     if (!real_wl_proxy_get_class || !real_wl_proxy_get_version) return;

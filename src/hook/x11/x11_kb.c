@@ -1,4 +1,4 @@
-/* x11_kb.c — X11 keyboard event mapping + hotkey detection.
+/* X11 keyboard event mapping + hotkey detection.
  *
  * Hotkey behavior:
  *   - Capture hotkey: toggle capture. If ON → force show overlay.

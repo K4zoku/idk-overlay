@@ -7,7 +7,7 @@
 #include "gl/shader.h"
 #include "core/log.h"
 
-/* ── Detect GL version from GL_VERSION string ──────────────────────── */
+/* Detect GL version from GL_VERSION string */
 
 static void detect_gl_version(int *out_gl_version, bool *out_is_gles) {
     const char *version = (const char *)glGetString(GL_VERSION);
@@ -42,7 +42,7 @@ static void detect_gl_version(int *out_gl_version, bool *out_is_gles) {
     *out_is_gles = is_gles;
 }
 
-/* ── Map GL version → GLSL version ─────────────────────────────────── */
+/* Map GL version → GLSL version */
 
 static int glsl_version_for(int gl_version, bool is_gles) {
     if (!is_gles) {
@@ -56,7 +56,7 @@ static int glsl_version_for(int gl_version, bool is_gles) {
     }
 }
 
-/* ── Select shader variant by GLSL version ──────────────────────────── */
+/* Select shader variant by GLSL version */
 
 struct shader_variant {
     const char *ver_str;
@@ -128,9 +128,8 @@ static void select_variant(int glsl_version, bool is_gles,
     }
 }
 
-/* ── Try SPIR-V compile ─────────────────────────────────────────────
- * Returns 1 if both vertex and fragment compile successfully.
- * Leaves *out_vs / *out_fs zeroed on failure.                         */
+/* Try SPIR-V compile. Returns 1 if both vertex and fragment compile.
+ * Leaves *out_vs / *out_fs zeroed on failure. */
 
 static int try_spirv(unsigned int *out_vs, unsigned int *out_fs,
                      const unsigned char *vs_spv, size_t vs_spv_size,
@@ -168,8 +167,7 @@ static int try_spirv(unsigned int *out_vs, unsigned int *out_fs,
     return 1;
 }
 
-/* ── Try GLSL compile ────────────────────────────────────────────────
- * Returns 1 if both vertex and fragment compile successfully.          */
+/* Try GLSL compile. Returns 1 if both vertex and fragment compile. */
 
 static int try_glsl(unsigned int *out_vs, unsigned int *out_fs,
                     const char *ver_str,
@@ -224,8 +222,7 @@ static int try_glsl(unsigned int *out_vs, unsigned int *out_fs,
     return 1;
 }
 
-/* ── Link program ───────────────────────────────────────────────────
- * Takes ownership of vs/fs (deletes them). Returns 0 on failure.       */
+/* Link program. Takes ownership of vs/fs (deletes them), returns 0 on failure. */
 
 static unsigned int link_program(unsigned int vs, unsigned int fs) {
     int ok;
@@ -252,7 +249,7 @@ static unsigned int link_program(unsigned int vs, unsigned int fs) {
     return prog;
 }
 
-/* ── Check SPIR-V driver support ────────────────────────────────────── */
+/* Check SPIR-V driver support */
 
 int idk_shader_loader_has_spirv(void) {
     if (idk_fn_glShaderBinary) {
@@ -266,8 +263,7 @@ int idk_shader_loader_has_spirv(void) {
     return 0;
 }
 
-/* ── Compile program (SPIR-V preferred, GLSL fallback) ─────────────────
- * Returns linked program handle, or 0 on failure.                       */
+/* Compile program (SPIR-V preferred, GLSL fallback). Returns linked handle, 0 on failure. */
 
 static unsigned int compile_program(struct shader_variant *v) {
     unsigned int vs = 0, fs = 0;
@@ -296,7 +292,7 @@ static unsigned int compile_program(struct shader_variant *v) {
     return link_program(vs, fs);
 }
 
-/* ── Public API ─────────────────────────────────────────────────────── */
+/* Public API */
 
 unsigned int idk_shader_loader_init(int *out_gl_version, bool *out_is_gles) {
     int gl_version;

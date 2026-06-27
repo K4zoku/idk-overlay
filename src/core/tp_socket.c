@@ -1,12 +1,4 @@
-/* tp_socket.c — Unix domain socket transport backend.
- *
- * Implements the idk_transport interface using AF_UNIX SOCK_STREAM.
- * Consumer: creates a listening socket, accepts one client.
- * Producer: connects to the consumer's socket with retries.
- *
- * Frame transfer uses sendmsg/recvmsg with SCM_RIGHTS for fd passing.
- * ACK uses plain write/read on the same socket.
- */
+/* Unix domain socket transport backend. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +13,7 @@
 #include "core/transport.h"
 #include "core/log.h"
 
-/* ── Internal state (owned by transport._rsv) ───────────────────────── */
+/* Internal state (owned by transport._rsv) */
 /* Layout within _rsv[48]:
  *   [0..3]   int    state     — 0=init, 1=listening(consumer), 2=connected
  *   [4..7]   int    connect_retries  — remaining retries for producer
@@ -35,14 +27,14 @@
 #define TP_STATE_BOUND   2   /* consumer: socket bound before listen */
 #define TP_STATE_READY   3   /* consumer: client accepted / producer: connected */
 
-/* ── Helpers ────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static int set_nonblock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     return (fl < 0) ? -1 : fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
-/* ── Consumer init ──────────────────────────────────────────────────── */
+/* Consumer init */
 
 static int consumer_init(idk_transport_t *tp, const char *path) {
     /* Check if another instance already owns this socket */
@@ -83,7 +75,7 @@ static int consumer_init(idk_transport_t *tp, const char *path) {
     return 0;
 }
 
-/* ── Producer init ──────────────────────────────────────────────────── */
+/* Producer init */
 
 static int producer_init(idk_transport_t *tp, const char *path) {
     /* Try connect with retries */
@@ -124,7 +116,7 @@ static int producer_init(idk_transport_t *tp, const char *path) {
     return 0;
 }
 
-/* ── Interface implementation ───────────────────────────────────────── */
+/* Interface implementation */
 
 int tp_socket_init(idk_transport_t *tp, const char *name) {
     /* Preserve role/ready/backend set by idk_tp_init; only zero internal state. */

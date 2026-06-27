@@ -13,7 +13,7 @@
 #include <QDebug>
 #include <QRegularExpression>
 
-#include <unistd.h>  /* getpid() */
+#include <unistd.h>
 
 #include "public/idk_fs.h"
 #include "core/log.h"
@@ -160,44 +160,13 @@ Manager::Manager(const QString &confFile,
     layout->addWidget(m_container);
     m_window->setLayout(layout);
 
-    // Default: offscreen (WA_DontShowOnScreen) so Qt WebEngine renders
-    // but the window is never mapped on the compositor. Toggle with tray.
+    m_window->winId();
     m_window->setAttribute(Qt::WA_DontShowOnScreen, true);
     m_window->show();
-
-    QTimer::singleShot(200, this, [this]() {
-        if (!m_settings) { return; }
-        const auto groups = m_settings->childGroups();
-        if (groups.isEmpty()) { return; }
-        GroupConfig conf(m_settings->fileName(), groups.first());
-        m_lastX = conf.x();
-        m_lastY = conf.y();
-        m_lastW = conf.width();
-        m_lastH = conf.height();
-        m_window->setGeometry(m_lastX, m_lastY, m_lastW, m_lastH);
-        qDebug() << "[idk-webview] Window configured" << m_lastW << "x" << m_lastH << "at" << m_lastX << "," << m_lastY;
-    });
 
     m_tray->setIcon(QIcon::fromTheme("image-x-generic"));
     m_tray->setToolTip("idk-webview");
     m_tray->show();
-
-    /* Use a member variable for tray-toggle state instead of a heap-
-     * allocated bool captured by the lambda. The previous 'new bool'
-     * leaked 1 byte per Manager instance (lambda destroyed with m_tray
-     * but the pointed-to bool was never deleted). */
-    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
-        if (reason == QSystemTrayIcon::Trigger) {
-            m_windowVisible = !m_windowVisible;
-            m_window->setAttribute(Qt::WA_DontShowOnScreen, !m_windowVisible);
-            m_window->show();
-            if (m_windowVisible) {
-                m_window->raise();
-                m_window->activateWindow();
-            }
-            qDebug() << "[idk-webview] Window" << (m_windowVisible ? "shown" : "hidden");
-        }
-    });
 
     QMenu *menu = new QMenu();
     menu->addAction("Exit", qApp, &QApplication::quit);

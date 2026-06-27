@@ -2,7 +2,7 @@
 #include "hook/wayland_internal.h"
 #include <stdatomic.h>
 
-/* ── Capture state ───────────────────────────────────────────────────── */
+/* Capture state */
 /* These are read from the compositor render path (egl_hook.c /
  * glx_hook.c / vulkan_layer.c) and written from the input hook path
  * (wayland_kb.c / sidecar.c / x11_kb.c). In practice both run on the
@@ -18,7 +18,7 @@ uint32_t g_mods = 0;
 
 static int g_hook_installed = 0;
 
-/* ── Resolved wayland function pointers ──────────────────────────────── */
+/* Resolved wayland function pointers */
 wl_proxy_add_listener_fn    real_wl_proxy_add_listener    = NULL;
 wl_proxy_add_dispatcher_fn  real_wl_proxy_add_dispatcher  = NULL;
 wl_proxy_get_class_fn       real_wl_proxy_get_class       = NULL;
@@ -44,7 +44,7 @@ const struct wl_interface *g_wl_pointer_interface = NULL;
 
 void *g_wl_handle = NULL;
 
-/* ── Resolve wayland symbols ─────────────────────────────────────────── */
+/* Resolve wayland symbols */
 static int resolve_wayland_symbols(void) {
     if (g_wl_handle) return 0;
 
@@ -112,7 +112,7 @@ static int resolve_wayland_symbols(void) {
     return 0;
 }
 
-/* ── Resolve xkbcommon symbols ───────────────────────────────────────── */
+/* Resolve xkbcommon symbols */
 static int resolve_xkbcommon_symbols(void) {
     if (g_xkb_handle) return 0;
 
@@ -156,7 +156,7 @@ static int resolve_xkbcommon_symbols(void) {
     return 0;
 }
 
-/* ── Hotkey table ────────────────────────────────────────────────────── */
+/* Hotkey table */
 struct hotkey_name_to_scancode {
     const char *name;
     uint32_t scancode;
@@ -236,7 +236,7 @@ void configure_hotkey(void) {
     WLOG("unknown hotkey '%s', falling back to Shift+Tab", env);
 }
 
-/* ── Set capture ─────────────────────────────────────────────────────── */
+/* Set capture */
 
 void idk_wayland_input_set_capture(int enable) {
     int new_state = enable ? 1 : 0;
@@ -313,7 +313,7 @@ int idk_wayland_input_is_captured(void) {
     return g_captured;
 }
 
-/* ── Init ────────────────────────────────────────────────────────────── */
+/* Init */
 
 int idk_wayland_input_init(void) {
     if (g_hook_installed) return 0;
@@ -379,7 +379,7 @@ int idk_wayland_input_init(void) {
     return 0;
 }
 
-/* ── Shutdown ─────────────────────────────────────────────────────────── */
+/* Shutdown */
 
 void idk_wayland_input_shutdown(void) {
     if (!g_hook_installed) return;

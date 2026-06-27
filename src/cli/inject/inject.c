@@ -1,5 +1,5 @@
 /*
- * inject.c — idk-inject: CLI wrapper around syringe_inject()
+ * idk-inject: CLI wrapper around syringe_inject()
  *
  * Usage:
  *   idk-inject <pid> [library.so] [options]
@@ -87,12 +87,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    (void)verbose;  /* reserved for future verbose logging */
-
-    /* Auto-detect library path */
     char abs_path[PATH_MAX];
     if (!lib_path) {
-        /* Try common locations */
         const char *candidates[] = {
             "./build/libidk-overlay.so",
             "./libidk-overlay.so",
@@ -118,9 +114,6 @@ int main(int argc, char **argv) {
         lib_path = abs_path;
     }
 
-    /* Default socket path: $XDG_RUNTIME_DIR/idk-overlay-<pid>, /tmp fallback.
-     * Uses the TARGET pid (the game's pid), not ours — the injected lib
-     * will be running inside the target process. */
     char default_sock[PATH_MAX];
     {
         char dir[PATH_MAX];
@@ -138,7 +131,6 @@ int main(int argc, char **argv) {
     IDK_LOG("inject", "  Vulkan:   %s\n", enable_vk ? "enabled" : "disabled");
     IDK_LOG("inject", "  OpenGL:   %s\n", enable_gl ? "enabled" : "disabled");
 
-    /* Inject. syringe auto-detects .NET vs native. */
     IDK_LOG("inject", "[1/1] Injecting library...\n");
     int rc = syringe_inject(target_pid, lib_path);
 

@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-/* ── Initialization ────────────────────────────────────────────────────── */
+/* Initialization */
 
 /**
  * Initialize the overlay capture system.
@@ -28,7 +28,6 @@ extern "C" {
  *                     (or "/tmp/idk-overlay-<pid>" if XDG_RUNTIME_DIR is unset).
  * @param enable_vk    Non-zero to hook Vulkan (vkQueuePresentKHR).
  * @param enable_gl    Non-zero to hook OpenGL (glXSwapBuffers, eglSwapBuffers).
- * @return             0 on success, -1 on failure.
  */
 int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl);
 

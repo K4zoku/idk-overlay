@@ -32,8 +32,7 @@
  * hook behavior in egl_hook.c / glx_hook.c). */
 extern _Atomic int g_overlay_visible;
 
-/* ── Layer mode flag ────────────────────────────────────────────────────
- * Set when vkNegotiateLoaderLayerInterfaceVersion is called. */
+/* Layer mode flag: set when vkNegotiateLoaderLayerInterfaceVersion is called */
 static int g_vk_layer_active = 0;
 
 /* Stored during CreateInstance for compositor_vk to load instance-level functions */
@@ -47,9 +46,7 @@ int idk_vk_layer_is_active(void) {
 VkInstance idk_vk_layer_get_instance(void) { return g_vk_instance; }
 PFN_vkGetInstanceProcAddr idk_vk_layer_get_instance_gpa(void) { return g_vk_instance_gpa; }
 
-/* ── Dispatch table storage ─────────────────────────────────────────────
- * Simple fixed-size map from VkInstance/VkDevice handle → dispatch table.
- * Each dispatch table stores the "next" layer's function pointers. */
+/* Dispatch table storage: fixed-size map from VkInstance/VkDevice to function pointers */
 
 #define MAX_INSTANCES  4
 #define MAX_DEVICES    8
@@ -200,13 +197,7 @@ static VkDevice find_device_for_queue(VkQueue q) {
     return qd ? qd->device : VK_NULL_HANDLE;
 }
 
-/* ── Layer chain info helpers ───────────────────────────────────────────
- * Walk the pNext chain to find VkLayerInstanceCreateInfo / VkLayerDeviceCreateInfo
- * with the specified function (e.g. VK_LAYER_LINK_INFO).
- *
- * There can be MULTIPLE LOADER_INSTANCE_CREATE_INFO entries in the chain
- * with different functions. We must find the one with function==VK_LAYER_LINK_INFO.
- * (MangoHud does the same — see get_instance_chain_info in vulkan.cpp) */
+/* Layer chain info helpers: walk pNext to find VkLayerInstanceCreateInfo with VK_LAYER_LINK_INFO */
 
 static void *get_chain_info(const void *pNext, VkStructureType sType, VkLayerFunction func) {
     const VkBaseInStructure *item = (const VkBaseInStructure *)pNext;
@@ -221,7 +212,7 @@ static void *get_chain_info(const void *pNext, VkStructureType sType, VkLayerFun
     return NULL;
 }
 
-/* ── Hook: vkCreateInstance ───────────────────────────────────────────── */
+/* Hook: vkCreateInstance */
 
 static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateInstance(
     const VkInstanceCreateInfo *pCreateInfo,
@@ -277,7 +268,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateInstance(
     return result;
 }
 
-/* ── Hook: vkDestroyInstance ──────────────────────────────────────────── */
+/* Hook: vkDestroyInstance */
 
 static VKAPI_ATTR void VKAPI_CALL idk_DestroyInstance(
     VkInstance instance,
@@ -295,7 +286,7 @@ static VKAPI_ATTR void VKAPI_CALL idk_DestroyInstance(
     IDK_LOG("vk-layer", "DestroyInstance (instance=%p)\n", (void *)instance);
 }
 
-/* ── Hook: vkCreateDevice ─────────────────────────────────────────────── */
+/* Hook: vkCreateDevice */
 
 static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(
     VkPhysicalDevice physicalDevice,
@@ -421,7 +412,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(
     return result;
 }
 
-/* ── Hook: vkDestroyDevice ────────────────────────────────────────────── */
+/* Hook: vkDestroyDevice */
 
 static VKAPI_ATTR void VKAPI_CALL idk_DestroyDevice(
     VkDevice device,
@@ -439,7 +430,7 @@ static VKAPI_ATTR void VKAPI_CALL idk_DestroyDevice(
     IDK_LOG("vk-layer", "DestroyDevice (device=%p)\n", (void *)device);
 }
 
-/* ── Hook: vkCreateSwapchainKHR ───────────────────────────────────────── */
+/* Hook: vkCreateSwapchainKHR */
 
 static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateSwapchainKHR(
     VkDevice device,
@@ -489,7 +480,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateSwapchainKHR(
     return result;
 }
 
-/* ── Hook: vkDestroySwapchainKHR ──────────────────────────────────────── */
+/* Hook: vkDestroySwapchainKHR */
 
 static VKAPI_ATTR void VKAPI_CALL idk_DestroySwapchainKHR(
     VkDevice device,
@@ -508,9 +499,7 @@ static VKAPI_ATTR void VKAPI_CALL idk_DestroySwapchainKHR(
     IDK_LOG("vk-layer", "DestroySwapchainKHR (swapchain=%p)\n", (void *)swapchain);
 }
 
-/* ── Hook: vkGetDeviceQueue ─────────────────────────────────────────────
- * We need to track which device owns each queue so QueuePresentKHR
- * can find the correct dispatch table. */
+/* Hook: vkGetDeviceQueue — track device→queue mapping for dispatch */
 
 static VKAPI_ATTR void VKAPI_CALL idk_GetDeviceQueue(
     VkDevice device,
@@ -534,22 +523,12 @@ static VKAPI_ATTR void VKAPI_CALL idk_GetDeviceQueue(
     }
 }
 
-/* ── Hook: vkQueuePresentKHR ────────────────────────────────────────────
- * Main hook point — render overlay on swapchain image before present.
- *
- * Flow:
- * 1. Receive webview frame (idk_vk_compositor_render)
- * 2. Get swapchain image index
- * 3. Allocate + begin command buffer
- * 4. idk_vk_compositor_render_overlay(cmd, swapchainImage, w, h)
- * 5. End + submit command buffer (with wait semaphores from present info)
- * 6. Forward to real QueuePresentKHR */
+/* Hook: vkQueuePresentKHR — render overlay on swapchain image before present */
 
 static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
     VkQueue queue,
     const VkPresentInfoKHR *pPresentInfo)
 {
-    /* Receive webview frame (non-blocking) */
     idk_vk_compositor_render();
 
     static int s_present_count = 0;
@@ -558,7 +537,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
         IDK_LOG("vk-layer", "QueuePresentKHR (count=%d)\n", s_present_count);
     }
 
-    /* Find device + dispatch table for this queue */
     pthread_mutex_lock(&g_dispatch_lock);
     VkDevice device = find_device_for_queue(queue);
     struct device_dispatch *dd = device ? find_device(device) : NULL;
@@ -571,13 +549,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    /* Render overlay if we have a frame + swapchain info + overlay visible.
-     * g_overlay_visible is the same flag EGL/GLX paths check in their
-     * swap hooks — when 0, the game's present goes through unmodified. */
     if (g_overlay_visible &&
         idk_vk_compositor_has_overlay() &&
         pPresentInfo && pPresentInfo->swapchainCount > 0 && gpa) {
-        /* Get swapchain + image index */
         VkSwapchainKHR sc = pPresentInfo->pSwapchains[0];
         uint32_t img_idx = pPresentInfo->pImageIndices[0];
 
@@ -586,7 +560,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
         pthread_mutex_unlock(&g_dispatch_lock);
 
         if (sd && sd->width > 0 && sd->height > 0) {
-            /* Get swapchain images */
             PFN_vkGetSwapchainImagesKHR fpGetImages =
                 (PFN_vkGetSwapchainImagesKHR)gpa(device, "vkGetSwapchainImagesKHR");
             if (fpGetImages) {
@@ -599,7 +572,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
                         VkImage swapchain_img = images[img_idx];
                         free(images);
 
-                        /* Allocate command buffer */
                         PFN_vkAllocateCommandBuffers fpAllocCmd =
                             (PFN_vkAllocateCommandBuffers)gpa(device, "vkAllocateCommandBuffers");
                         PFN_vkBeginCommandBuffer fpBeginCmd =
@@ -612,9 +584,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
                             (PFN_vkFreeCommandBuffers)gpa(device, "vkFreeCommandBuffers");
 
                         if (fpAllocCmd && fpBeginCmd && fpEndCmd && fpQueueSubmit && fpFreeCmd) {
-                            /* For Phase 2 initial test: just call render_overlay
-                             * which will handle cmd buffer internally.
-                             * TODO: proper command buffer + semaphore synchronization */
                             idk_vk_compositor_render_overlay(VK_NULL_HANDLE, swapchain_img,
                                                               sd->width, sd->height,
                                                               sd->format);
@@ -628,7 +597,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
     return fp(queue, pPresentInfo);
 }
 
-/* ── GetInstanceProcAddr ──────────────────────────────────────────────── */
+/* GetInstanceProcAddr */
 
 static const struct {
     const char *name;
@@ -640,7 +609,7 @@ static const struct {
     { "vkCreateDevice",            (void *)idk_CreateDevice },
 };
 
-/* ── GetDeviceProcAddr ────────────────────────────────────────────────── */
+/* GetDeviceProcAddr */
 
 static const struct {
     const char *name;
@@ -706,9 +675,7 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL idk_GetDeviceProcAddr(
     return NULL;
 }
 
-/* ── Layer negotiation entry point ──────────────────────────────────────
- * The Vulkan loader calls this function when loading the layer.
- * We return our GetInstanceProcAddr and GetDeviceProcAddr. */
+/* Layer negotiation: called by the Vulkan loader; provide our proc-addr functions */
 
 VKAPI_ATTR VkResult VKAPI_CALL
 vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *pVersionStruct)

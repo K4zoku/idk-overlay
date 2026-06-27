@@ -146,7 +146,7 @@ static void resolve_egl_functions(void) {
 
 
 
-/* ── GL_EXT_memory_object dmabuf import (MangoHud approach) ────────────
+/* GL_EXT_memory_object dmabuf import (MangoHud approach)
  *
  * Per GL_EXT_memory_object_fd spec, only GL_HANDLE_TYPE_OPAQUE_FD_EXT is
  * defined — there is NO GL_HANDLE_TYPE_DMA_BUF_EXT. Spec says OPAQUE_FD is
@@ -1219,7 +1219,7 @@ void idk_compositor_egl_shutdown(void) {
     IDK_LOG("comp", "Shut down\n");
 }
 
-/* ── GL resource initialization ────────────────────────────────────── */
+/* GL resource initialization */
 
 /* Init shaders and GL resources */
 int idk_compositor_egl_init_gl(void) {

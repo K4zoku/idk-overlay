@@ -1,8 +1,4 @@
-/* idk_fs.c — Frame sender library (client side of compositor).
- *
- * Uses idk_transport under the hood. Phase 1: socket backend.
- * Phase 2: SHM backend (transparent swap).
- */
+/* Frame sender library (client side of compositor). */
 
 #include <stdio.h>
 #include <stdlib.h>

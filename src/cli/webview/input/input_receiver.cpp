@@ -21,7 +21,7 @@
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
-/* ─── XKB keysym → Qt::Key translation table ──────────────────────────── */
+/* XKB keysym → Qt::Key translation table */
 
 struct SymQtEntry { quint32 sym; int qtKey; };
 static const SymQtEntry SYM_QT[] = {
@@ -97,7 +97,7 @@ static Qt::KeyboardModifiers idkModsToQt(quint32 mods)
 
 static quint64 nowMs() { return (quint64)QDateTime::currentMSecsSinceEpoch(); }
 
-/* ─── InputReceiver ─────────────────────────────────────────────────────── */
+/* InputReceiver */
 
 InputReceiver::InputReceiver(const QString &frameSocketPath, QObject *parent)
     : QObject(parent)
@@ -263,7 +263,7 @@ void InputReceiver::onReadyRead()
     }
 }
 
-/* ─── Keyboard ─────────────────────────────────────────────────────────── */
+/* Keyboard */
 
 void InputReceiver::injectKeyboardEvent(const idk_input_event_t &ev)
 {
@@ -302,7 +302,7 @@ void InputReceiver::injectKeyboardEvent(const idk_input_event_t &ev)
     }
 }
 
-/* ─── Key repeat ───────────────────────────────────────────────────────── */
+/* Key repeat */
 
 void InputReceiver::startRepeatTimer(uint32_t keycode, uint32_t keysym,
                                       uint16_t mods, const QString &text)
@@ -370,7 +370,7 @@ void InputReceiver::onRepeatTimeout()
     /* Subsequent ticks: QTimer fires repeatedly at repeat interval */
 }
 
-/* ─── Mouse ─────────────────────────────────────────────────────────────── */
+/* Mouse */
 
 void InputReceiver::injectMouseEvent(const idk_input_event_t &ev)
 {
@@ -431,7 +431,7 @@ void InputReceiver::injectMouseEvent(const idk_input_event_t &ev)
     }
 }
 
-/* ─── Wheel ─────────────────────────────────────────────────────────────── */
+/* Wheel */
 
 /* Wayland axis events deliver raw pixel deltas per frame. Chromium treats
  * wheel input through a phase-aware path; a lone QWheelEvent with

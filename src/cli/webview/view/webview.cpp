@@ -49,11 +49,8 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
     setMaximumSize(m_conf.width(), m_conf.height());
     load(m_conf.url());
 
-    // Use DMA-BUF if available, otherwise SHM
     if (!m_manager->isConnected()) {
-        // Wait for socket connection before sending
         connect(m_manager, &Manager::socketConnected, this, [this]() {
-            /* Guard against double-init on reconnect — skip if already init'd */
             if (m_memory) {
                 IDK_LOG("webview-qt", "Overlay %u reconnected (memory already init'd, skipping re-init)\n", m_id);
 
@@ -72,11 +69,9 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
 
             sendCreateImage();
             m_buffer = 0;
-            /* Force first paint */
             if (auto *fp = focusProxy()) fp->update();
         });
     } else {
-        // Already connected, initialize immediately
         initDmaBuf();
         initMemory();
         focusProxy()->installEventFilter(this);
@@ -87,44 +82,28 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
         if (auto *fp = focusProxy()) fp->update();
     }
 
-    /* ACK poll timer — single-shot, started when frameSent is emitted.
-     * Polls the compositor for ACK after a frame is sent. */
     m_ackPollTimer = new QTimer(this);
     m_ackPollTimer->setSingleShot(true);
     connect(m_ackPollTimer, &QTimer::timeout, this, [this]() { pollAck(); });
 
-    /* REQUEST poll timer — single-shot, started after ACK received.
-     * Polls the compositor for a REQUEST_NEXT_FRAME message. */
     m_requestTimer = new QTimer(this);
     m_requestTimer->setSingleShot(true);
     connect(m_requestTimer, &QTimer::timeout, this, [this]() { onRequestReceived(); });
 
-    connect(this, &WebView::frameSent, this, [this]() {
-        m_ackPollTimer->start(16);
-    });
+    connect(this, &WebView::frameSent, this, [this]() { m_ackPollTimer->start(16); });
 
-    /* Overlay visibility — when hidden, stop ACK/REQUEST timers so the
-     * webview's CPU usage drops to ~0%. When shown again, kick a render
-     * immediately (the compositor also sends a wake-up REQUEST, but
-     * calling doRenderAndSend() directly handles the first frame faster). */
-    connect(m_manager, &Manager::overlayVisibleChanged,
-            this, &WebView::onOverlayVisibleChanged);
+    connect(m_manager, &Manager::overlayVisibleChanged, this, &WebView::onOverlayVisibleChanged);
 
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
-        if (!ok || m_conf.url().isEmpty()) {
-            return;
-        }
-        /* Inject user scripts */
+        if (!ok || m_conf.url().isEmpty()) return;
         QStringList scripts = m_conf.injectScripts();
         for (const QString &path : scripts) {
             QFile f(path);
             if (f.open(QIODevice::ReadOnly)) {
                 QString js = QString::fromUtf8(f.readAll());
-                if (!js.isEmpty())
-                    page()->runJavaScript(js);
+                if (!js.isEmpty()) page()->runJavaScript(js);
             }
         }
-        /* Force paint after load */
         if (auto *fp = focusProxy()) fp->update();
 
     });
@@ -154,11 +133,8 @@ WebView::~WebView()
 bool WebView::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == focusProxy() && event->type() == QEvent::Paint) {
-        /* Guard recursive paint */
         static bool s_in_paint = false;
-        if (s_in_paint) {
-            return QWebEngineView::eventFilter(obj, event);
-        }
+        if (s_in_paint) return QWebEngineView::eventFilter(obj, event);
         s_in_paint = true;
 
         if (!m_manager->isConnected()) {
@@ -166,7 +142,6 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
             return QWebEngineView::eventFilter(obj, event);
         }
 
-        /* Clear resize guard — Chromium has rendered a frame at the new size */
         m_resizePending = false;
 
         QTimer::singleShot(0, this, [this]() {
@@ -184,27 +159,20 @@ void WebView::doRenderAndSend()
     if (!m_manager->isConnected())
         return;
 
-    /* Skip frame send when overlay is hidden — the compositor would
-     * drain it without ACKing, and we'd just waste a render. The
-     * m_overlayVisible flag is updated via Manager::overlayVisibleChanged. */
     if (!m_overlayVisible)
         return;
 
-    /* ACK flow control: if a frame is in flight, pollAck handles it */
     if (m_pending)
         return;
 
-    /* After ACK with resize: skip until next Paint event clears the flag */
     if (m_resizePending)
         return;
 
-    /* Try zero-copy DMABUF export */
     if (m_useDmaBuf && !m_dmaBufFailed) {
         if (m_extractor->tryExportDMABuf())
-            return;  /* frameSent emitted → starts ackPollTimer */
+            return;
     }
 
-    /* SHM fallback */
     if (!m_memory)
         return;
 
@@ -256,7 +224,7 @@ void WebView::doRenderAndSend()
             s_consecutive_failures = 0;
             return;
         }
-        return;  /* next Paint event will retry */
+        return;
     }
     s_consecutive_failures = 0;
 
@@ -337,7 +305,6 @@ void WebView::onRequestReceived()
         return;
     }
 
-    /* No REQUEST yet — keep polling */
     m_requestTimer->start(16);
 }
 
@@ -405,7 +372,6 @@ void WebView::resizeForGame(int w, int h)
         }
     }
 
-    /* Reuse existing SHM if current allocation is large enough */
     size_t needed = PIXELS_SIZE(w, h) * 2;
     if (m_memsize >= needed) {
         m_renderW = w;
@@ -413,7 +379,7 @@ void WebView::resizeForGame(int w, int h)
         m_buffer = 0;
         m_pending = false;
         m_dmaBufFailed = false;
-        m_dmabufRejectCount = 0;  /* reset on resize — allow DMABUF retry */
+        m_dmabufRejectCount = 0;
         if (auto *fp = focusProxy()) fp->update();
         m_resizing = false;
         return;
@@ -561,8 +527,6 @@ void WebView::initDmaBuf()
         return;
     }
 
-    /* Create our EGL context. Start unshared; will share with Qt lazily
-       when its OpenGL context becomes available. */
     static const EGLint ctx_attribs[] = {
         EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
@@ -579,10 +543,9 @@ void WebView::initDmaBuf()
     }
     m_needSharedCtx = true;
 
-    /* Opportunistically share with Qt's context now (may not be ready yet) */
     if (m_extractor) m_extractor->ensureDmaBufSharedCtx();
 
-    /* Resolve DMABUF export entry points — try MESA then EXT */
+
     m_queryFn  = eglGetProcAddress("eglExportDMABUFImageQueryMESA");
     m_exportFn = eglGetProcAddress("eglExportDMABUFImageMESA");
     if (!m_queryFn || !m_exportFn) {
@@ -623,7 +586,6 @@ void WebView::initVulkan(QSGRendererInterface *rif, QQuickWindow *window)
         return;
     }
 
-    // Resolve vkGetMemoryFdKHR via device extension
     m_vkGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
         vkGetDeviceProcAddr(m_vk.device, "vkGetMemoryFdKHR"));
     if (!m_vkGetMemoryFdKHR) {
@@ -647,8 +609,8 @@ void WebView::initVulkan(QSGRendererInterface *rif, QQuickWindow *window)
 
 void WebView::sendCreateImage()
 {
-    IDK_LOG("webview-qt", "Overlay %u ready: %dx%d@(%d,%d)\n",
-            m_id, m_conf.width(), m_conf.height(), m_conf.x(), m_conf.y());
+    IDK_LOG("webview-qt", "Overlay %u ready: %dx%d@\n",
+            m_id, m_conf.width(), m_conf.height());
 }
 
 void WebPage::javaScriptConsoleMessage(QWebEnginePage::JavaScriptConsoleMessageLevel level,

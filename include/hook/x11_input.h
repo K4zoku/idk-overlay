@@ -51,7 +51,6 @@ int idk_x11_input_is_captured(void);
 
 /**
  * Programmatically set the capture state.
- * @param enable  1 to enable capture, 0 to disable.
  */
 void idk_x11_input_set_capture(int enable);
 
