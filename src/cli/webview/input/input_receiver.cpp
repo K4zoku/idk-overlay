@@ -403,6 +403,8 @@ void InputReceiver::injectMouseEvent(const idk_input_event_t &ev)
         if (ev.u.btn.button == 0x110)      sqBtn = Qt::LeftButton;
         else if (ev.u.btn.button == 0x111) sqBtn = Qt::RightButton;
         else if (ev.u.btn.button == 0x112) sqBtn = Qt::MiddleButton;
+        else if (ev.u.btn.button == 0x113) sqBtn = Qt::XButton1;
+        else if (ev.u.btn.button == 0x114) sqBtn = Qt::XButton2;
         else                          return;
 
         bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;

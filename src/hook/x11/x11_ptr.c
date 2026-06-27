@@ -68,6 +68,8 @@ static uint32_t x11_button_to_wayland(unsigned int button) {
         case Button1: return 0x110;  /* BTN_LEFT */
         case Button2: return 0x112;  /* BTN_MIDDLE */
         case Button3: return 0x111;  /* BTN_RIGHT */
+        case Button8: return 0x113;  /* BTN_SIDE (back) */
+        case Button9: return 0x114;  /* BTN_EXTRA (forward) */
         default:      return 0;       /* wheel or unknown */
     }
 }
