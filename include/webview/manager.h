@@ -72,6 +72,7 @@ private:
     QString m_cliMatch;          // CLI --match (process name regex)
     InputReceiver *m_inputRx = nullptr;
     QTimer *m_inputRetryTimer = nullptr;
+    int m_inputRetries = 0;  /* input receiver connect retry counter */
     bool m_lastVisibleState = false;
     bool m_lastCaptureState = false;
 
@@ -84,6 +85,7 @@ private:
 
     // Window geometry (for tray toggle show/hide)
     int m_lastX = 0, m_lastY = 0, m_lastW = 800, m_lastH = 600;
+    bool m_windowVisible = false;  /* tray toggle state */
 
     // Overlays
     QList<WebView*> m_views;

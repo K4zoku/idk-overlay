@@ -42,7 +42,7 @@ Manager::Manager(const QString &confFile,
     , m_cliWidth(cliWidth)
     , m_cliHeight(cliHeight)
     , m_cliMatch(cliMatch)
-    , m_window(new QWidget())
+    , m_window(new QWidget())            /* parented in body via setWindowFlags/show */
     , m_tabBar(new QTabBar())
     , m_container(new QWidget())
     , m_statusLabel(new QLabel())
@@ -182,17 +182,20 @@ Manager::Manager(const QString &confFile,
     m_tray->setToolTip("idk-webview");
     m_tray->show();
 
-    bool *windowVisible = new bool(false);
-    connect(m_tray, &QSystemTrayIcon::activated, this, [=, this](QSystemTrayIcon::ActivationReason reason) {
+    /* Use a member variable for tray-toggle state instead of a heap-
+     * allocated bool captured by the lambda. The previous 'new bool'
+     * leaked 1 byte per Manager instance (lambda destroyed with m_tray
+     * but the pointed-to bool was never deleted). */
+    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::Trigger) {
-            *windowVisible = !*windowVisible;
-            m_window->setAttribute(Qt::WA_DontShowOnScreen, !*windowVisible);
+            m_windowVisible = !m_windowVisible;
+            m_window->setAttribute(Qt::WA_DontShowOnScreen, !m_windowVisible);
             m_window->show();
-            if (*windowVisible) {
+            if (m_windowVisible) {
                 m_window->raise();
                 m_window->activateWindow();
             }
-            qDebug() << "[idk-webview] Window" << (*windowVisible ? "shown" : "hidden");
+            qDebug() << "[idk-webview] Window" << (m_windowVisible ? "shown" : "hidden");
         }
     });
 
@@ -213,6 +216,17 @@ Manager::~Manager()
 {
     stopInputReceiver();
     qDeleteAll(m_views);
+
+    /* Delete top-level Qt widgets that have no parent. m_container is
+     * reparented to m_window by the layout, so deleting m_window also
+     * deletes m_container. m_tabBar and m_statusLabel were never added
+     * to any layout and have no parent — they must be deleted explicitly
+     * or they leak (along with any child widgets). m_tray is parented
+     * to `this` and is auto-deleted by Qt. */
+    delete m_window;
+    delete m_tabBar;
+    delete m_statusLabel;
+
     idk_fs_shutdown();
 }
 
@@ -349,28 +363,30 @@ void Manager::startInputReceiver()
         return;
     }
 
-    /* Connection failed — retry every 2s for 30s, then give up */
+    /* Connection failed — retry every 2s for 30s, then give up.
+     * Use a member counter instead of a heap-allocated int captured by
+     * the lambda — if the Manager is destroyed while the retry timer
+     * is still active, the captured 'new int' leaks. The member is
+     * cleaned up automatically when the Manager is destroyed. */
     if (!m_inputRetryTimer) {
         m_inputRetryTimer = new QTimer(this);
         m_inputRetryTimer->setSingleShot(false);
-        int *retries = new int(0);
-        connect(m_inputRetryTimer, &QTimer::timeout, this, [this, retries]() {
-            (*retries)++;
+        connect(m_inputRetryTimer, &QTimer::timeout, this, [this]() {
+            m_inputRetries++;
             if (m_inputRx && m_inputRx->connectToInput()) {
-                IDK_LOG("webview", "input receiver connected after %d retries\n", *retries);
+                IDK_LOG("webview", "input receiver connected after %d retries\n", m_inputRetries);
                 m_inputRetryTimer->stop();
-                delete retries;
                 return;
             }
-            if (*retries >= 15) {
+            if (m_inputRetries >= 15) {
                 /* Give up after 30s — no input hook available */
                 IDK_LOG("webview", "input receiver giving up after 30s — "
                         "game may not be a wayland client\n");
                 m_inputRetryTimer->stop();
-                delete retries;
             }
         });
     }
+    m_inputRetries = 0;  /* reset counter on each (re)start */
     if (!m_inputRetryTimer->isActive()) {
         m_inputRetryTimer->start(2000);
     }
