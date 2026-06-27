@@ -1032,9 +1032,51 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 
 /* ── Frame receive ─────────────────────────────────────────────────────── */
 
+/* Overlay visibility — same symbol as overlay.c's g_overlay_visible.
+ * When 0, drain incoming frames without ACK/REQUEST so the webview
+ * stops rendering (see compositor_egl.c for full rationale). */
+extern volatile int g_overlay_visible;
+
+/* Track visibility transitions so we can wake the webview up when the
+ * overlay becomes visible again. */
+static int vk_was_hidden = 0;
+
 int idk_vk_compositor_render(void) {
     vk_sock_accept();
     if (!vk_tp.ready) return -1;
+
+    /* When the overlay is hidden, drain any queued frames so the
+     * producer's send queue doesn't accumulate, but DO NOT send ACK
+     * or REQUEST. The webview's request-poll loop stays parked. */
+    if (!g_overlay_visible) {
+        while (1) {
+            idk_frame_header_t hdr;
+            int fds[4], nfd = 0;
+            int rc = idk_tp_recv(&vk_tp, &hdr, fds, &nfd);
+            if (rc <= 0) {
+                if (rc < 0) {
+                    idk_tp_destroy(&vk_tp);
+                    vk_tp.ready = false;
+                }
+                break;
+            }
+            for (int i = 0; i < nfd; i++) close(fds[i]);
+            IDK_LOG("comp-vk", "hidden: drained frame (nfd=%d) without ACK/REQUEST\n", nfd);
+        }
+        vk_was_hidden = 1;
+        return -1;
+    }
+
+    /* Visible — if we just transitioned from hidden, send a REQUEST
+     * to wake up the webview's request-poll loop. */
+    if (vk_was_hidden) {
+        vk_was_hidden = 0;
+        idk_request_msg_t wake;
+        memset(&wake, 0, sizeof(wake));
+        wake.type = IDK_REQUEST_NEXT_FRAME;
+        idk_tp_send_request(&vk_tp, &wake);
+        IDK_LOG("comp-vk", "overlay became visible — sent wake-up REQUEST\n");
+    }
 
     int processed = 0;
     while (1) {

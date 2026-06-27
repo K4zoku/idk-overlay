@@ -103,6 +103,13 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
         m_ackPollTimer->start(16);
     });
 
+    /* Overlay visibility — when hidden, stop ACK/REQUEST timers so the
+     * webview's CPU usage drops to ~0%. When shown again, kick a render
+     * immediately (the compositor also sends a wake-up REQUEST, but
+     * calling doRenderAndSend() directly handles the first frame faster). */
+    connect(m_manager, &Manager::overlayVisibleChanged,
+            this, &WebView::onOverlayVisibleChanged);
+
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
         if (!ok || m_conf.url().isEmpty()) {
             return;
@@ -175,6 +182,12 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
 void WebView::doRenderAndSend()
 {
     if (!m_manager->isConnected())
+        return;
+
+    /* Skip frame send when overlay is hidden — the compositor would
+     * drain it without ACKing, and we'd just waste a render. The
+     * m_overlayVisible flag is updated via Manager::overlayVisibleChanged. */
+    if (!m_overlayVisible)
         return;
 
     /* ACK flow control: if a frame is in flight, pollAck handles it */
@@ -326,6 +339,34 @@ void WebView::onRequestReceived()
 
     /* No REQUEST yet — keep polling */
     m_requestTimer->start(16);
+}
+
+void WebView::onOverlayVisibleChanged(bool visible)
+{
+    if (m_overlayVisible == visible) return;
+    m_overlayVisible = visible;
+    IDK_LOG("webview-qt", "overlay %s — %s timers\n",
+            visible ? "SHOW" : "HIDE",
+            visible ? "restarting" : "stopping");
+
+    if (!visible) {
+        /* Stop the ACK/REQUEST poll loop. The compositor's drain-on-hidden
+         * logic (see compositor_egl.c / compositor_vk.c) will drop any
+         * in-flight frame we already sent without ACKing, so m_pending
+         * will be cleared by the ACK-timeout path on the next visible
+         * transition. Force-clear it now so doRenderAndSend() can run
+         * immediately when we become visible again. */
+        m_ackPollTimer->stop();
+        m_requestTimer->stop();
+        m_pending = false;
+    } else {
+        /* Overlay visible again — kick a render immediately. The
+         * compositor also sends a wake-up REQUEST on its transition
+         * detection, but painting now gets the first frame on screen
+         * faster than waiting for the REQUEST round-trip. */
+        if (auto *fp = focusProxy())
+            fp->update();
+    }
 }
 
 void WebView::resizeForGame(int w, int h)

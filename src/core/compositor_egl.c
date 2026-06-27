@@ -533,9 +533,64 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     return g_tex[g_tex_idx];
 }
 
+/* Overlay visibility — same symbol as overlay.c's g_overlay_visible.
+ * When 0, we drain incoming frames without ACK/REQUEST so the webview
+ * stops rendering (it polls REQUEST non-blocking and gets nothing →
+ * m_requestTimer stays armed but never fires doRenderAndSend). */
+extern volatile int g_overlay_visible;
+
+/* Track visibility transitions so we can wake the webview up when the
+ * overlay becomes visible again (send a one-shot REQUEST_NEXT_FRAME
+ * even if no frame was just processed). */
+static bool g_was_hidden = false;
+
 int idk_compositor_egl_render(void) {
     accept_client();
     if (!g_tp.ready) return -1;
+
+    /* When the overlay is hidden, drain any queued frames so the
+     * producer's send queue doesn't accumulate, but DO NOT send ACK
+     * or REQUEST. Without ACK, the producer's pollAck() eventually
+     * times out (100ms) and clears m_pending; without REQUEST, the
+     * producer's onRequestReceived() polls forever without triggering
+     * a new paint. Net effect: webview generates 0 frames while the
+     * overlay is hidden.
+     *
+     * On transition hidden→visible, send a single REQUEST to wake
+     * the webview up (otherwise it would stay parked in its 16ms
+     * request-poll loop forever, never noticing the overlay is
+     * visible again). */
+    if (!g_overlay_visible) {
+        /* Drain pending frames, close any DMABUF fds to avoid leaks. */
+        while (1) {
+            idk_frame_header_t hdr;
+            int fds[4], nfd = 0;
+            int rc = idk_tp_recv(&g_tp, &hdr, fds, &nfd);
+            if (rc <= 0) {
+                if (rc < 0) {
+                    IDK_LOG("comp", "client disconnected while hidden, resetting\n");
+                    idk_tp_destroy(&g_tp);
+                    g_tp.ready = false;
+                }
+                break;
+            }
+            for (int i = 0; i < nfd; i++) close(fds[i]);
+            IDK_LOG("comp", "hidden: drained frame (nfd=%d) without ACK/REQUEST\n", nfd);
+        }
+        g_was_hidden = true;
+        return -1;
+    }
+
+    /* Visible — if we just transitioned from hidden, send a REQUEST
+     * to wake up the webview's request-poll loop. */
+    if (g_was_hidden) {
+        g_was_hidden = false;
+        idk_request_msg_t wake;
+        memset(&wake, 0, sizeof(wake));
+        wake.type = IDK_REQUEST_NEXT_FRAME;
+        idk_tp_send_request(&g_tp, &wake);
+        IDK_LOG("comp", "overlay became visible — sent wake-up REQUEST\n");
+    }
 
     /* Poll for new frame — keep newest only */
     int processed = 0;

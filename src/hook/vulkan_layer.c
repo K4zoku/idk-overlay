@@ -26,6 +26,11 @@
 #include "core/log.h"
 #include "hook/overlay.h"
 
+/* Overlay visibility — defined in overlay.c. When 0, skip render_overlay
+ * so the game's present goes through unmodified (matches the EGL/GLX
+ * hook behavior in egl_hook.c / glx_hook.c). */
+extern volatile int g_overlay_visible;
+
 /* ── Layer mode flag ────────────────────────────────────────────────────
  * Set when vkNegotiateLoaderLayerInterfaceVersion is called. */
 static int g_vk_layer_active = 0;
@@ -565,8 +570,12 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    /* Render overlay if we have a frame + swapchain info */
-    if (idk_vk_compositor_has_overlay() && pPresentInfo && pPresentInfo->swapchainCount > 0 && gpa) {
+    /* Render overlay if we have a frame + swapchain info + overlay visible.
+     * g_overlay_visible is the same flag EGL/GLX paths check in their
+     * swap hooks — when 0, the game's present goes through unmodified. */
+    if (g_overlay_visible &&
+        idk_vk_compositor_has_overlay() &&
+        pPresentInfo && pPresentInfo->swapchainCount > 0 && gpa) {
         /* Get swapchain + image index */
         VkSwapchainKHR sc = pPresentInfo->pSwapchains[0];
         uint32_t img_idx = pPresentInfo->pImageIndices[0];

@@ -41,6 +41,7 @@ private slots:
     void initDmaBuf();
     void sendCreateImage();
     void onRequestReceived();
+    void onOverlayVisibleChanged(bool visible);
 
 private:
     void initMemory();
@@ -130,6 +131,11 @@ public:
 
     // REQUEST poll timer — polls compositor REQUEST after ACK received (single-shot)
     QTimer *m_requestTimer = nullptr;
+
+    // Overlay visibility (mirrors g_overlay_visible on the hook side,
+    // updated via Manager::overlayVisibleChanged signal). When false,
+    // ackPoll/request timers are stopped to drive CPU usage to ~0%.
+    bool m_overlayVisible = true;
 
     RhiTextureExtractor *m_extractor = nullptr;
 
