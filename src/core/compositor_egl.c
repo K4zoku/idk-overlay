@@ -372,7 +372,7 @@ static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     GLenum err = idk_fn_glGetError ? idk_fn_glGetError() : GL_NO_ERROR;
     if (err != GL_NO_ERROR) {
         IDK_ERR("comp", "glImportMemoryFdEXT failed: 0x%04x (fd=%d size=%llu stride=%u h=%u)\n",
-                err, import_fd, (unsigned long long)size);
+                err, import_fd, (unsigned long long)size, stride, (unsigned int)h);
         close(import_fd);
         fn_glDeleteMemoryObjectsEXT(1, &mem);
         return 0;
