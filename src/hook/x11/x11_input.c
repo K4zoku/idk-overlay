@@ -41,6 +41,7 @@ XWindowEvent_fn             orig_XWindowEvent = NULL;
 XPending_fn                 orig_XPending = NULL;
 XEventsQueued_fn            orig_XEventsQueued = NULL;
 XSelectInput_fn             orig_XSelectInput = NULL;
+XGetWindowAttributes_fn     fn_XGetWindowAttributes = NULL;
 
 XCreatePixmapCursor_fn  fn_XCreatePixmapCursor = NULL;
 XFreePixmap_fn          fn_XFreePixmap = NULL;
@@ -77,6 +78,7 @@ static int resolve_x11_symbols(void) {
     fn_XStringToKeysym     = (XStringToKeysym_fn)dlsym(h, "XStringToKeysym");
     fn_XFlush              = (XFlush_fn)dlsym(h, "XFlush");
     fn_XSync               = (XSync_fn)dlsym(h, "XSync");
+    fn_XGetWindowAttributes = (XGetWindowAttributes_fn)dlsym(h, "XGetWindowAttributes");
 
     if (!fn_XStringToKeysym) {
         XERR("XStringToKeysym not resolved\n");
@@ -126,9 +128,39 @@ int x11_dispatch_event(XEventStorage *ev) {
     if (!ev) return 0;
     int type = ev->xany.type;
 
-    /* Cache display from any event */
+    /* Cache display + window from any event */
     if (!g_game_display && ev->xany.display) g_game_display = ev->xany.display;
     if (!g_game_window && ev->xany.window) g_game_window = ev->xany.window;
+
+    /* Retroactively inject pointer + key release masks on the game window.
+     * Games like glxgears call XSelectInput BEFORE our hook installs, so
+     * our XSelectInput hook never fires. We need to OR-in our masks here
+     * so ButtonPress/ButtonRelease/MotionNotify/KeyRelease events arrive.
+     * Done once per process (g_masks_injected flag). */
+    static int g_masks_injected = 0;
+    if (!g_masks_injected && g_game_display && g_game_window &&
+        fn_XGetWindowAttributes && orig_XSelectInput) {
+        g_masks_injected = 1;
+
+        /* XWindowAttributes is a large struct. We only need your_event_mask.
+         * On x86-64 Linux, it's at offset 104 (long). Use a raw buffer. */
+        long attrs[64];  /* oversized to be safe */
+        if (fn_XGetWindowAttributes(g_game_display, g_game_window, attrs) != 0) {
+            long cur_mask = attrs[13];  /* your_event_mask at offset 104 = 13*8 */
+            long new_mask = cur_mask | ButtonPressMask | ButtonReleaseMask |
+                            PointerMotionMask | KeyReleaseMask;
+            orig_XSelectInput(g_game_display, g_game_window, new_mask);
+            XLOG("retroactively injected event masks: 0x%lx -> 0x%lx on window 0x%lx",
+                 cur_mask, new_mask, (unsigned long)g_game_window);
+        } else {
+            /* Fallback: just set our masks (may lose game's masks) */
+            long extra = ButtonPressMask | ButtonReleaseMask |
+                         PointerMotionMask | KeyReleaseMask;
+            orig_XSelectInput(g_game_display, g_game_window, extra);
+            XLOG("retroactively set event masks (fallback): 0x%lx on window 0x%lx",
+                 extra, (unsigned long)g_game_window);
+        }
+    }
 
     switch (type) {
         case KeyPress:
