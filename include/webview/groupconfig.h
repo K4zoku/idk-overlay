@@ -4,6 +4,7 @@
 #pragma GCC diagnostic ignored "-Wsfinae-incomplete"
 #include <QUrl>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #pragma GCC diagnostic pop
 
@@ -38,6 +39,7 @@ public:
     int height() const { return m_height; }
     QUrl url() const { return m_url; }
     QString match() const { return m_match; }
+    QStringList injectScripts() const { return m_injectScripts; }
 
 private:
     QVariant value(const QString &key) const;
@@ -49,4 +51,5 @@ private:
     int m_height = 480;
     QUrl m_url;
     QString m_match;  /* regex pattern for process name matching */
+    QStringList m_injectScripts; /* list of JS file paths to inject */
 };

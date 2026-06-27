@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QSettings>
+#include <QDir>
 
 GroupConfig::GroupConfig(const QString &confFile, const QString &group)
     : m_confFile(confFile)
@@ -11,6 +12,23 @@ GroupConfig::GroupConfig(const QString &confFile, const QString &group)
     m_height = value("Height").toInt();
     m_url = value("Url").toUrl();
     m_match = value("Match").toString();
+
+    QString scripts = value("InjectScripts").toString();
+    if (!scripts.isEmpty()) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        const auto parts = scripts.split(',', Qt::SkipEmptyParts);
+#else
+        const auto parts = scripts.split(',', QString::SkipEmptyParts);
+#endif
+        QDir baseDir(QFileInfo(m_confFile).path());
+        for (const QString &part : parts) {
+            QString trimmed = part.trimmed();
+            if (!trimmed.isEmpty()) {
+                m_injectScripts.append(QFileInfo(trimmed).isAbsolute()
+                    ? trimmed : baseDir.absoluteFilePath(trimmed));
+            }
+        }
+    }
 }
 
 QVariant GroupConfig::value(const QString &key) const

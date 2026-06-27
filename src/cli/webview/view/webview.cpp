@@ -8,6 +8,7 @@
 #include <QDialog>
 #include <QMenu>
 #include <QDateTime>
+#include <QFile>
 
 #include <QQuickWidget>
 #include <QQuickItem>
@@ -105,6 +106,16 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
         if (!ok || m_conf.url().isEmpty()) {
             return;
+        }
+        /* Inject user scripts */
+        QStringList scripts = m_conf.injectScripts();
+        for (const QString &path : scripts) {
+            QFile f(path);
+            if (f.open(QIODevice::ReadOnly)) {
+                QString js = QString::fromUtf8(f.readAll());
+                if (!js.isEmpty())
+                    page()->runJavaScript(js);
+            }
         }
         /* Force paint after load */
         if (auto *fp = focusProxy()) fp->update();

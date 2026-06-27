@@ -45,9 +45,11 @@ signals:
     void socketConnected();
     void socketDisconnected();
     void inputCaptureChanged(bool captured);
+    void overlayVisibleChanged(bool visible);
 
 private slots:
     void onInputCaptureChanged(bool captured);
+    void onOverlayVisibleChanged(bool visible);
 
 private:
     void initWebViews();
@@ -70,6 +72,8 @@ private:
     QString m_cliMatch;          // CLI --match (process name regex)
     InputReceiver *m_inputRx = nullptr;
     QTimer *m_inputRetryTimer = nullptr;
+    bool m_lastVisibleState = false;
+    bool m_lastCaptureState = false;
 
     // UI
     QWidget *m_window;
