@@ -27,6 +27,7 @@ public:
 
 signals:
     void inputCaptureChanged(bool captured);
+    void overlayVisibleChanged(bool visible);
     void eventReceived(const idk_input_event_t &ev);
 
 private slots:

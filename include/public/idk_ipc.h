@@ -119,6 +119,7 @@ enum idk_input_type {
     IDK_INPUT_AXIS    = 4,  /* mouse scroll */
     IDK_INPUT_STATE   = 5,  /* capture state changed (only flags bit0 matters) */
     IDK_INPUT_REPEAT  = 6,  /* keyboard repeat info: rate (cps), delay (ms) */
+    IDK_INPUT_OVERLAY = 7,  /* overlay visibility changed */
 };
 
 /* Input event flags */
@@ -143,6 +144,7 @@ typedef struct idk_input_event {
         struct { int32_t  x;       int32_t  y; uint32_t _p1;  } motion;     /* MOTION */
         struct { int32_t  dx;      int32_t  dy; uint32_t _p1; } axis;       /* AXIS   */
         struct { uint16_t rate;    uint16_t delay; uint32_t _p1;            } repeat;/* REPEAT */
+        struct { uint8_t visible;  uint8_t _pad[11];                       } overlay;/* OVERLAY */
     } u;
 } idk_input_event_t;  /* total 20 bytes                                       */
 #pragma pack(pop)

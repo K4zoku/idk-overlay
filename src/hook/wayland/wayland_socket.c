@@ -82,6 +82,14 @@ void send_event_to_webview(const idk_input_event_t *ev) {
         WLOG("send_event_to_webview: send failed (fd=%d, rc=%d, errno=%d)", fd, rc, errno);
 }
 
+void send_overlay_state(uint8_t visible) {
+    idk_input_event_t ev = { 0 };
+    ev.type = IDK_INPUT_OVERLAY;
+    ev.u.overlay.visible = visible ? 1 : 0;
+    IDK_LOG("wl-input", "send_overlay_state(%u) — sending to webview\n", visible);
+    send_event_to_webview(&ev);
+}
+
 void send_capture_state(uint32_t capture) {
     idk_input_event_t ev = { 0 };
     ev.type  = IDK_INPUT_STATE;

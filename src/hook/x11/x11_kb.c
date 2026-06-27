@@ -66,11 +66,11 @@ int x11_handle_key_event(XEventStorage *ev) {
         if (pressed && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
             if (same_key) {
-                if (!g_captured) { idk_x11_input_set_capture(1); g_overlay_visible = 1; }
+                if (!g_captured) { idk_x11_input_set_capture(1); g_overlay_visible = 1; send_overlay_state(1); }
                 else { idk_x11_input_set_capture(0); }
             } else {
                 idk_x11_input_set_capture(!g_captured);
-                if (g_captured) g_overlay_visible = 1;
+                if (g_captured) { g_overlay_visible = 1; send_overlay_state(1); }
             }
         } else if (!pressed) g_hotkey_pressed = 0;
         return 1;
@@ -80,6 +80,7 @@ int x11_handle_key_event(XEventStorage *ev) {
         if (pressed && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
             g_overlay_visible = !g_overlay_visible;
+            send_overlay_state(g_overlay_visible);
             XLOG("overlay %s", g_overlay_visible ? "SHOW" : "HIDE");
         } else if (!pressed) g_hotkey_pressed = 0;
         return 1;

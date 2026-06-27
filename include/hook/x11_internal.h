@@ -249,6 +249,7 @@ int  init_input_socket(void);
 void teardown_input_socket(void);
 void send_event_to_webview(const idk_input_event_t *ev);
 void send_capture_state(uint32_t capture);
+void send_overlay_state(uint8_t visible);
 void send_repeat_info(void);
 
 /* ── Hotkey ──────────────────────────────────────────────────────────── */

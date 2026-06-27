@@ -204,7 +204,7 @@ void InputReceiver::onReadyRead()
     while (true) {
         ssize_t n = ::read(m_fd, &ev, sizeof(ev));
         if (n == (ssize_t)sizeof(ev)) {
-            if (ev.type < IDK_INPUT_KEY || ev.type > IDK_INPUT_REPEAT) {
+            if (ev.type < IDK_INPUT_KEY || ev.type > IDK_INPUT_OVERLAY) {
                 closeFd();
                 return;
             }
@@ -241,6 +241,12 @@ void InputReceiver::onReadyRead()
                 IDK_LOG("input-rx", "repeat info: rate=%d cps delay=%d ms\n",
                         m_repeatRate, m_repeatDelay);
                 break;
+            case IDK_INPUT_OVERLAY: {
+                bool visible = ev.u.overlay.visible != 0;
+                IDK_LOG("input-rx", "overlay %s\n", visible ? "SHOW" : "HIDE");
+                emit overlayVisibleChanged(visible);
+                break;
+            }
             }
         } else if (n < 0) {
             if (errno == EINTR) continue;
