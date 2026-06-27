@@ -1166,11 +1166,21 @@ int idk_vk_compositor_render(void) {
 
 /* ── Render overlay ────────────────────────────────────────────────────── */
 
+/* Mutex serializes render_overlay calls. The Vulkan spec allows
+ * vkQueueSubmit from multiple threads, but our vk_async_ring_idx /
+ * vk_async_ring[] state is not thread-safe. In practice games call
+ * QueuePresentKHR from a single render thread, so the lock is
+ * uncontended — but if a game ever presents from multiple threads,
+ * we'd corrupt the ring state without this. */
+static pthread_mutex_t vk_render_lock = PTHREAD_MUTEX_INITIALIZER;
+
 void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImage,
                                       uint32_t width, uint32_t height,
                                       VkFormat swapchainFormat) {
     (void)cmd;  /* caller passes VK_NULL_HANDLE — we manage our own cmd buffer */
     if (!vk_has_frame || swapchainImage == VK_NULL_HANDLE) return;
+
+    pthread_mutex_lock(&vk_render_lock);
 
     /* Skip overlay rendering during swapchain recreation storms.
      * Our render_overlay hook runs inside QueuePresentKHR and submits
@@ -1477,6 +1487,8 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         vkDestroyImageView(vk_dev, swapchain_view, NULL);
         vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
     }
+
+    pthread_mutex_unlock(&vk_render_lock);
 }
 
 /* ── Has overlay ───────────────────────────────────────────────────────── */

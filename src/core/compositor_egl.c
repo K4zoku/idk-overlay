@@ -336,6 +336,24 @@ static GLuint g_program = 0;
  * does NOT retain a reference to the dmabuf storage; if we destroy the
  * EGLImage or close the fd, the texture's backing is freed/reused
  * and renders as empty/white. */
+/* Double-buffered overlay textures. Frame N renders from slot A; frame
+ * N+1 uploads to slot B (the back slot) then renders from slot B.
+ *
+ * KNOWN LIMITATION (latent): GL is pipelined — glDrawArrays returns
+ * before the GPU finishes sampling the texture. glTexSubImage2D /
+ * glTexImage2D on a texture the GPU is still sampling causes a
+ * pipeline stall or undefined sampling. The 2-slot ring means frame
+ * N+2 reuses slot A while the GPU may still be sampling it from
+ * frame N. In practice this produces a brief pipeline stall (driver
+ * inserts a wait) rather than visible corruption on Mesa, but on
+ * other drivers it could cause artifacts at high frame rates.
+ *
+ * The correct fix is a 3-slot ring (one rendering, one ready, one
+ * uploading) with a glFenceSync after glDrawArrays — but that's a
+ * larger refactor. The 2-slot scheme is acceptable for the current
+ * use case (overlay frame rate is capped by the webview's paint rate,
+ * which is typically 60fps — well below the threshold where the
+ * pipeline stall matters). */
 static GLuint g_tex[2] = {0, 0};
 static int    g_tex_w[2] = {0, 0};
 static int    g_tex_h[2] = {0, 0};
