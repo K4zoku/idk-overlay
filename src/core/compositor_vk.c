@@ -1568,11 +1568,139 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
 /* ── Shutdown ──────────────────────────────────────────────────────────── */
 
 void idk_vk_compositor_shutdown(void) {
+    /* Wait for any outstanding async-ring work and free deferred
+     * per-frame resources (cmd buffer / framebuffer / image view)
+     * before destroying the device. Without this, the deferred
+     * cleanup in render_overlay() never runs and the Vulkan objects
+     * leak. The OS reclaims them on process exit, but if shutdown
+     * is called without exit (hot-reload, test harness) they leak.
+     *
+     * Also: if vk_async_ring_init stays 1 and idk_vk_compositor_init
+     * is called again on a new device, the ring's stale fence handles
+     * (pointing to the destroyed old device) would be passed to
+     * vkWaitForFences → UB. Reset vk_async_ring_init=0 here. */
+    if (vk_async_ring_init && vk_dev != VK_NULL_HANDLE) {
+        VK_LOAD(vkWaitForFences);
+        VK_LOAD(vkDestroyFence);
+        VK_LOAD(vkFreeCommandBuffers);
+        VK_LOAD(vkDestroyFramebuffer);
+        VK_LOAD(vkDestroyImageView);
+        for (int i = 0; i < VK_ASYNC_RING_SIZE; i++) {
+            struct vk_async_slot *s = &vk_async_ring[i];
+            if (s->fence != VK_NULL_HANDLE) {
+                if (s->cmd != VK_NULL_HANDLE) {
+                    /* Wait for the GPU to finish with this slot's work. */
+                    vkWaitForFences(vk_dev, 1, &s->fence, VK_TRUE, 1000000000ULL);
+                    vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &s->cmd);
+                    vkDestroyFramebuffer(vk_dev, s->fb, NULL);
+                    vkDestroyImageView(vk_dev, s->view, NULL);
+                    s->cmd = VK_NULL_HANDLE;
+                    s->fb = VK_NULL_HANDLE;
+                    s->view = VK_NULL_HANDLE;
+                }
+                vkDestroyFence(vk_dev, s->fence, NULL);
+                s->fence = VK_NULL_HANDLE;
+            }
+        }
+        vk_async_ring_init = 0;
+        vk_async_ring_idx = 0;
+    }
+
+    /* Destroy pipeline + render pass + descriptor objects. */
+    if (vk_dev != VK_NULL_HANDLE) {
+        VK_LOAD(vkDestroyPipeline);
+        VK_LOAD(vkDestroyRenderPass);
+        VK_LOAD(vkDestroyPipelineLayout);
+        VK_LOAD(vkDestroyDescriptorSetLayout);
+        VK_LOAD(vkDestroySampler);
+        VK_LOAD(vkDestroyDescriptorPool);
+        VK_LOAD(vkDestroyCommandPool);
+        VK_LOAD(vkDestroyBuffer);
+        VK_LOAD(vkFreeMemory);
+        VK_LOAD(vkDestroyImage);
+        VK_LOAD(vkDestroyImageView);
+        VK_LOAD(vkQueueWaitIdle);
+
+        /* Wait for queue idle before destroying resources the GPU may
+         * still be referencing. */
+        if (vk_queue != VK_NULL_HANDLE) vkQueueWaitIdle(vk_queue);
+
+        if (vk_pipeline != VK_NULL_HANDLE) vkDestroyPipeline(vk_dev, vk_pipeline, NULL);
+        vk_pipeline = VK_NULL_HANDLE;
+        if (vk_render_pass != VK_NULL_HANDLE) vkDestroyRenderPass(vk_dev, vk_render_pass, NULL);
+        vk_render_pass = VK_NULL_HANDLE;
+        vk_rp_format = VK_FORMAT_UNDEFINED;
+        if (vk_pll != VK_NULL_HANDLE) vkDestroyPipelineLayout(vk_dev, vk_pll, NULL);
+        vk_pll = VK_NULL_HANDLE;
+        if (vk_dsl != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(vk_dev, vk_dsl, NULL);
+        vk_dsl = VK_NULL_HANDLE;
+        if (vk_sampler != VK_NULL_HANDLE) vkDestroySampler(vk_dev, vk_sampler, NULL);
+        vk_sampler = VK_NULL_HANDLE;
+        if (vk_desc_pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(vk_dev, vk_desc_pool, NULL);
+        vk_desc_pool = VK_NULL_HANDLE;
+        vk_desc_set = VK_NULL_HANDLE;
+
+        /* Overlay image (SHM upload target). */
+        if (vk_shm_view != VK_NULL_HANDLE) vkDestroyImageView(vk_dev, vk_shm_view, NULL);
+        vk_shm_view = VK_NULL_HANDLE;
+        if (vk_shm_img != VK_NULL_HANDLE) vkDestroyImage(vk_dev, vk_shm_img, NULL);
+        vk_shm_img = VK_NULL_HANDLE;
+        if (vk_shm_img_mem != VK_NULL_HANDLE) vkFreeMemory(vk_dev, vk_shm_img_mem, NULL);
+        vk_shm_img_mem = VK_NULL_HANDLE;
+
+        /* Staging buffer. */
+        if (vk_staging_buf != VK_NULL_HANDLE) vkDestroyBuffer(vk_dev, vk_staging_buf, NULL);
+        vk_staging_buf = VK_NULL_HANDLE;
+        if (vk_staging_mem != VK_NULL_HANDLE) vkFreeMemory(vk_dev, vk_staging_mem, NULL);
+        vk_staging_mem = VK_NULL_HANDLE;
+        vk_staging_mapped = NULL;
+        vk_staging_size = 0;
+
+        /* DMABUF import (currently-imported). */
+        if (vk_dmabuf_view != VK_NULL_HANDLE) vkDestroyImageView(vk_dev, vk_dmabuf_view, NULL);
+        vk_dmabuf_view = VK_NULL_HANDLE;
+        if (vk_dmabuf_img != VK_NULL_HANDLE) vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
+        vk_dmabuf_img = VK_NULL_HANDLE;
+        if (vk_dmabuf_img_mem != VK_NULL_HANDLE) vkFreeMemory(vk_dev, vk_dmabuf_img_mem, NULL);
+        vk_dmabuf_img_mem = VK_NULL_HANDLE;
+
+        /* Pending DMABUF (received but not yet imported). */
+        if (vk_dmabuf_pending_fd >= 0) { close(vk_dmabuf_pending_fd); vk_dmabuf_pending_fd = -1; }
+        vk_has_dmabuf_pending = 0;
+
+        /* Currently-imported dmabuf fd. */
+        /* vk_dmabuf_fd is -1 if ICD took ownership (vkAllocateMemory
+         * succeeded); otherwise it's our fd to close. */
+        if (vk_dmabuf_fd >= 0) { close(vk_dmabuf_fd); vk_dmabuf_fd = -1; }
+
+        /* SHM mmap fd. */
+        if (vk_shm_fd >= 0) { close(vk_shm_fd); vk_shm_fd = -1; }
+
+        /* Command pool (must be destroyed AFTER all command buffers
+         * allocated from it are freed — vkFreeCommandBuffers above). */
+        if (vk_cmd_pool != VK_NULL_HANDLE) vkDestroyCommandPool(vk_dev, vk_cmd_pool, NULL);
+        vk_cmd_pool = VK_NULL_HANDLE;
+    }
+
+    /* Overlay view (bound to either shm_img or dmabuf_img — destroyed above). */
+    vk_overlay_img = VK_NULL_HANDLE;
+    vk_overlay_view = VK_NULL_HANDLE;
+    vk_overlay_w = 0;
+    vk_overlay_h = 0;
+    vk_shm_img_w = 0;
+    vk_shm_img_h = 0;
+    vk_dmabuf_w = 0;
+    vk_dmabuf_h = 0;
+
+    vk_dev = VK_NULL_HANDLE;
+    vk_phys = VK_NULL_HANDLE;
+    vk_queue = VK_NULL_HANDLE;
+    vk_queue_family = 0;
+
     idk_tp_destroy(&vk_tp);
     if (vk_sock_path[0]) unlink(vk_sock_path);
-    /* Vulkan objects destroyed by OS on process exit */
     vk_has_frame = 0;
-    IDK_LOG("comp-vk", "Shut down\n");
+    IDK_LOG("comp-vk", "Shut down (Vulkan objects destroyed)\n");
 }
 
 #endif /* IDK_HAVE_VK_LAYER */
