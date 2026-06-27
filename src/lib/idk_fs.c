@@ -21,20 +21,6 @@
 
 static idk_transport_t g_tp;
 
-/* Build the 28-byte wire header from the client-facing frame struct. */
-void build_frame_hdr(const idk_fs_frame_t *frame,
-                     idk_frame_header_t *hdr) {
-    hdr->modifier = frame->modifier;
-    hdr->width    = frame->width;
-    hdr->height   = frame->height;
-    hdr->stride   = frame->stride;
-    hdr->fourcc   = frame->fourcc;
-    hdr->flags    = frame->flags;
-    hdr->_pad[0]  = 0;
-    hdr->_pad[1]  = 0;
-    hdr->_pad[2]  = 0;
-}
-
 /* SHM helper — copy pixels into a memfd for sending. */
 static int copy_to_shm(const void *src, size_t size) {
     char shm_name[64];
@@ -89,39 +75,36 @@ void idk_fs_shutdown(void) {
 }
 
 /* Internal: sendmsg with frame header + N fds. */
-static int send_frame_msg(const idk_fs_frame_t *frame, const int *fds, int nfd) {
-    if (!g_tp.ready || !frame || !fds || nfd < 1 || nfd > 4) {
+static int send_frame_msg(const idk_frame_header_t *hdr, const int *fds, int nfd) {
+    if (!g_tp.ready || !hdr || !fds || nfd < 1 || nfd > 4) {
         errno = EINVAL;
         return -1;
     }
 
-    idk_frame_header_t hdr;
-    build_frame_hdr(frame, &hdr);
-
-    return idk_tp_send(&g_tp, &hdr, fds, nfd);
+    return idk_tp_send(&g_tp, hdr, fds, nfd);
 }
 
-int idk_fs_send_frame(int data_fd, const idk_fs_frame_t *frame) {
-    if (!frame) {
+int idk_fs_send_frame(int data_fd, const idk_frame_header_t *hdr) {
+    if (!hdr) {
         errno = EINVAL;
         return -1;
     }
-    int rc = send_frame_msg(frame, &data_fd, 1);
+    int rc = send_frame_msg(hdr, &data_fd, 1);
     if (rc == 0) {
         IDK_LOG("fs",
                 "Frame sent: %dx%d stride=%u flags=0x%02x fd=%d\n",
-                frame->width, frame->height, frame->stride, frame->flags, data_fd);
+                hdr->width, hdr->height, hdr->stride, hdr->flags, data_fd);
     }
     return rc;
 }
 
-int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
-    if (!pixels || !frame) {
+int idk_fs_send_pixels(const void *pixels, const idk_frame_header_t *hdr) {
+    if (!pixels || !hdr) {
         errno = EINVAL;
         return -1;
     }
 
-    idk_fs_frame_t f = *frame;
+    idk_frame_header_t f = *hdr;
     f.flags = IDK_FRAME_FLAG_VISIBLE;
     f.stride = 0;
 
@@ -139,13 +122,13 @@ int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame) {
     return rc;
 }
 
-int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
-    if (!frame || !dma_buf_fds || frame->nfd == 0 || frame->nfd > 4) {
+int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *hdr) {
+    if (!hdr || !dma_buf_fds || hdr->nfd == 0 || hdr->nfd > 4) {
         errno = EINVAL;
         return -1;
     }
 
-    idk_fs_frame_t f = *frame;
+    idk_frame_header_t f = *hdr;
     f.flags = (f.flags & ~IDK_FRAME_FLAG_DMABUF) | IDK_FRAME_FLAG_DMABUF;
 
     int rc = send_frame_msg(&f, dma_buf_fds, f.nfd);

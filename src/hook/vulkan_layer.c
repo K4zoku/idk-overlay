@@ -2,15 +2,12 @@
  *
  * This file implements the official Vulkan Layer interface so that
  * libidk-overlay.so can be loaded as a Vulkan layer (via VK_LAYER_PATH +
- * manifest JSON) in addition to the LD_PRELOAD/syringe injection path.
+ * manifest JSON).
  *
  * The layer hooks:
  * - vkCreateInstance: store dispatch table, init compositor + input hooks
  * - vkCreateSwapchainKHR: track swapchain extent (resize sync)
  * - vkQueuePresentKHR: render overlay before present
- *
- * When the layer is active (loaded via Vulkan loader), syringe-based
- * Vulkan hooks are skipped to avoid double-hooking.
  */
 
 /* Only compile when Vulkan layer headers are available */
@@ -30,9 +27,7 @@
 #include "hook/overlay.h"
 
 /* ── Layer mode flag ────────────────────────────────────────────────────
- * Set when vkNegotiateLoaderLayerInterfaceVersion is called.
- * When true, syringe-based Vulkan hooks (vulkan_hook.c) should be skipped
- * to avoid double-hooking. */
+ * Set when vkNegotiateLoaderLayerInterfaceVersion is called. */
 static int g_vk_layer_active = 0;
 
 /* Stored during CreateInstance for compositor_vk to load instance-level functions */
@@ -723,13 +718,6 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *pVersionStruct
 
     IDK_LOG("vk-layer", "Layer negotiated (version 2, layer mode active)\n");
     return VK_SUCCESS;
-}
-
-/* ── Disable syringe Vulkan hooks when layer is active ──────────────────
- * vulkan_hook.c calls idk_vulkan_init(). When the layer is active,
- * we skip syringe hook installation to avoid double-hooking. */
-int idk_vk_layer_should_skip_syringe(void) {
-    return g_vk_layer_active;
 }
 
 #endif /* IDK_HAVE_VK_LAYER */

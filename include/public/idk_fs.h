@@ -1,18 +1,8 @@
 /*
  * idk_fs.h — Client module for sending overlay frames to idk-overlay socket
  *
- * Wire format (24 bytes header + 1 fd via SCM_RIGHTS):
- *   +----------------------+
- *   | modifier uint64      |  offset  0 — DRM modifier (0=linear or SHM)
- *   | width     uint32     |  offset  8
- *   | height    uint32     |  offset 12
- *   | stride    uint32     |  offset 16 — bytes per row (DMABUF), 0=SHM
- *   | flags     uint8      |  offset 20 — bit0=visible, bit1=dmabuf
- *   | _pad     uint8[3]    |  offset 21
- *   +----------------------+
- *
  * Usage:
- *   idk_fs_init("/tmp/idk-overlay-1234", false);
+ *   idk_fs_init("/tmp/idk-overlay-1234");
  *   idk_fs_send_dma_buf(fds, &frame);
  *   idk_fs_shutdown();
  */
@@ -32,22 +22,6 @@ extern "C" {
 /* ── Constants ────────────────────────────────────────────────────────── */
 
 #define IDK_CLIENT_PIXEL_SIZE(w, h)  ((w) * (h) * 4)
-
-/* ── Frame info for client (maps 1:1 to wire header) ──────────────────── */
-
-typedef struct idk_fs_frame {
-    uint64_t modifier;  /* DRM modifier (0=linear, 0xFFFF...F=invalid)        */
-    uint32_t width;     /* Frame width in pixels                              */
-    uint32_t height;    /* Frame height in pixels                             */
-    uint32_t stride;    /* Stride in bytes (DMABUF) or 0 (SHM)               */
-    uint32_t fourcc;    /* DRM fourcc (DMABUF) or 0 (SHM)                    */
-    uint8_t  flags;     /* IDK_FRAME_FLAG_* bitmask                          */
-    uint8_t  nfd;       /* Number of fds to send (1 for single-plane)        */
-} idk_fs_frame_t;
-
-/* Build the wire header from the client-facing frame struct.
- * Copies all fields and zeroes padding. */
-void build_frame_hdr(const idk_fs_frame_t *frame, idk_frame_header_t *hdr);
 
 /* ── Client initialization ────────────────────────────────────────────── */
 
@@ -74,13 +48,13 @@ void idk_fs_shutdown(void);
  * @param frame      Frame metadata (caller fills width/height/stride/flags/etc).
  * @return           0 on success, -1 on failure.
  */
-int idk_fs_send_frame(int fd, const idk_fs_frame_t *frame);
+int idk_fs_send_frame(int fd, const idk_frame_header_t *frame);
 
 /**
  * Send a raw pixel buffer as a frame (creates SHM internally).
  * Sets frame->flags = IDK_FRAME_FLAG_VISIBLE (clears DMABUF bit).
  */
-int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame);
+int idk_fs_send_pixels(const void *pixels, const idk_frame_header_t *frame);
 
 /**
  * Wait for compositor ACK after sending a frame.
@@ -112,7 +86,7 @@ bool idk_fs_is_connected(void);
  * @param frame        Frame metadata (nfd must match array size, max 4).
  * @return             0 on success, -1 on failure.
  */
-int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame);
+int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *frame);
 
 #ifdef __cplusplus
 }

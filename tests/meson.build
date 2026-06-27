@@ -39,8 +39,8 @@ foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c']
     test(name, test_exe)
 endforeach
 
-# Tests needing idk_fs_lib (build_frame_hdr, public API)
-foreach src : ['test_frame_header.c', 'test_idk_fs.c']
+# Tests needing idk_fs_lib (public API)
+foreach src : ['test_idk_fs.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,

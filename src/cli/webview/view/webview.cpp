@@ -217,7 +217,7 @@ void WebView::doRenderAndSend()
             return;
     }
 
-    idk_fs_frame_t frame;
+    idk_frame_header_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.width   = static_cast<uint32_t>(m_renderW);
     frame.height  = static_cast<uint32_t>(m_renderH);

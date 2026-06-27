@@ -11,7 +11,8 @@
  *   | stride    uint32     |  offset 16 — bytes per row (DMABUF), 0=SHM
  *   | fourcc    uint32     |  offset 20 — DRM fourcc (DMABUF), 0=SHM
  *   | flags     uint8      |  offset 24 — bit0=visible, bit1=dmabuf
- *   | _pad     uint8[3]    |  offset 25 — reserved
+ *   | nfd      uint8      |  offset 25 — fd count (1–4), ignored on recv
+ *   | _pad     uint8[2]    |  offset 26 — reserved
  *   +----------------------+  total 28 bytes
  *
  * Input event (20 bytes, no fd passing):
@@ -54,7 +55,8 @@ typedef struct idk_frame_header {
     uint32_t stride;    /* offset 16 — bytes per row (DMABUF), 0=SHM          */
     uint32_t fourcc;    /* offset 20 — DRM fourcc (DMABUF), 0=SHM             */
     uint8_t  flags;     /* offset 24 — IDK_FRAME_FLAG_*                       */
-    uint8_t  _pad[3];   /* offset 25 — reserved, must be 0                    */
+    uint8_t  nfd;       /* offset 25 — fd count (1–4 for send, 0 on recv)     */
+    uint8_t  _pad[2];   /* offset 26 — reserved, must be 0                    */
 } idk_frame_header_t;   /* total 28 bytes                                     */
 #pragma pack(pop)
 

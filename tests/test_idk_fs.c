@@ -26,7 +26,7 @@ TEST(send_frame_null) {
 }
 
 TEST(send_pixels_null_pixels) {
-    idk_fs_frame_t frame = { .width = 100, .height = 100 };
+    idk_frame_header_t frame = { .width = 100, .height = 100 };
     errno = 0;
     ASSERT_EQ(idk_fs_send_pixels(NULL, &frame), -1);
     ASSERT_EQ(errno, EINVAL);
@@ -40,7 +40,7 @@ TEST(send_pixels_null_frame) {
 }
 
 TEST(send_dma_buf_null_fds) {
-    idk_fs_frame_t frame = { .nfd = 1 };
+    idk_frame_header_t frame = { .nfd = 1 };
     errno = 0;
     ASSERT_EQ(idk_fs_send_dma_buf(NULL, &frame), -1);
     ASSERT_EQ(errno, EINVAL);
@@ -54,7 +54,7 @@ TEST(send_dma_buf_null_frame) {
 }
 
 TEST(send_dma_buf_nfd_zero) {
-    idk_fs_frame_t frame = { .nfd = 0 };
+    idk_frame_header_t frame = { .nfd = 0 };
     int fd = 0;
     errno = 0;
     ASSERT_EQ(idk_fs_send_dma_buf(&fd, &frame), -1);
@@ -62,7 +62,7 @@ TEST(send_dma_buf_nfd_zero) {
 }
 
 TEST(send_dma_buf_nfd_too_high) {
-    idk_fs_frame_t frame = { .nfd = 5 };
+    idk_frame_header_t frame = { .nfd = 5 };
     int fd = 0;
     errno = 0;
     ASSERT_EQ(idk_fs_send_dma_buf(&fd, &frame), -1);

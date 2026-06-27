@@ -67,7 +67,6 @@ idk_overlay_so = library(
         'src/hook/overlay.c',
         'src/hook/egl_hook.c',
         'src/hook/glx_hook.c',
-        'src/hook/vulkan_hook.c',
         'src/hook/vulkan_layer.c',
         'src/hook/wayland/wayland_input.c',
         'src/hook/wayland/wayland_ptr.c',

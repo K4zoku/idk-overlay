@@ -369,7 +369,7 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
     }
 
     {
-        idk_fs_frame_t frame;
+        idk_frame_header_t frame;
         memset(&frame, 0, sizeof(frame));
         frame.width   = static_cast<uint32_t>(w);
         frame.height  = static_cast<uint32_t>(h);
@@ -696,7 +696,7 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
         return false;
     }
 
-    idk_fs_frame_t frame;
+    idk_frame_header_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.width   = w;
     frame.height  = h;

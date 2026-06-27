@@ -25,6 +25,5 @@ typedef struct idk_hook_plugin {
 /* Built-in plugins — declared here, defined in their respective hook files */
 extern idk_hook_plugin_t idk_plugin_egl;
 extern idk_hook_plugin_t idk_plugin_glx;
-extern idk_hook_plugin_t idk_plugin_vk_syringe;
 
 #endif /* IDK_HOOK_PLUGIN_H */

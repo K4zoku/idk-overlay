@@ -56,7 +56,6 @@ uint32_t g_hotkey_overlay_mods = 0;
 static idk_hook_plugin_t *g_plugins[] = {
     &idk_plugin_egl,
     &idk_plugin_glx,
-    &idk_plugin_vk_syringe,
 };
 
 /* Probe a plugin by trying to dlopen its libraries (NOLOAD) */

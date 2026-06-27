@@ -23,7 +23,8 @@ TEST(frame_header_offsets) {
     ASSERT_EQ((size_t)&hdr.stride - base, 16);
     ASSERT_EQ((size_t)&hdr.fourcc - base, 20);
     ASSERT_EQ((size_t)&hdr.flags - base, 24);
-    ASSERT_EQ((size_t)&hdr._pad - base, 25);
+    ASSERT_EQ((size_t)&hdr.nfd   - base, 25);
+    ASSERT_EQ((size_t)&hdr._pad  - base, 26);
 }
 
 TEST(flag_values) {
