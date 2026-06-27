@@ -30,6 +30,35 @@
 
 #define PIXELS_SIZE(w, h)  ((w) * (h) * 4)
 
+/* Escape a JS source string so it can be embedded as a string literal
+ * inside another JS expression. Used by InjectScripts to wrap user
+ * scripts in a DOMContentLoaded guard. Escapes backslash, single quote,
+ * double quote, newline, carriage return, tab, and other control chars. */
+static QString jsToJsString(const QString &s) {
+    QString out;
+    out.reserve(s.size() + 8);
+    out += QChar('"');
+    for (const QChar &c : s) {
+        ushort u = c.unicode();
+        switch (u) {
+            case '\\': out += QStringLiteral("\\\\"); break;
+            case '"':  out += QStringLiteral("\\\""); break;
+            case '\n': out += QStringLiteral("\\n"); break;
+            case '\r': out += QStringLiteral("\\r"); break;
+            case '\t': out += QStringLiteral("\\t"); break;
+            default:
+                if (u < 0x20) {
+                    out += QStringLiteral("\\u%1").arg(u, 4, 16, QChar('0'));
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    out += QChar('"');
+    return out;
+}
+
 WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noDmaBuf, QWidget *parent)
     : QWebEngineView(parent)
     , m_id(id)
@@ -95,17 +124,50 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
     connect(m_manager, &Manager::overlayVisibleChanged, this, &WebView::onOverlayVisibleChanged);
 
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
-        if (!ok || m_conf.url().isEmpty()) return;
+        if (!ok || m_conf.url().isEmpty()) {
+            IDK_LOG("webview-qt", "loadFinished ok=%d url_empty=%d — skipping script injection\n",
+                    (int)ok, (int)m_conf.url().isEmpty());
+            return;
+        }
         QStringList scripts = m_conf.injectScripts();
+        IDK_LOG("webview-qt", "loadFinished OK — %lld script(s) to inject\n", scripts.size());
         for (const QString &path : scripts) {
             QFile f(path);
-            if (f.open(QIODevice::ReadOnly)) {
-                QString js = QString::fromUtf8(f.readAll());
-                if (!js.isEmpty()) page()->runJavaScript(js);
+            if (!f.exists()) {
+                IDK_LOG("webview-qt", "inject script NOT FOUND: %s\n", path.toUtf8().data());
+                continue;
             }
+            if (!f.open(QIODevice::ReadOnly)) {
+                IDK_LOG("webview-qt", "inject script open FAILED: %s (%s)\n",
+                        path.toUtf8().data(), f.errorString().toUtf8().data());
+                continue;
+            }
+            QString js = QString::fromUtf8(f.readAll());
+            f.close();
+            if (js.isEmpty()) {
+                IDK_LOG("webview-qt", "inject script EMPTY: %s\n", path.toUtf8().data());
+                continue;
+            }
+            /* Wrap in a DOMContentLoaded guard so the script runs after
+             * the page's DOM is ready. runJavaScript executes in the
+             * page's main world immediately, but if the page hasn't
+             * finished parsing yet (loadFinished fires after load, but
+             * some SPAs defer DOM setup), document.body may be null.
+             * The wrapper waits for DOMContentLoaded if needed, else
+             * runs immediately. */
+            QString wrapped = QStringLiteral(
+                "(function(){"
+                "var js=%1;"
+                "if(document.readyState==='loading'){"
+                "document.addEventListener('DOMContentLoaded',function(){try{eval(js);}catch(e){console.error('[idk-overlay] inject error:',e);}});"
+                "}else{try{eval(js);}catch(e){console.error('[idk-overlay] inject error:',e);}}"
+                "})()"
+            ).arg(jsToJsString(js));
+            page()->runJavaScript(wrapped);
+            IDK_LOG("webview-qt", "inject script OK: %s (%d bytes)\n",
+                    path.toUtf8().data(), (int)js.size());
         }
         if (auto *fp = focusProxy()) fp->update();
-
     });
 }
 

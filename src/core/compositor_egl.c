@@ -814,9 +814,9 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     }
     attrs[ai++] = EGL_NONE;
 
-    IDK_LOG("comp", "eglCreateImage: %ux%u fourcc=0x%x stride=%u modifier=0x%llx\n",
-            (unsigned)w, (unsigned)h, (unsigned)drm_fmt, (unsigned)stride,
-            (unsigned long long)modifier);
+    // IDK_LOG("comp", "eglCreateImage: %ux%u fourcc=0x%x stride=%u modifier=0x%llx\n",
+    //         (unsigned)w, (unsigned)h, (unsigned)drm_fmt, (unsigned)stride,
+    //         (unsigned long long)modifier);
 
     EGLImageKHR img = fn_eglCreateImageKHR(
         egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
@@ -852,9 +852,9 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    IDK_LOG("comp", "egl_dmabuf_to_texture: glGenTextures tex=%u (dpy=%p host_dpy=%p)\n",
-            tex, (void*)egl_dpy,
-            (void*)(fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : NULL));
+    // IDK_LOG("comp", "egl_dmabuf_to_texture: glGenTextures tex=%u (dpy=%p host_dpy=%p)\n",
+    //         tex, (void*)egl_dpy,
+    //         (void*)(fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : NULL));
 
     /* Resolve EGL image binding functions up front */
     if (!fn_glEGLImageTargetTexture2DOES) {

@@ -150,10 +150,10 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *hdr) {
 
     int rc = send_frame_msg(&f, dma_buf_fds, f.nfd);
     if (rc == 0) {
-        IDK_LOG("fs",
-                "DMABUF sent: %dx%d stride=%u flags=0x%02x mod=0x%llx fd=%d\n",
-                f.width, f.height, f.stride, f.flags,
-                (unsigned long long)f.modifier, dma_buf_fds[0]);
+        // IDK_LOG("fs",
+        //         "DMABUF sent: %dx%d stride=%u flags=0x%02x mod=0x%llx fd=%d\n",
+        //         f.width, f.height, f.stride, f.flags,
+        //         (unsigned long long)f.modifier, dma_buf_fds[0]);
     }
 
     return rc;
