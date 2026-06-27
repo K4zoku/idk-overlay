@@ -328,7 +328,7 @@ int idk_x11_input_init(void) {
 
     if (resolve_x11_symbols() != 0) return -1;
 
-    /* Reuse Wayland's configure_hotkey() — same env var (IDK_TOGGLE_KEY),
+    /* Reuse Wayland's configure_hotkey() — same env var (IDK_HOTKEY_CAPTURE),
      * same parsing, same scancode/keysym tables. The hotkey detection
      * (is_hotkey) is also shared. */
     configure_hotkey();

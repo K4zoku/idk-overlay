@@ -7,7 +7,7 @@
  * the webview via IPC (idk_input_event_t on /tmp/idk-overlay-<pid>-input).
  *
  * Capture is toggled by a hotkey (default: Shift+Tab, configurable via
- * IDK_TOGGLE_KEY env var). The hotkey itself is always swallowed — it
+ * IDK_HOTKEY_CAPTURE env var). The hotkey itself is always swallowed — it
  * only toggles capture, never reaches either side.
  *
  * Socket path and wire protocol are identical to the Wayland input hook

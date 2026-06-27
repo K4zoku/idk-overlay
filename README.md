@@ -97,7 +97,8 @@ IDK_SOCKET=/tmp/idk-overlay-$(pgrep osu!) ./build/src/cli/webview/idk-webview
 | `IDK_VK` | `1` | Enable Vulkan hooks |
 | `IDK_GL` | `1` | Enable OpenGL/EGL hooks |
 | `IDK_DEBUG` | (unset) | Set to `1` to enable debug logging |
-| `IDK_TOGGLE_KEY` | `Shift+Tab` | Hotkey to toggle input capture (xkb keysym name: `F1`–`F12`, `Scroll_Lock`, `Pause`, etc.) |
+| `IDK_HOTKEY_CAPTURE` | `Shift+Tab` | Hotkey to toggle input capture |
+| `IDK_HOTKEY_OVERLAY` | `F8` | Hotkey to toggle overlay visibility |
 
 ## Wayland input hooking
 

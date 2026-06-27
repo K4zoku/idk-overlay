@@ -8,7 +8,7 @@
  * via IPC instead) when "input capture" mode is toggled on.
  *
  * Capture is toggled by a hotkey (default: F8, configurable via
- * IDK_TOGGLE_KEY env var). When captured:
+ * IDK_HOTKEY_CAPTURE env var). When captured:
  *   - All keyboard events go to the webview (game sees nothing).
  *   - All mouse button/motion/axis events go to the webview.
  *   - The hotkey itself is swallowed (it only toggles capture, never

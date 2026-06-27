@@ -307,8 +307,8 @@ static void parse_hotkey_str(const char *str, uint32_t *keysym, uint32_t *mods) 
 }
 
 static void load_hotkey_config(void) {
-    const char *env_cap = getenv("IDK_TOGGLE_KEY"); if (!env_cap||!env_cap[0]) env_cap = "Shift+Tab";
-    const char *env_ovl = getenv("IDK_TOGGLE_OVERLAY"); if (!env_ovl||!env_ovl[0]) env_ovl = "F8";
+    const char *env_cap = getenv("IDK_HOTKEY_CAPTURE"); if (!env_cap||!env_cap[0]) env_cap = "Shift+Tab";
+    const char *env_ovl = getenv("IDK_HOTKEY_OVERLAY"); if (!env_ovl||!env_ovl[0]) env_ovl = "F8";
     parse_hotkey_str(env_cap, &g_hotkey_keysym, &g_hotkey_mods);
     parse_hotkey_str(env_ovl, &g_hotkey_overlay_keysym, &g_hotkey_overlay_mods);
     char proc[64]; get_process_name(proc, sizeof(proc));

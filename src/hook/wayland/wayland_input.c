@@ -175,7 +175,7 @@ static const struct hotkey_name_to_scancode HOTKEY_TABLE[] = {
 };
 
 void configure_hotkey(void) {
-    const char *env = getenv("IDK_TOGGLE_KEY");
+    const char *env = getenv("IDK_HOTKEY_CAPTURE");
     if (!env || !env[0]) env = "Shift+Tab";
 
     uint32_t mods = 0;
