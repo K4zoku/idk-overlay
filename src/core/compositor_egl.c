@@ -421,17 +421,23 @@ static idk_transport_t g_tp;
 
 /* Init compositor — init transport, accept client */
 int idk_compositor_egl_init(void) {
+    /* g_inited is set to 1 ONLY after successful init. Previously it
+     * was set before idk_tp_init ran, so a transient init failure
+     * (bind() fails because another process owns the socket, socket()
+     * fails due to fd exhaustion, etc.) left g_inited=1 and all
+     * subsequent calls returned 0 (success) without retrying — the
+     * compositor was permanently dead. */
     static int g_inited = 0;
     if (g_inited) return 0;
-    g_inited = 1;
 
     idk_comp_get_path(g_sock_path, sizeof(g_sock_path));
     if (idk_tp_init(&g_tp, IDK_TP_CONSUMER, g_sock_path) != 0) {
-        return -1;
+        return -1;  /* leave g_inited=0 so caller can retry */
     }
     /* Try a non-blocking accept in case the webview is already waiting */
     idk_tp_accept(&g_tp);
     g_has_frame = false;
+    g_inited = 1;
     return 0;
 }
 
