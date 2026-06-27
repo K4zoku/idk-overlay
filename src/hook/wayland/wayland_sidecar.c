@@ -209,12 +209,33 @@ static void sidecar_kb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
         fn_xkb_state_update_key(g_xkb_state, key + 8,
                                 state ? IDK_XKB_KEY_DOWN : IDK_XKB_KEY_UP);
 
-    if (is_hotkey(key, keysym)) {
-        if (state == WL_KEYBOARD_KEY_STATE_PRESSED && !g_hotkey_pressed) {
+    int pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
+    int same_key = (g_hotkey_keysym == g_hotkey_overlay_keysym &&
+                    g_hotkey_mods == g_hotkey_overlay_mods);
+
+    int cap_match = is_capture_hotkey(key, keysym);
+    int ovl_match = !same_key && is_overlay_hotkey(key, keysym);
+
+    if (cap_match) {
+        if (pressed && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
-            WLOG("sidecar hotkey detected (key=%u keysym=0x%x) — toggling capture", key, keysym);
-            idk_wayland_input_set_capture(!g_captured);
-        } else if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+            if (same_key) {
+                if (!g_captured) { idk_wayland_input_set_capture(1); g_overlay_visible = 1; send_overlay_state(1); }
+                else { idk_wayland_input_set_capture(0); }
+            } else {
+                idk_wayland_input_set_capture(!g_captured);
+                if (g_captured) { g_overlay_visible = 1; send_overlay_state(1); }
+            }
+        } else if (!pressed) {
+            g_hotkey_pressed = 0;
+        }
+    } else if (ovl_match) {
+        if (pressed && !g_hotkey_pressed) {
+            g_hotkey_pressed = 1;
+            g_overlay_visible = !g_overlay_visible;
+            send_overlay_state(g_overlay_visible);
+            WLOG("sidecar overlay %s", g_overlay_visible ? "SHOW" : "HIDE");
+        } else if (!pressed) {
             g_hotkey_pressed = 0;
         }
     }
