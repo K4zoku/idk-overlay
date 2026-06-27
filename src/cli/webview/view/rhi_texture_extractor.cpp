@@ -353,6 +353,15 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
             !eFn(exportDpy, m_view->m_dmaEglImg, fds, strides, offsets) ||
             nfd < 1 || fds[0] < 0) {
             IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query failed\n");
+            /* Close any fds the driver may have populated before failing.
+             * Per spec eFn shouldn't write fds on failure, but driver
+             * bugs can cause partial population — without this loop,
+             * those fds leak. fds[] was initialized to {-1,-1,-1,-1}
+             * so we only close the ones that were actually written. */
+            for (int i = 0; i < 4; i++) {
+                if (fds[i] >= 0) ::close(fds[i]);
+                fds[i] = -1;
+            }
             eglDestroyImage(exportDpy, m_view->m_dmaEglImg);
             m_view->m_dmaEglImg = EGL_NO_IMAGE_KHR;
             glBindTexture(GL_TEXTURE_2D, 0);
