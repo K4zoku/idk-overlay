@@ -330,7 +330,7 @@ int idk_x11_input_init(void) {
 
     /* Reuse Wayland's configure_hotkey() — same env var (IDK_HOTKEY_CAPTURE),
      * same parsing, same scancode/keysym tables. The hotkey detection
-     * (is_hotkey) is also shared. */
+     * (is_capture_hotkey/is_overlay_hotkey) is also shared. */
     configure_hotkey();
 
     /* Reuse Wayland's init_input_socket() — same socket path scheme

@@ -129,7 +129,7 @@ static uint32_t decode_keysym(uint32_t key) {
     return 0;
 }
 
-static int is_capture_hotkey(uint32_t key, uint32_t keysym) {
+int is_capture_hotkey(uint32_t key, uint32_t keysym) {
     int match = 0;
     if (g_hotkey_keysym && keysym == g_hotkey_keysym) match = 1;
     if (g_hotkey_scancode && key == g_hotkey_scancode) match = 1;
@@ -138,7 +138,7 @@ static int is_capture_hotkey(uint32_t key, uint32_t keysym) {
     return (g_mods & g_hotkey_mods) == g_hotkey_mods;
 }
 
-static int is_overlay_hotkey(uint32_t key, uint32_t keysym) {
+int is_overlay_hotkey(uint32_t key, uint32_t keysym) {
     int match = 0;
     if (g_hotkey_overlay_keysym && keysym == g_hotkey_overlay_keysym) match = 1;
     if (g_hotkey_overlay_scancode && key == g_hotkey_overlay_scancode) match = 1;

@@ -133,6 +133,8 @@ typedef union {
 #define Button5         5   /* wheel down */
 #define Button6         6   /* wheel left */
 #define Button7         7   /* wheel right */
+#define Button8         8   /* back */
+#define Button9         9   /* forward */
 
 /* X event masks (from X.h) — used by XGrabPointer, XSelectInput */
 #define NoEventMask              (0L)
@@ -254,7 +256,8 @@ void send_repeat_info(void);
 
 /* ── Hotkey ──────────────────────────────────────────────────────────── */
 void configure_hotkey(void);
-int  is_hotkey(uint32_t keycode, uint32_t keysym);
+int  is_capture_hotkey(uint32_t key, uint32_t keysym);
+int  is_overlay_hotkey(uint32_t key, uint32_t keysym);
 
 /* ── Event dispatch (called from each XNextEvent-family hook) ─────────── */
 /* Returns 1 if the event should be swallowed (captured/hotkey),

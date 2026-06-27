@@ -47,6 +47,8 @@ private:
     QString m_confFile;
     QString m_group;
 
+    int m_x = 0;
+    int m_y = 0;
     int m_width = 640;
     int m_height = 480;
     QUrl m_url;
