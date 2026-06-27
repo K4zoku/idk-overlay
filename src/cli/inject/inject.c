@@ -42,6 +42,17 @@ static void usage(const char *prog) {
         prog);
 }
 
+static void get_runtime_dir(char *buf, size_t bufsz) {
+    const char *xdg = getenv("XDG_RUNTIME_DIR");
+    if (xdg && xdg[0]) {
+        snprintf(buf, bufsz, "%s", xdg);
+        size_t n = strlen(buf);
+        while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
+        return;
+    }
+    snprintf(buf, bufsz, "/tmp");
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         usage(argv[0]);
@@ -114,7 +125,7 @@ int main(int argc, char **argv) {
     char default_sock[PATH_MAX];
     {
         char dir[PATH_MAX];
-        idk_comp_get_runtime_dir(dir, sizeof(dir));
+        get_runtime_dir(dir, sizeof(dir));
         snprintf(default_sock, sizeof(default_sock), "%s/idk-overlay-%d",
                  dir, (int)target_pid);
     }
