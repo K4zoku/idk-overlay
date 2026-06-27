@@ -78,10 +78,15 @@ static void *hook_install_thread(void *arg) {
 
     usleep(50000);
 
-    /* Probe for X11 FIRST. XWayland games load both libX11 and libwayland,
-     * but should use X11 input (not Wayland) for event interception.
-     * If X11 input hook installs successfully, skip Wayland input to avoid
-     * double-toggle (both hooks share g_captured/g_hotkey_pressed). */
+    /* Background retry for input hooks that may load late (Qt/SDL
+     * platform plugins dlopen libX11/libwayland-client after our
+     * constructor runs). Install BOTH — see comment in
+     * idk_overlay_init() for why both are needed (XWayland vs
+     * Wayland-native can't be reliably detected).
+     *
+     * The g_x11_input_tried / g_wl_input_tried latches prevent
+     * double-install: each *_try_install_* function checks its own
+     * latch and returns immediately if already tried. */
     for (int i = 0; i < 150 && !g_x11_input_tried; i++) {
         void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
         if (!h) h = dlopen("libX11.so", RTLD_NOW | RTLD_NOLOAD);
@@ -93,19 +98,15 @@ static void *hook_install_thread(void *arg) {
         usleep(10000);
     }
 
-    /* Only install Wayland input if X11 input failed.
-     * This prevents double-toggle when both libs are loaded (XWayland). */
-    if (!g_x11_input_ok) {
-        for (int i = 0; i < 150 && !g_wl_input_tried; i++) {
-            void *h = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
-            if (!h) h = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
-            if (h) {
-                dlclose(h);
-                idk_overlay_try_install_wayland_input();
-                break;
-            }
-            usleep(10000);
+    for (int i = 0; i < 150 && !g_wl_input_tried; i++) {
+        void *h = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
+        if (!h) h = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
+        if (h) {
+            dlclose(h);
+            idk_overlay_try_install_wayland_input();
+            break;
         }
+        usleep(10000);
     }
 
     int n_plugins = sizeof(g_plugins) / sizeof(g_plugins[0]);
@@ -326,20 +327,44 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
 
     fork_webview();
 
-    void *xh = dlopen("libX11.so.6", RTLD_NOW);
-    if (!xh) xh = dlopen("libX11.so", RTLD_NOW);
+    /* Install BOTH X11 and Wayland input hooks if their libs are loaded.
+     * Use RTLD_NOLOAD so we only detect libs the game has already loaded
+     * (dlopen(RTLD_NOW) would force-load libX11 even for Wayland-native
+     * games, making the X11 probe always succeed and masking Wayland).
+     *
+     * Why both? On XWayland, the game loads libX11 (for X events) AND
+     * libwayland-client (Qt/SDL platform plugins) — but only X11 events
+     * fire (game uses XNextEvent, not wl_keyboard). On Wayland-native,
+     * only Wayland events fire (wl_keyboard, not XNextEvent).
+     *
+     * Both hooks share the same globals (g_captured, g_hotkey_pressed,
+     * g_overlay_visible) and the same input socket (init_input_socket
+     * guards against double-init). Hotkey detection is idempotent —
+     * g_hotkey_pressed latch prevents double-toggle if both paths fire
+     * (shouldn't happen, but defense in depth).
+     *
+     * Without both hooks:
+     *   - Wayland-native with only X11 hooks → no hotkey (XNextEvent
+     *     never called by game)
+     *   - XWayland with only Wayland hooks → no hotkey (wl_keyboard
+     *     listener never receives the game's key events; they go to
+     *     XNextEvent instead)
+     *   - Detecting which one to use is unreliable (libwayland can be
+     *     loaded as a plugin dependency even for XWayland games)
+     *
+     * So: install both, let only the active path fire. */
+    void *xh = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
+    if (!xh) xh = dlopen("libX11.so", RTLD_NOW | RTLD_NOLOAD);
     if (xh) {
+        dlclose(xh);  /* RTLD_NOLOAD just checks, doesn't add refcount */
         idk_overlay_try_install_x11_input();
-        dlclose(xh);
     }
 
-    if (!g_x11_input_ok) {
-        void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW);
-        if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW);
-        if (wlh) {
-            idk_overlay_try_install_wayland_input();
-            dlclose(wlh);
-        }
+    void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
+    if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
+    if (wlh) {
+        dlclose(wlh);
+        idk_overlay_try_install_wayland_input();
     }
 
     pthread_t t;

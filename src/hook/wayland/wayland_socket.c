@@ -14,11 +14,28 @@ static void *accept_thread_main(void *arg) {
         int fd = accept(listen_fd, NULL, NULL);
         if (fd < 0) {
             if (errno == EINTR) continue;
-            /* Log fatal accept() errors before breaking — previously
-             * the thread exited silently, leaving g_input_listen_fd
-             * non-negative (so teardown_input_socket's check didn't
-             * fire) and no new webview could ever connect. Without a
-             * log, this is extremely hard to diagnose. */
+            /* EINVAL/EBADF/ENOTSOCK on accept() typically means the
+             * listen fd was closed under us by teardown_input_socket()
+             * during shutdown (game exit). This is the expected
+             * shutdown path — don't log it as fatal (was spamming
+             * 'Invalid argument' on every game exit).
+             *
+             * Detect deliberate shutdown by checking if
+             * g_input_listen_fd was reset to -1 by teardown. */
+            if (errno == EINVAL || errno == EBADF || errno == ENOTSOCK) {
+                pthread_mutex_lock(&g_client_fd_lock);
+                int listen_state = g_input_listen_fd;
+                pthread_mutex_unlock(&g_client_fd_lock);
+                if (listen_state < 0) {
+                    /* Shutdown in progress — exit silently. */
+                    break;
+                }
+                /* fd still open but accept() returns EINVAL/EBADF —
+                 * something else closed it (rare). Log non-fatal. */
+                WLOG("accept_thread_main: listen fd closed externally — input thread exiting");
+                break;
+            }
+            /* Truly unexpected error — log with errno for diagnosis. */
             WERR("accept_thread_main: accept() fatal error: %s — input thread exiting",
                  strerror(errno));
             break;
@@ -34,6 +51,17 @@ static void *accept_thread_main(void *arg) {
 }
 
 int init_input_socket(void) {
+    /* Guard against double-init. When both X11 and Wayland input hooks
+     * are installed (XWayland case), both call init_input_socket() —
+     * without this guard, the second call would bind() the same path
+     * and fail with EADDRINUSE. The socket is shared between X11 and
+     * Wayland paths (send_event_to_webview is called from both). */
+    if (g_input_listen_fd >= 0 || g_accept_thread_started) {
+        WLOG("input socket already initialized (fd=%d) — sharing",
+             g_input_listen_fd);
+        return 0;
+    }
+
     /* Use a buffer large enough for any reasonable XDG_RUNTIME_DIR +
      * "/idk-overlay-<pid>-input" suffix. sun_path is 108 bytes on
      * Linux, so we cap at 107 + NUL. If the path would exceed sun_path,
