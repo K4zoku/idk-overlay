@@ -1400,6 +1400,15 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         for (int i = 0; i < VK_ASYNC_RING_SIZE; i++) {
             if (vkCreateFence(vk_dev, &fci, NULL, &vk_async_ring[i].fence) != VK_SUCCESS) {
                 IDK_ERR("comp-vk", "async ring: vkCreateFence(%d) failed — falling back to sync\n", i);
+                /* Destroy fences already created in slots [0, i) so we
+                 * don't leak them when the next frame re-enters this
+                 * init loop (vk_async_ring_init stays 0) and overwrites
+                 * the valid fence handles. Without this cleanup, every
+                 * re-attempt would leak i Vulkan fence handles. */
+                for (int j = 0; j < i; j++) {
+                    vkDestroyFence(vk_dev, vk_async_ring[j].fence, NULL);
+                    vk_async_ring[j].fence = VK_NULL_HANDLE;
+                }
                 /* Fall back to synchronous submit for this frame. */
                 VkFence sync_fence;
                 if (vkCreateFence(vk_dev, &fci, NULL, &sync_fence) == VK_SUCCESS) {
