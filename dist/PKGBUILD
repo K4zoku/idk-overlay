@@ -7,12 +7,12 @@ pkgdesc="Linux game overlay engine with WebView support (EGL/GLX/Vulkan, Wayland
 arch=('x86_64')
 url="https://github.com/K4zoku/idk-overlay"
 license=('MIT')
-depends=('qt6-base' 'qt6-webengine' 'wayland' 'libx11' 'libgl')
+depends=('qt6-base' 'qt6-webengine' 'libgl' 'libx11' 'wayland' 'vulkan-icd-loader')
 provides=("${_pkgbase}")
 conflicts=("${_pkgbase}")
 # added cmake to resolve layer-shell-qt build dependency
-makedepends=('git' 'gcc' 'meson' 'ninja')
-optdepends=('shaderc: SPIR-V shader compilation support')
+makedepends=('git' 'gcc' 'meson' 'ninja' 'binutils' 'python' 'vulkan-headers' 'shaderc')
+optdepends=('vulkan-driver: Vulkan overlay support')
 source=("${_pkgbase}::git+${url}.git")
 sha256sums=('SKIP')
 
