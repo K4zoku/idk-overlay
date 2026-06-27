@@ -75,13 +75,14 @@ static struct timespec vk_last_resize_ts = {0};
 
 /* Swapchain recreation storm protection.
  * When the game rapidly recreates swapchains (vkcube does this on resize),
- * our render_overlay hook runs synchronously inside QueuePresentKHR and
- * blocks the game. The synchronous vkQueueSubmit+vkWaitForFences takes
- * ~5-10ms per frame, and during a resize storm (10+ recreations/sec) this
- * causes ACK timeouts → broken pipe → game freezes.
+ * our render_overlay hook runs inside QueuePresentKHR and submits its
+ * own command buffer to the same queue. During a resize storm (10+
+ * recreations/sec) the queue can back up → ACK timeout → broken pipe →
+ * game freezes (Intel bug).
  * Skip overlay rendering for SWAPCHAIN_COOLDOWN_MS after each swapchain
  * recreation. The game's present goes through unmodified, overlay returns
- * once the storm settles. */
+ * once the storm settles. (Submit is async via the rolling-fence ring,
+ * but cooldown is still useful — stale frames during rapid resize.) */
 static struct timespec vk_last_swapchain_create_ts = {0};
 #define VK_SWAPCHAIN_COOLDOWN_MS 100
 
@@ -186,6 +187,28 @@ static uint32_t      vk_dmabuf_pending_stride = 0;
 static uint32_t      vk_dmabuf_pending_fourcc = 0;
 static uint64_t      vk_dmabuf_pending_modifier = 0;
 static int           vk_has_dmabuf_pending = 0;
+
+/* ── Async submit ring ───────────────────────────────────────────────────
+ * The synchronous vkQueueSubmit + vkWaitForFences pattern blocks the
+ * game's QueuePresentKHR for ~5-10ms per frame (GPU pipeline drain).
+ * Replace it with a 2-slot rolling-fence ring: each frame waits for
+ * the fence from 2 frames ago (which the GPU has long since signaled),
+ * reuses that fence + command buffer + framebuffer + image view slot,
+ * submits the new work, and returns immediately.
+ *
+ * Frame N's GPU work runs in parallel with frame N+1's CPU work. We
+ * only block when the GPU falls more than 1 frame behind (which would
+ * cause visible jank anyway). */
+#define VK_ASYNC_RING_SIZE 2
+struct vk_async_slot {
+    VkFence         fence;           /* VK_NULL_HANDLE when slot is free */
+    VkCommandBuffer cmd;
+    VkFramebuffer   fb;
+    VkImageView     view;
+};
+static struct vk_async_slot vk_async_ring[VK_ASYNC_RING_SIZE];
+static int vk_async_ring_idx = 0;   /* next slot to use */
+static int vk_async_ring_init = 0;  /* fences created? */
 
 /* Dispatch table — function pointers resolved via gpa */
 static PFN_vkGetDeviceProcAddr vk_gpa = NULL;
@@ -1149,11 +1172,15 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
     if (!vk_has_frame || swapchainImage == VK_NULL_HANDLE) return;
 
     /* Skip overlay rendering during swapchain recreation storms.
-     * Our synchronous vkQueueSubmit+vkWaitForFences blocks the game's
-     * QueuePresentKHR, and during rapid resize the game can't keep up
-     * → ACK timeout → broken pipe → game freezes (Intel bug).
+     * Our render_overlay hook runs inside QueuePresentKHR and submits
+     * its own command buffer to the same queue. During rapid resize
+     * (10+ swapchain recreations/sec) the queue can back up → ACK
+     * timeout → broken pipe → game freezes (Intel bug).
      * Let the game present unmodified for SWAPCHAIN_COOLDOWN_MS after
-     * each swapchain creation, then resume overlay rendering. */
+     * each swapchain recreation, then resume overlay rendering.
+     * (The submit is now async via the rolling-fence ring, but the
+     * cooldown is still useful — rapid swapchain recreation produces
+     * stale frames anyway.) */
     if (vk_last_swapchain_create_ts.tv_sec != 0) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1349,25 +1376,97 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
 
     vkEndCommandBuffer(recording_cmd);
 
-    /* Submit + wait (synchronous) */
-    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    VkFence fence;
-    if (vkCreateFence(vk_dev, &fci, NULL, &fence) != VK_SUCCESS) {
+    /* Async submit using a 2-slot rolling fence ring.
+     *
+     * Old pattern (synchronous, ~5-10ms blocking per frame):
+     *   fence = create; submit(fence); wait(fence); destroy(fence); free(cmd)
+     *
+     * New pattern (async, ~0ms blocking when GPU is keeping up):
+     *   slot = &ring[ring_idx++ % 2]
+     *   if slot->fence: wait(slot->fence)  # GPU finished N-2 frames ago
+     *                   free(slot->cmd, slot->fb, slot->view)
+     *                   reset(slot->fence)
+     *   else: slot->fence = create  # first 2 frames
+     *   submit(slot->fence)  # NO wait
+     *   slot->cmd = recording_cmd; slot->fb = fb; slot->view = swapchain_view
+     *
+     * Cleanup of cmd/fb/view is deferred to the next time we come back
+     * to this slot — the GPU still references them until the fence
+     * signals. VK_LOAD for the device functions was done above. */
+
+    /* Lazy fence creation on first 2 frames. */
+    if (!vk_async_ring_init) {
+        VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        for (int i = 0; i < VK_ASYNC_RING_SIZE; i++) {
+            if (vkCreateFence(vk_dev, &fci, NULL, &vk_async_ring[i].fence) != VK_SUCCESS) {
+                IDK_ERR("comp-vk", "async ring: vkCreateFence(%d) failed — falling back to sync\n", i);
+                /* Fall back to synchronous submit for this frame. */
+                VkFence sync_fence;
+                if (vkCreateFence(vk_dev, &fci, NULL, &sync_fence) == VK_SUCCESS) {
+                    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                        .commandBufferCount = 1, .pCommandBuffers = &recording_cmd };
+                    VkResult r = vkQueueSubmit(vk_queue, 1, &si, sync_fence);
+                    if (r == VK_SUCCESS) vkWaitForFences(vk_dev, 1, &sync_fence, VK_TRUE, 1000000000ULL);
+                    else IDK_ERR("comp-vk", "QueueSubmit failed: %d\n", r);
+                    vkDestroyFence(vk_dev, sync_fence, NULL);
+                }
+                vkDestroyFramebuffer(vk_dev, fb, NULL);
+                vkDestroyImageView(vk_dev, swapchain_view, NULL);
+                vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
+                return;
+            }
+        }
+        vk_async_ring_init = 1;
+        IDK_LOG("comp-vk", "async ring: %d fences created\n", VK_ASYNC_RING_SIZE);
+    }
+
+    int slot_idx = vk_async_ring_idx;
+    vk_async_ring_idx = (vk_async_ring_idx + 1) % VK_ASYNC_RING_SIZE;
+    struct vk_async_slot *slot = &vk_async_ring[slot_idx];
+
+    /* Wait for this slot's previous work to complete (should already be
+     * signaled — the GPU finished ~1 frame ago). 1s timeout is a safety
+     * net for driver hangs; we don't want to spin forever. */
+    if (slot->fence != VK_NULL_HANDLE && slot->cmd != VK_NULL_HANDLE) {
+        VkResult wr = vkWaitForFences(vk_dev, 1, &slot->fence, VK_TRUE, 1000000000ULL);
+        if (wr == VK_SUCCESS) {
+            vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &slot->cmd);
+            vkDestroyFramebuffer(vk_dev, slot->fb, NULL);
+            vkDestroyImageView(vk_dev, slot->view, NULL);
+            slot->cmd = VK_NULL_HANDLE;
+            slot->fb = VK_NULL_HANDLE;
+            slot->view = VK_NULL_HANDLE;
+            if (vkResetFences(vk_dev, 1, &slot->fence) != VK_SUCCESS) {
+                IDK_ERR("comp-vk", "async ring: vkResetFences failed — falling back to sync\n");
+                vkDestroyFence(vk_dev, slot->fence, NULL);
+                VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+                vkCreateFence(vk_dev, &fci, NULL, &slot->fence);
+            }
+        } else {
+            IDK_ERR("comp-vk", "async ring: wait returned %d — slot leak likely\n", (int)wr);
+            /* On timeout, leak the resources rather than risk use-after-free. */
+            slot->cmd = VK_NULL_HANDLE;
+            slot->fb = VK_NULL_HANDLE;
+            slot->view = VK_NULL_HANDLE;
+            vkResetFences(vk_dev, 1, &slot->fence);
+        }
+    }
+
+    /* Submit new work — NO wait. The fence signals when the GPU is done. */
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .commandBufferCount = 1, .pCommandBuffers = &recording_cmd };
+    VkResult r = vkQueueSubmit(vk_queue, 1, &si, slot->fence);
+    if (r == VK_SUCCESS) {
+        /* Track per-frame resources for deferred cleanup next time we hit this slot. */
+        slot->cmd = local_cmd;
+        slot->fb = fb;
+        slot->view = swapchain_view;
+    } else {
+        IDK_ERR("comp-vk", "QueueSubmit failed: %d — falling back to immediate cleanup\n", (int)r);
         vkDestroyFramebuffer(vk_dev, fb, NULL);
         vkDestroyImageView(vk_dev, swapchain_view, NULL);
         vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
-        return;
     }
-    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &recording_cmd };
-    VkResult r = vkQueueSubmit(vk_queue, 1, &si, fence);
-    if (r == VK_SUCCESS) vkWaitForFences(vk_dev, 1, &fence, VK_TRUE, 1000000000ULL);
-    else IDK_ERR("comp-vk", "QueueSubmit failed: %d\n", r);
-    vkDestroyFence(vk_dev, fence, NULL);
-    vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
-
-    /* Cleanup per-frame objects */
-    vkDestroyFramebuffer(vk_dev, fb, NULL);
-    vkDestroyImageView(vk_dev, swapchain_view, NULL);
 }
 
 /* ── Has overlay ───────────────────────────────────────────────────────── */
