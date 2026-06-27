@@ -7,8 +7,6 @@ GroupConfig::GroupConfig(const QString &confFile, const QString &group)
     : m_confFile(confFile)
     , m_group(group)
 {
-    m_x = value("X").toInt();
-    m_y = value("Y").toInt();
     m_width = value("Width").toInt();
     m_height = value("Height").toInt();
     m_url = value("Url").toUrl();

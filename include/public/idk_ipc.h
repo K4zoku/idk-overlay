@@ -75,6 +75,28 @@ typedef struct idk_ack_msg {
     uint8_t  _pad[3]; /* reserved */
 } idk_ack_msg_t;
 
+/* ── REQUEST message (8 bytes, consumer→producer) ──────────────────────── */
+/* Compositor sends this after presenting a frame to signal
+ * "ready for next frame." Webview responds with a frame send. */
+
+#define IDK_REQUEST_NEXT_FRAME 0
+#define IDK_REQUEST_SHUTDOWN   1
+
+#pragma pack(push, 1)
+typedef struct idk_request_msg {
+    uint8_t  type;       /* IDK_REQUEST_* */
+    uint8_t  _pad[7];
+} idk_request_msg_t;
+#pragma pack(pop)
+
+#ifdef __cplusplus
+static_assert(sizeof(idk_request_msg_t) == 8,
+              "idk_request_msg_t must be 8 bytes");
+#else
+_Static_assert(sizeof(idk_request_msg_t) == 8,
+               "idk_request_msg_t must be 8 bytes");
+#endif
+
 /* ── Input event (16 bytes, separate socket, no fd passing) ────────────── */
 /*
  * The game (injected .so) hooks wl_proxy_add_listener to intercept

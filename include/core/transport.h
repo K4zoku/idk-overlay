@@ -56,6 +56,13 @@ int  idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
 /* Send ACK to producer. */
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 
+/* Send REQUEST to producer (consumer→producer). */
+int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
+
+/* Receive REQUEST from consumer (non-blocking poll, or blocking with timeout).
+ * Returns 0 on success, -1 on timeout/error. */
+int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
+
 /* ── Producer API ───────────────────────────────────────────────────── */
 
 /* Send frame header + fds. nfd=0 is invalid (use nfd=1 for fd 0 → SHM

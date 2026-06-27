@@ -1088,7 +1088,13 @@ int idk_vk_compositor_render(void) {
         }
     }
 
-    if (processed) vk_send_ack(processed);
+    if (processed) {
+        vk_send_ack(processed);
+        idk_request_msg_t req;
+        memset(&req, 0, sizeof(req));
+        req.type = IDK_REQUEST_NEXT_FRAME;
+        idk_tp_send_request(&vk_tp, &req);
+    }
     return processed > 0 ? 0 : -1;
 }
 

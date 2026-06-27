@@ -70,7 +70,6 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
             focusProxy()->installEventFilter(this);
 
             sendCreateImage();
-            m_waitReply = false;  /* ready to send first frame */
             m_buffer = 0;
             /* Force first paint */
             if (auto *fp = focusProxy()) fp->update();
@@ -82,17 +81,26 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
         focusProxy()->installEventFilter(this);
 
         sendCreateImage();
-        m_waitReply = false;  /* ready to send first frame */
         m_buffer = 0;
 
         if (auto *fp = focusProxy()) fp->update();
     }
 
-    /* Heartbeat timer — keeps ACK polling alive when Chromium
-       stops generating paint events (e.g. after resize). */
-    m_heartbeat = new QTimer(this);
-    m_heartbeat->setTimerType(Qt::CoarseTimer);
-    connect(m_heartbeat, &QTimer::timeout, this, [this]() { doRenderAndSend(); });
+    /* ACK poll timer — single-shot, started when frameSent is emitted.
+     * Polls the compositor for ACK after a frame is sent. */
+    m_ackPollTimer = new QTimer(this);
+    m_ackPollTimer->setSingleShot(true);
+    connect(m_ackPollTimer, &QTimer::timeout, this, [this]() { pollAck(); });
+
+    /* REQUEST poll timer — single-shot, started after ACK received.
+     * Polls the compositor for a REQUEST_NEXT_FRAME message. */
+    m_requestTimer = new QTimer(this);
+    m_requestTimer->setSingleShot(true);
+    connect(m_requestTimer, &QTimer::timeout, this, [this]() { onRequestReceived(); });
+
+    connect(this, &WebView::frameSent, this, [this]() {
+        m_ackPollTimer->start(16);
+    });
 
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
         if (!ok || m_conf.url().isEmpty()) {
@@ -135,18 +143,13 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
         }
         s_in_paint = true;
 
-        if (m_waitReply || !m_manager->isConnected()) {
+        if (!m_manager->isConnected()) {
             s_in_paint = false;
             return QWebEngineView::eventFilter(obj, event);
         }
 
         /* Clear resize guard — Chromium has rendered a frame at the new size */
         m_resizePending = false;
-
-        /* Start heartbeat to keep polling even if Chromium stops
-           generating paint events (e.g. after a resize). */
-        if (m_heartbeat && !m_heartbeat->isActive())
-            m_heartbeat->start(50);
 
         QTimer::singleShot(0, this, [this]() {
             doRenderAndSend();
@@ -160,76 +163,20 @@ bool WebView::eventFilter(QObject *obj, QEvent *event)
 
 void WebView::doRenderAndSend()
 {
-    if (m_waitReply || !m_manager->isConnected()) {
-        QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
+    if (!m_manager->isConnected())
         return;
-    }
 
-    /* ACK flow control: non-blocking poll + 100ms safety timeout */
-    if (m_pending) {
-        idk_ack_msg_t ack_msg;
-        if (idk_fs_wait_ack(&ack_msg, 0) == 0) {
-            m_pending = false;
-            if (ack_msg.ack == 1) {
-                /* Compositor rejected this frame's DMABUF. Could be
-                 * transient (e.g. first frame after resize when Qt
-                 * RHI's texture isn't fully rebuilt yet, or NVIDIA
-                 * driver hiccup on vkGetMemoryFdPropertiesKHR).
-                 * Only fall back to SHM permanently after N
-                 * CONSECUTIVE failures — a single success resets
-                 * the counter. */
-                m_dmabufRejectCount++;
-                if (m_dmabufRejectCount >= 5 && !m_dmaBufFailed) {
-                    IDK_LOG("webview-qt", "compositor rejected DMABUF %d times — falling back to SHM\n",
-                            m_dmabufRejectCount);
-                    m_dmaBufFailed = true;
-                } else if (!m_dmaBufFailed) {
-                    IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) — will retry\n",
-                            m_dmabufRejectCount);
-                }
-            } else {
-                /* ack=0: frame accepted. Reset the consecutive
-                 * failure counter — DMABUF is working. */
-                if (m_dmabufRejectCount > 0) {
-                    IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) — counter reset\n",
-                            m_dmabufRejectCount);
-                    m_dmabufRejectCount = 0;
-                }
-            }
-            if (ack_msg.w > 0 && ack_msg.h > 0) {
-                IDK_LOG("webview-qt", "ACK received with game size: %dx%d\n",
-                        ack_msg.w, ack_msg.h);
-                resizeForGame(ack_msg.w, ack_msg.h);
-                m_resizePending = true;
-            }
-        }
-        int now = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
-        if (m_pending && (now - m_sendTime) > 100) {
-            IDK_LOG("webview-qt", "ACK timeout (%dms) — force-unlock pending\n",
-                    now - m_sendTime);
-            m_pending = false;
-        }
-        if (m_pending) {
-            QTimer::singleShot(4, this, [this]() { doRenderAndSend(); });
-            return;
-        }
-    }
-
-    /* After ACK with resize: skip frame send until Chromium
-       produces a new frame at the new size (next Paint event). */
-    if (m_resizePending) {
-        /* heartbeat keeps polling; paint event clears the flag */
+    /* ACK flow control: if a frame is in flight, pollAck handles it */
+    if (m_pending)
         return;
-    }
 
-    /* ── Try zero-copy DMABUF export (backend auto-detected) ──
-     * Skip DMABUF during the post-resize cooldown window: Qt RHI is
-     * rebuilding its render-target texture in this period and exporting
-     * DMABUF mid-rebuild can SIGSEGV (the QRhiTexture pointer we
-     * obtained may be invalidated underneath us). Force SHM instead. */
+    /* After ACK with resize: skip until next Paint event clears the flag */
+    if (m_resizePending)
+        return;
+
+    /* ── Try zero-copy DMABUF export ── */
     qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
     if (now_ms < m_dmabufCooldownUntil) {
-        /* Log cooldown start once per cooldown period */
         static qint64 s_last_cooldown_log = 0;
         if (s_last_cooldown_log != m_dmabufCooldownUntil) {
             IDK_LOG("webview-qt", "DMABUF cooldown active (%lldms remaining) — forcing SHM\n",
@@ -238,14 +185,12 @@ void WebView::doRenderAndSend()
         }
     } else if (m_useDmaBuf && !m_dmaBufFailed) {
         if (m_extractor->tryExportDMABuf())
-            return;
+            return;  /* frameSent emitted → starts ackPollTimer */
     }
 
-    /* ── SHM fallback: glReadPixels directly into SHM (0 CPU copies) ── */
-    if (!m_memory) {
-        QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
+    /* ── SHM fallback ── */
+    if (!m_memory)
         return;
-    }
 
     uint8_t buffer = m_buffer;
     m_buffer = (m_buffer + 1) % 2;
@@ -254,7 +199,6 @@ void WebView::doRenderAndSend()
     bool read_ok = m_extractor->tryReadPixelsToSHM(shm, m_renderW, m_renderH);
 
     if (!read_ok) {
-        /* Fallback: grabFramebuffer → row-reverse memcpy (2 CPU copies) */
         if (auto *qw = qobject_cast<QQuickWidget *>(focusProxy())) {
             QImage img = qw->grabFramebuffer();
             int bpr = qMin(img.bytesPerLine(), m_renderW * 4);
@@ -266,33 +210,22 @@ void WebView::doRenderAndSend()
             m_framePremultiplied = true;
             read_ok = true;
         }
+        if (!read_ok)
+            return;
     }
 
     idk_fs_frame_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.width   = static_cast<uint32_t>(m_renderW);
     frame.height  = static_cast<uint32_t>(m_renderH);
-    frame.flags   = IDK_FRAME_FLAG_VISIBLE;  /* SHM: no DMABUF bit */
+    frame.flags   = IDK_FRAME_FLAG_VISIBLE;
     frame.nfd     = 1;
-    /* stride=0 for SHM, modifier=0 */
 
     static int s_consecutive_failures = 0;
-
-    /* SHM frame — use idk_fs_send_frame (NOT send_dma_buf) so the
-     * DMABUF flag is NOT set. Using send_dma_buf here was a bug:
-     * it unconditionally sets IDK_FRAME_FLAG_DMABUF, causing the
-     * compositor to try EGL/GL_EXT_memory_object import on a memfd
-     * (which is not a dmabuf) → import fails every frame → black screen. */
     int rc = idk_fs_send_frame(m_memfd, &frame);
     if (rc < 0) {
-        /* If the transport is disconnected (EPIPE/ECONNRESET/EAGAIN-persistent),
-         * stop the heartbeat and DON'T reschedule doRenderAndSend. The
-         * Manager's 1s reconnect timer will call idk_fs_init2 again, which
-         * restarts the heartbeat via startInputReceiver → frameSent path. */
         if (!idk_fs_is_connected()) {
-            if (m_heartbeat) m_heartbeat->stop();
             s_consecutive_failures = 0;
-            IDK_LOG("webview-qt", "transport disconnected — stopping heartbeat, waiting for Manager reconnect\n");
             return;
         }
         s_consecutive_failures++;
@@ -305,11 +238,9 @@ void WebView::doRenderAndSend()
                     "forcing disconnect\n");
             idk_fs_shutdown();
             s_consecutive_failures = 0;
-            if (m_heartbeat) m_heartbeat->stop();
             return;
         }
-        QTimer::singleShot(16, this, [this]() { doRenderAndSend(); });
-        return;
+        return;  /* next Paint event will retry */
     }
     s_consecutive_failures = 0;
 
@@ -319,10 +250,79 @@ void WebView::doRenderAndSend()
 
     m_pending = true;
     m_sendTime = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+}
 
-    /* Keep heartbeat alive while waiting for ACK */
-    if (m_heartbeat && !m_heartbeat->isActive())
-        m_heartbeat->start(50);
+void WebView::processAck(const idk_ack_msg_t &ack_msg)
+{
+    if (ack_msg.ack == 1) {
+        m_dmabufRejectCount++;
+        if (m_dmabufRejectCount >= 5 && !m_dmaBufFailed) {
+            IDK_LOG("webview-qt", "compositor rejected DMABUF %d times — falling back to SHM\n",
+                    m_dmabufRejectCount);
+            m_dmaBufFailed = true;
+        } else if (!m_dmaBufFailed) {
+            IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) — will retry\n",
+                    m_dmabufRejectCount);
+        }
+    } else {
+        if (m_dmabufRejectCount > 0) {
+            IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) — counter reset\n",
+                    m_dmabufRejectCount);
+            m_dmabufRejectCount = 0;
+        }
+    }
+    if (ack_msg.w > 0 && ack_msg.h > 0) {
+        IDK_LOG("webview-qt", "ACK received with game size: %dx%d\n",
+                ack_msg.w, ack_msg.h);
+        resizeForGame(ack_msg.w, ack_msg.h);
+        m_resizePending = true;
+    }
+}
+
+bool WebView::pollAck()
+{
+    if (!m_pending || !m_manager->isConnected()) {
+        m_pending = false;
+        m_ackPollTimer->stop();
+        return false;
+    }
+
+    idk_ack_msg_t ack_msg;
+    if (idk_fs_wait_ack(&ack_msg, 0) == 0) {
+        m_pending = false;
+        processAck(ack_msg);
+        m_requestTimer->start(16);
+        return true;
+    }
+
+    int now = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
+    if ((now - m_sendTime) > 100) {
+        m_pending = false;
+        IDK_LOG("webview-qt", "ACK timeout (%dms) — force-unlock pending\n",
+                now - m_sendTime);
+        m_requestTimer->start(16);
+        return false;
+    }
+
+    m_ackPollTimer->start(16);
+    return false;
+}
+
+void WebView::onRequestReceived()
+{
+    if (m_pending || !m_manager->isConnected())
+        return;
+
+    idk_request_msg_t req;
+    if (idk_fs_recv_request(&req, 0) == 0 && req.type == IDK_REQUEST_NEXT_FRAME) {
+        m_requestTimer->stop();
+        if (auto *fp = focusProxy())
+            fp->update();
+        return;
+    }
+
+    /* No REQUEST yet — keep polling */
+    m_requestTimer->start(16);
 }
 
 void WebView::resizeForGame(int w, int h)
@@ -375,7 +375,6 @@ void WebView::resizeForGame(int w, int h)
         m_pending = false;
         m_dmaBufFailed = false;
         m_dmabufRejectCount = 0;  /* reset on resize — allow DMABUF retry */
-        if (m_heartbeat) m_heartbeat->start(50);
         if (auto *fp = focusProxy()) fp->update();
         m_resizing = false;
         return;
@@ -398,9 +397,6 @@ void WebView::resizeForGame(int w, int h)
     m_pending = false;
     m_dmaBufFailed = false;
     m_dmabufRejectCount = 0;
-
-    /* Restart heartbeat to poll ACKs/resume frame delivery after resize */
-    if (m_heartbeat) m_heartbeat->start(50);
 
     if (auto *fp = focusProxy()) fp->update();
 

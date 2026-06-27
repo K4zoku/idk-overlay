@@ -176,3 +176,11 @@ int idk_fs_wait_ack(idk_ack_msg_t *ack, int timeout_ms) {
     }
     return idk_tp_wait_ack(&g_tp, ack, timeout_ms);
 }
+
+int idk_fs_recv_request(idk_request_msg_t *req, int timeout_ms) {
+    if (!g_tp.ready) {
+        errno = ENOTCONN;
+        return -1;
+    }
+    return idk_tp_recv_request(&g_tp, req, timeout_ms);
+}

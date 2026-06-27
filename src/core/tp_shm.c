@@ -44,8 +44,9 @@
 #define SHM_O_ACK         68  /* idk_ack_msg_t (12 bytes) */
 #define SHM_O_SLOT_STATE  80  /* atomic_int — 0=empty,1=frame,2=ack */
 #define SHM_O_FRAME_SEQ   84  /* atomic_int — incremented each frame sent */
+#define SHM_O_REQ_SEQ     88  /* atomic_int — request sequence number     */
 
-_Static_assert(SHM_O_FRAME_SEQ + 4 <= SHM_SIZE,
+_Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
                "SHM layout exceeds page size");
 
 #define SHM_MAGIC_VAL 0x4D485349  /* "SHMI" */
@@ -56,11 +57,13 @@ _Static_assert(SHM_O_FRAME_SEQ + 4 <= SHM_SIZE,
 #define SLOT_CONSUMED 3
 
 /* ── _rsv[48] layout for SHM backend ─────────────────────────────────── */
-/*  [ 0..7 ]  void *shm_ptr     — mmap'd SHM address
- *  [ 8..47 ]  char  shm_name[40] — SHM name (for reinit/lookup)      */
+/*  [ 0..7 ]  void *shm_ptr       — mmap'd SHM address
+ *  [ 8..43 ]  char  shm_name[36]  — SHM name (for reinit/lookup)
+ *  [44..47]  int   last_req_seq   — last seen REQUEST sequence         */
 
-#define TP_SH_SHM_PTR(rsv)  (*(void **)(rsv))
-#define TP_SH_SHM_NAME(rsv) ((char *)((rsv) + 8))
+#define TP_SH_SHM_PTR(rsv)      (*(void **)(rsv))
+#define TP_SH_SHM_NAME(rsv)     ((char *)((rsv) + 8))
+#define TP_SH_LAST_REQ_SEQ(rsv) (*(int *)((rsv) + 44))
 
 /* Forward declarations (defined later, needed by init error paths) */
 void tp_shm_destroy(idk_transport_t *tp);
@@ -510,4 +513,54 @@ int tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
     futex_wake(slot);  /* wake producer in case it's waiting for empty */
 
     return 0;
+}
+
+/* ── REQUEST support ────────────────────────────────────────────────────── */
+
+int tp_shm_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
+    void *ptr = TP_SH_SHM_PTR(tp->_rsv);
+    if (!ptr || !tp->ready || !req) { errno = EINVAL; return -1; }
+    atomic_int *req_seq = shm_atom(ptr, SHM_O_REQ_SEQ);
+    atomic_fetch_add(req_seq, 1);
+    atomic_thread_fence(memory_order_release);
+    futex_wake(req_seq);
+    return 0;
+}
+
+int tp_shm_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
+    void *ptr = TP_SH_SHM_PTR(tp->_rsv);
+    if (!ptr || !tp->ready || !req) { errno = EINVAL; return -1; }
+
+    int *last_seq = &TP_SH_LAST_REQ_SEQ(tp->_rsv);
+    atomic_int *req_seq = shm_atom(ptr, SHM_O_REQ_SEQ);
+
+    struct timespec deadline;
+    if (timeout_ms >= 0) {
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_nsec += (long)timeout_ms * 1000000L;
+        deadline.tv_sec  += deadline.tv_nsec / 1000000000L;
+        deadline.tv_nsec %= 1000000000L;
+    }
+
+    while (1) {
+        int cur = atomic_load(req_seq);
+        if (cur != *last_seq) {
+            *last_seq = cur;
+            req->type = IDK_REQUEST_NEXT_FRAME;
+            return 0;
+        }
+
+        if (timeout_ms >= 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec > deadline.tv_sec ||
+                (now.tv_sec == deadline.tv_sec &&
+                 now.tv_nsec >= deadline.tv_nsec)) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+        }
+
+        futex_wait(req_seq, cur, 100);
+    }
 }

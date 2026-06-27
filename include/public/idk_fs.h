@@ -110,6 +110,14 @@ int idk_fs_send_pixels(const void *pixels, const idk_fs_frame_t *frame);
 int idk_fs_wait_ack(idk_ack_msg_t *ack, int timeout_ms);
 
 /**
+ * Receive a REQUEST from the compositor (non-blocking poll).
+ * @param req        Output: REQUEST message (type field).
+ * @param timeout_ms Timeout in milliseconds (0 = non-blocking).
+ * @return           0 on REQUEST received, -1 on timeout/error.
+ */
+int idk_fs_recv_request(idk_request_msg_t *req, int timeout_ms);
+
+/**
  * Check if connected to compositor.
  */
 bool idk_fs_is_connected(void);

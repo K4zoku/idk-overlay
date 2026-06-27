@@ -17,6 +17,8 @@ class QQuickWindow;
 #include "groupconfig.h"
 #include "manager.h"
 
+#include "public/idk_ipc.h"  /* idk_ack_msg_t */
+
 class RhiTextureExtractor;
 
 class WebView : public QWebEngineView
@@ -38,6 +40,7 @@ protected:
 private slots:
     void initDmaBuf();
     void sendCreateImage();
+    void onRequestReceived();
 
 private:
     void initMemory();
@@ -59,7 +62,6 @@ public:
     size_t m_memsize = 0;
     void *m_memory = nullptr;
     uint8_t m_buffer = 0;
-    bool m_waitReply = false;
 
     // ACK flow control
     bool m_pending = false;
@@ -127,13 +129,19 @@ public:
     PFN_vkGetMemoryFdKHR m_vkGetMemoryFdKHR = nullptr;
 #endif
 
-    // Heartbeat timer to poll ACKs when Chromium stops generating paint events
-    QTimer *m_heartbeat = nullptr;
+    // ACK poll timer — polls compositor ACK after frame send (single-shot)
+    QTimer *m_ackPollTimer = nullptr;
+
+    // REQUEST poll timer — polls compositor REQUEST after ACK received (single-shot)
+    QTimer *m_requestTimer = nullptr;
 
     RhiTextureExtractor *m_extractor = nullptr;
 
     // Event filter for paint events
     bool eventFilter(QObject *obj, QEvent *event) override;
+
+    void processAck(const idk_ack_msg_t &ack_msg);
+    bool pollAck();
 };
 
 class WebPage : public QWebEnginePage

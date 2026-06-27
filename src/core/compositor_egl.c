@@ -761,6 +761,12 @@ int idk_compositor_egl_render(void) {
                            &g_size_pending, &g_last_resize_ts,
                            0, "comp");
         idk_tp_send_ack(&g_tp, &ack_msg);
+
+        idk_request_msg_t req;
+        memset(&req, 0, sizeof(req));
+        req.type = IDK_REQUEST_NEXT_FRAME;
+        idk_tp_send_request(&g_tp, &req);
+
         return 0;
     }
     return -1;

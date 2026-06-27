@@ -23,7 +23,10 @@ extern void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 extern int  tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
                            const int *fds, int nfd);
 extern int  tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack,
-                               int timeout_ms);
+                                int timeout_ms);
+extern int  tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
+extern int  tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
+                                    int timeout_ms);
 
 extern int  tp_shm_init(idk_transport_t *tp, const char *name);
 extern void tp_shm_destroy(idk_transport_t *tp);
@@ -35,7 +38,10 @@ extern void tp_shm_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 extern int  tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
                         const int *fds, int nfd);
 extern int  tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack,
-                            int timeout_ms);
+                             int timeout_ms);
+extern int  tp_shm_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
+extern int  tp_shm_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
+                                 int timeout_ms);
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 
@@ -56,6 +62,8 @@ static int  (* const recv_fn[2])(idk_transport_t *, idk_frame_header_t *, int[4]
 static void (* const send_ack_fn[2])(idk_transport_t *, const idk_ack_msg_t *) = { tp_socket_send_ack, tp_shm_send_ack };
 static int  (* const send_fn[2])(idk_transport_t *, const idk_frame_header_t *, const int *, int) = { tp_socket_send, tp_shm_send };
 static int  (* const wait_ack_fn[2])(idk_transport_t *, idk_ack_msg_t *, int) = { tp_socket_wait_ack, tp_shm_wait_ack };
+static int  (* const send_request_fn[2])(idk_transport_t *, const idk_request_msg_t *) = { tp_socket_send_request, tp_shm_send_request };
+static int  (* const recv_request_fn[2])(idk_transport_t *, idk_request_msg_t *, int) = { tp_socket_recv_request, tp_shm_recv_request };
 
 #define B(tp) ((tp)->backend)
 
@@ -97,4 +105,12 @@ int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
 
 int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
     return wait_ack_fn[B(tp)](tp, ack, timeout_ms);
+}
+
+int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
+    return send_request_fn[B(tp)](tp, req);
+}
+
+int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
+    return recv_request_fn[B(tp)](tp, req, timeout_ms);
 }
