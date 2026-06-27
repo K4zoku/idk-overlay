@@ -280,6 +280,51 @@ void tp_shm_destroy(idk_transport_t *tp) {
         shm_unlink(shm_name_save);
 }
 
+/* Soft-disconnect — used by the compositor's recv-failure path so a
+ * restarted webview can reconnect on a subsequent frame.
+ *
+ * SHM consumer: closes the pidfd (_client_fd), resets the producer
+ * half of the SHM header (PROD_STATE=0, PROD_PID=0, SLOT=EMPTY) and
+ * re-arms CONS_STATE=1 (partially ready). The SHM mapping, shm_fd,
+ * and shm name are all preserved so a new producer can shm_open the
+ * same name, write its PID, and the consumer's tp_shm_accept on the
+ * next frame picks it up.
+ *
+ * SHM producer (webview side): no server state to keep → full destroy. */
+void tp_shm_disconnect_client(idk_transport_t *tp) {
+    void *ptr = TP_SH_SHM_PTR(tp->_rsv);
+
+    if (tp->role == IDK_TP_CONSUMER && ptr) {
+        /* Tear down producer-side state so a new producer can take over.
+         * Order matters: clear PROD_PID and SLOT first, then set
+         * PROD_STATE=0 last so a producer polling for "ready" doesn't
+         * see a half-reset state. */
+        atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
+        *shm_i32(ptr, SHM_O_PROD_PID) = 0;
+        *shm_i32(ptr, SHM_O_DMABUF_NFD) = 0;
+        atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
+        atomic_store(shm_atom(ptr, SHM_O_REQ_SEQ), 0);
+
+        /* Close pidfd — new producer will have a different PID. */
+        if (tp->_client_fd >= 0) { close(tp->_client_fd); tp->_client_fd = -1; }
+
+        /* Re-arm consumer "partially ready" so a new producer's
+         * tp_shm_accept path detects us. Keep CONS_PID so producer's
+         * liveness check still works. */
+        atomic_store(shm_atom(ptr, SHM_O_PROD_STATE), 0);
+        atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 1);
+        futex_wake(shm_atom(ptr, SHM_O_CONS_STATE));
+
+        IDK_LOG("tp", "shm: consumer soft-disconnected (pidfd closed, SHM kept open for reconnect)\n");
+    } else if (tp->role == IDK_TP_PRODUCER) {
+        /* Producer has no server fd — full destroy is the only sane option. */
+        tp_shm_destroy(tp);
+        return;
+    }
+
+    tp->ready = false;
+}
+
 /* ── Consumer API ─────────────────────────────────────────────────────── */
 
 /* Called every frame from compositor render loop. Non-blocking.
@@ -341,8 +386,20 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
         return -1;
     }
 
-    /* Check producer is still alive */
+    /* Check producer is still alive (graceful shutdown path). */
     if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1) {
+        return -1;
+    }
+
+    /* Out-of-band liveness check: producer may have crashed (SIGKILL,
+     * segfault) without setting PROD_STATE=-1. The producer-side
+     * tp_shm_send checks consumer liveness via kill(cons_pid, 0) —
+     * mirror that here. Without this, a crashed webview leaves
+     * PROD_STATE=1 and the compositor polls forever, freezing the
+     * overlay on the last frame. */
+    int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
+    if (prod_pid > 0 && kill(prod_pid, 0) < 0 && errno == ESRCH) {
+        IDK_ERR("tp", "shm: producer pid=%d dead (crashed without graceful shutdown)\n", prod_pid);
         return -1;
     }
 

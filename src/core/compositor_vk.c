@@ -1078,8 +1078,8 @@ int idk_vk_compositor_render(void) {
             int rc = idk_tp_recv(&vk_tp, &hdr, fds, &nfd);
             if (rc <= 0) {
                 if (rc < 0) {
-                    idk_tp_destroy(&vk_tp);
-                    vk_tp.ready = false;
+                    /* Soft-disconnect: keep listen fd / SHM open for reconnect. */
+                    idk_tp_disconnect_client(&vk_tp);
                 }
                 break;
             }
@@ -1108,8 +1108,8 @@ int idk_vk_compositor_render(void) {
         int rc = idk_tp_recv(&vk_tp, &hdr, fds, &nfd);
         if (rc <= 0) {
             if (rc < 0) {
-                idk_tp_destroy(&vk_tp);
-                vk_tp.ready = false;
+                /* Soft-disconnect so a reconnecting webview can re-establish. */
+                idk_tp_disconnect_client(&vk_tp);
             }
             break;
         }

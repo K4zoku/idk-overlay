@@ -15,6 +15,7 @@
 /* Backend declarations */
 extern int  tp_socket_init(idk_transport_t *tp, const char *name);
 extern void tp_socket_destroy(idk_transport_t *tp);
+extern void tp_socket_disconnect_client(idk_transport_t *tp);
 extern int  tp_socket_accept(idk_transport_t *tp);
 extern int  tp_socket_poll(idk_transport_t *tp);
 extern int  tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
@@ -30,6 +31,7 @@ extern int  tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
 
 extern int  tp_shm_init(idk_transport_t *tp, const char *name);
 extern void tp_shm_destroy(idk_transport_t *tp);
+extern void tp_shm_disconnect_client(idk_transport_t *tp);
 extern int  tp_shm_accept(idk_transport_t *tp);
 extern int  tp_shm_poll(idk_transport_t *tp);
 extern int  tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
@@ -53,6 +55,7 @@ static int resolve_backend(void) {
 typedef struct {
     int  (*init)(idk_transport_t *, const char *);
     void (*destroy)(idk_transport_t *);
+    void (*disconnect_client)(idk_transport_t *);
     int  (*accept)(idk_transport_t *);
     int  (*poll)(idk_transport_t *);
     int  (*recv)(idk_transport_t *, idk_frame_header_t *, int[4], int *);
@@ -66,6 +69,7 @@ typedef struct {
 static const idk_tp_backend_t tp_backends[2] = {
     [IDK_TP_SOCKET] = {
         .init = tp_socket_init, .destroy = tp_socket_destroy,
+        .disconnect_client = tp_socket_disconnect_client,
         .accept = tp_socket_accept, .poll = tp_socket_poll,
         .recv = tp_socket_recv, .send_ack = tp_socket_send_ack,
         .send = tp_socket_send, .wait_ack = tp_socket_wait_ack,
@@ -73,6 +77,7 @@ static const idk_tp_backend_t tp_backends[2] = {
     },
     [IDK_TP_SHM] = {
         .init = tp_shm_init, .destroy = tp_shm_destroy,
+        .disconnect_client = tp_shm_disconnect_client,
         .accept = tp_shm_accept, .poll = tp_shm_poll,
         .recv = tp_shm_recv, .send_ack = tp_shm_send_ack,
         .send = tp_shm_send, .wait_ack = tp_shm_wait_ack,
@@ -90,6 +95,10 @@ int idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name) {
 
 void idk_tp_destroy(idk_transport_t *tp) {
     tp_backends[tp->backend].destroy(tp);
+}
+
+void idk_tp_disconnect_client(idk_transport_t *tp) {
+    tp_backends[tp->backend].disconnect_client(tp);
 }
 
 int idk_tp_accept(idk_transport_t *tp) {

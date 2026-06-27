@@ -148,6 +148,16 @@ void tp_socket_destroy(idk_transport_t *tp) {
     tp->ready = false;
 }
 
+void tp_socket_disconnect_client(idk_transport_t *tp) {
+    /* Soft-disconnect: close the connected client fd but keep the
+     * listen fd open so the next accept() can pick up a reconnecting
+     * producer. The compositor's recv loop calls this on EPIPE/EOF
+     * instead of idk_tp_destroy() (which would close the listen fd
+     * and leave the overlay permanently dead). */
+    if (tp->_client_fd >= 0) { close(tp->_client_fd); tp->_client_fd = -1; }
+    tp->ready = false;
+}
+
 int tp_socket_accept(idk_transport_t *tp) {
     if (tp->_server_fd < 0) return -1;
     if (tp->_client_fd >= 0) return 1;  /* already accepted */

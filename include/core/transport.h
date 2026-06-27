@@ -40,6 +40,27 @@ _Static_assert(sizeof(idk_transport_t) == 64,
 int  idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name);
 void idk_tp_destroy(idk_transport_t *tp);
 
+/* Soft-disconnect: close the connected client fd (or consumer's pidfd)
+ * but KEEP the server/listen fd (or consumer's SHM + shm_fd) open so a
+ * new producer can reconnect on a subsequent frame.
+ *
+ * Use this in the compositor's recv-failure path instead of
+ * idk_tp_destroy(). A full destroy closes the listening socket AND
+ * unlinks the SHM name → the webview's reconnect timer can never
+ * re-establish the connection, leaving the overlay permanently dead.
+ *
+ * For SHM consumer: closes pidfd, resets producer half of SHM header
+ * (PROD_STATE=0, PROD_PID=0, SLOT=EMPTY), re-arms CONS_STATE=1.
+ * Keeps SHM mapped + shm_fd open + does NOT shm_unlink. Next producer
+ * re-opens the same SHM and the consumer re-arms via tp_shm_accept.
+ *
+ * For socket consumer: closes _client_fd, keeps _server_fd open.
+ * Next accept() picks up the new connection.
+ *
+ * For producers (webview side): equivalent to destroy — producers
+ * don't have a server fd to keep. */
+void idk_tp_disconnect_client(idk_transport_t *tp);
+
 /* ── Consumer API ───────────────────────────────────────────────────── */
 
 /* Non-blocking accept. Returns 1 on success, 0 if no pending, -1 on error. */

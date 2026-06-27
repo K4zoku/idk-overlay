@@ -568,9 +568,12 @@ int idk_compositor_egl_render(void) {
             int rc = idk_tp_recv(&g_tp, &hdr, fds, &nfd);
             if (rc <= 0) {
                 if (rc < 0) {
-                    IDK_LOG("comp", "client disconnected while hidden, resetting\n");
-                    idk_tp_destroy(&g_tp);
-                    g_tp.ready = false;
+                    IDK_LOG("comp", "client disconnected while hidden, soft-disconnecting\n");
+                    /* Soft-disconnect: keep listen fd / SHM open so a
+                     * reconnecting webview can re-establish on the next
+                     * frame. Full idk_tp_destroy would close the listen
+                     * socket + unlink the SHM → permanent dead overlay. */
+                    idk_tp_disconnect_client(&g_tp);
                 }
                 break;
             }
@@ -601,9 +604,9 @@ int idk_compositor_egl_render(void) {
         int rc = idk_tp_recv(&g_tp, &hdr, fds, &nfd);
         if (rc <= 0) {
             if (rc < 0) {
-                IDK_LOG("comp", "client disconnected, resetting\n");
-                idk_tp_destroy(&g_tp);
-                g_tp.ready = false;
+                IDK_LOG("comp", "client disconnected, soft-disconnecting\n");
+                /* Soft-disconnect so a reconnecting webview can re-establish. */
+                idk_tp_disconnect_client(&g_tp);
             }
             break;
         }
