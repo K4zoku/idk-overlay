@@ -18,6 +18,7 @@
 #include <string.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
@@ -29,7 +30,7 @@
 /* Overlay visibility — defined in overlay.c. When 0, skip render_overlay
  * so the game's present goes through unmodified (matches the EGL/GLX
  * hook behavior in egl_hook.c / glx_hook.c). */
-extern volatile int g_overlay_visible;
+extern _Atomic int g_overlay_visible;
 
 /* ── Layer mode flag ────────────────────────────────────────────────────
  * Set when vkNegotiateLoaderLayerInterfaceVersion is called. */

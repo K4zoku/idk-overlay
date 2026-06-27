@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <pthread.h>
 
 #include "hook/syringe_hook.h"
@@ -15,7 +16,7 @@
 #include "core/compositor_egl.h"
 #include "core/log.h"
 
-extern volatile int g_overlay_visible;
+extern _Atomic int g_overlay_visible;
 
 typedef void* EGLDisplay;
 typedef void* EGLSurface;

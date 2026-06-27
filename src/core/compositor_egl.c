@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -537,7 +538,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
  * When 0, we drain incoming frames without ACK/REQUEST so the webview
  * stops rendering (it polls REQUEST non-blocking and gets nothing →
  * m_requestTimer stays armed but never fires doRenderAndSend). */
-extern volatile int g_overlay_visible;
+extern _Atomic int g_overlay_visible;
 
 /* Track visibility transitions so we can wake the webview up when the
  * overlay becomes visible again (send a one-shot REQUEST_NEXT_FRAME

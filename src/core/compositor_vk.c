@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/mman.h>
@@ -1058,7 +1059,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 /* Overlay visibility — same symbol as overlay.c's g_overlay_visible.
  * When 0, drain incoming frames without ACK/REQUEST so the webview
  * stops rendering (see compositor_egl.c for full rationale). */
-extern volatile int g_overlay_visible;
+extern _Atomic int g_overlay_visible;
 
 /* Track visibility transitions so we can wake the webview up when the
  * overlay becomes visible again. */

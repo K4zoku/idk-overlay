@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -193,8 +194,8 @@ typedef int    (*XFlush_fn)(Display *);
 typedef int    (*XSync_fn)(Display *, Bool);
 
 /* ── Shared globals (mirror wayland_internal.h names where applicable) ── */
-extern volatile int g_captured;
-extern int g_hotkey_pressed;
+extern _Atomic int g_captured;
+extern _Atomic int g_hotkey_pressed;
 extern uint32_t g_hotkey_keysym;
 extern uint32_t g_hotkey_scancode;
 extern uint32_t g_hotkey_mods;
@@ -203,7 +204,7 @@ extern int32_t g_repeat_rate;
 extern int32_t g_repeat_delay;
 
 /* Overlay visibility + overlay hotkey (defined in overlay.c) */
-extern volatile int g_overlay_visible;
+extern _Atomic int g_overlay_visible;
 extern uint32_t g_hotkey_overlay_keysym;
 extern uint32_t g_hotkey_overlay_scancode;
 extern uint32_t g_hotkey_overlay_mods;

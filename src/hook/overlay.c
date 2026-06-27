@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <regex.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -42,8 +43,12 @@ static int g_hooks_installed = 0;
 static int g_egl_hook_installed = 0;
 static pid_t g_webview_pid = -1;
 
-/* Overlay visibility — controlled by hotkey, checked by compositor render. */
-volatile int g_overlay_visible = 1;
+/* Overlay visibility — controlled by hotkey, checked by compositor render.
+ * _Atomic (not volatile) so cross-thread reads/writes are well-defined
+ * under C11. Written from input hooks (x11_kb / wayland_kb / sidecar),
+ * read from compositor render path (egl_hook / glx_hook / vulkan_layer
+ * / compositor_egl / compositor_vk). */
+_Atomic int g_overlay_visible = 1;
 
 /* Overlay hotkey config — separate from capture hotkey.
  * If both hotkeys are the same key, combined behavior:

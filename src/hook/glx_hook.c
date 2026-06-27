@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdatomic.h>
 
 #include "hook/syringe_hook.h"
 #include "hook/hook_util.h"
@@ -14,7 +15,7 @@
 #include "core/log.h"
 #include "gl/gl_loader.h"
 
-extern volatile int g_overlay_visible;
+extern _Atomic int g_overlay_visible;
 
 typedef void* Display;
 typedef void* GLXDrawable;

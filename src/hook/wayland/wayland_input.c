@@ -1,9 +1,16 @@
 #include "hook/syringe_hook.h"
 #include "hook/wayland_internal.h"
+#include <stdatomic.h>
 
 /* ── Capture state ───────────────────────────────────────────────────── */
-volatile int g_captured = 0;
-int g_hotkey_pressed = 0;
+/* These are read from the compositor render path (egl_hook.c /
+ * glx_hook.c / vulkan_layer.c) and written from the input hook path
+ * (wayland_kb.c / sidecar.c / x11_kb.c). In practice both run on the
+ * game's main thread, but C11 _Atomic is the correct tool for
+ * cross-thread visibility — 'volatile' is only a compiler barrier
+ * and is UB under the C11 memory model. */
+_Atomic int g_captured = 0;
+_Atomic int g_hotkey_pressed = 0;
 uint32_t g_hotkey_keysym = 0;
 uint32_t g_hotkey_scancode = 0;
 uint32_t g_hotkey_mods = 0;
