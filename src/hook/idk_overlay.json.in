@@ -6,7 +6,7 @@
         "api_version": "1.3.0",
         "library_path": "@IDK_LAYER_LIB_PATH@",
         "implementation_version": "1",
-        "description": "idk-overlay — Wayland-native game overlay",
+        "description": "idk-overlay - Wayland-native game overlay",
         "functions": {
             "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
         },

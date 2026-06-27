@@ -1,5 +1,5 @@
 /*
- * idk_fs.h — Client module for sending overlay frames to idk-overlay socket
+ * idk_fs.h - Client module for sending overlay frames to idk-overlay socket
  *
  * Usage:
  *   idk_fs_init("$XDG_RUNTIME_DIR/idk-overlay-1234");
@@ -26,7 +26,7 @@ extern "C" {
 /* Client initialization */
 
 /**
- * Initialize the client — connect to the idk-overlay server socket.
+ * Initialize the client - connect to the idk-overlay server socket.
  * Non-blocking: delegates to transport layer which handles retries.
  *
  * @param sockpath   Socket path (e.g., "/run/user/1000/idk-overlay-1234").
@@ -74,7 +74,7 @@ int idk_fs_recv_request(idk_request_msg_t *req, int timeout_ms);
 bool idk_fs_is_connected(void);
 
 /**
- * Send DMA-BUF fds directly (no SHM copy — for GPU-rendered content).
+ * Send DMA-BUF fds directly (no SHM copy - for GPU-rendered content).
  * Sets IDK_FRAME_FLAG_DMABUF bit in frame->flags.
  *
  * @param dma_buf_fds  Array of DMA-BUF fds from GPU (Qt RHI, EGL, etc.).

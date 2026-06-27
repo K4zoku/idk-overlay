@@ -125,12 +125,12 @@ WebView::WebView(uint8_t id, const GroupConfig &conf, Manager *manager, bool noD
 
     connect(this, &WebView::loadFinished, this, [this](bool ok) {
         if (!ok || m_conf.url().isEmpty()) {
-            IDK_LOG("webview-qt", "loadFinished ok=%d url_empty=%d — skipping script injection\n",
+            IDK_LOG("webview-qt", "loadFinished ok=%d url_empty=%d - skipping script injection\n",
                     (int)ok, (int)m_conf.url().isEmpty());
             return;
         }
         QStringList scripts = m_conf.injectScripts();
-        IDK_LOG("webview-qt", "loadFinished OK — %lld script(s) to inject\n", scripts.size());
+        IDK_LOG("webview-qt", "loadFinished OK - %lld script(s) to inject\n", scripts.size());
         for (const QString &path : scripts) {
             QFile f(path);
             if (!f.exists()) {
@@ -280,7 +280,7 @@ void WebView::doRenderAndSend()
                      s_consecutive_failures, strerror(errno));
         }
         if (s_consecutive_failures > 300) {
-            IDK_LOG("webview-qt", "Too many consecutive send failures — "
+            IDK_LOG("webview-qt", "Too many consecutive send failures - "
                     "forcing disconnect\n");
             idk_fs_shutdown();
             s_consecutive_failures = 0;
@@ -303,16 +303,16 @@ void WebView::processAck(const idk_ack_msg_t &ack_msg)
     if (ack_msg.ack == 1) {
         m_dmabufRejectCount++;
         if (m_dmabufRejectCount >= 5 && !m_dmaBufFailed) {
-            IDK_LOG("webview-qt", "compositor rejected DMABUF %d times — falling back to SHM\n",
+            IDK_LOG("webview-qt", "compositor rejected DMABUF %d times - falling back to SHM\n",
                     m_dmabufRejectCount);
             m_dmaBufFailed = true;
         } else if (!m_dmaBufFailed) {
-            IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) — will retry\n",
+            IDK_LOG("webview-qt", "compositor rejected DMABUF (%d/5) - will retry\n",
                     m_dmabufRejectCount);
         }
     } else {
         if (m_dmabufRejectCount > 0) {
-            IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) — counter reset\n",
+            IDK_LOG("webview-qt", "DMABUF accepted after %d rejection(s) - counter reset\n",
                     m_dmabufRejectCount);
             m_dmabufRejectCount = 0;
         }
@@ -344,7 +344,7 @@ bool WebView::pollAck()
     int now = QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF;
     if ((now - m_sendTime) > 100) {
         m_pending = false;
-        IDK_LOG("webview-qt", "ACK timeout (%dms) — force-unlock pending\n",
+        IDK_LOG("webview-qt", "ACK timeout (%dms) - force-unlock pending\n",
                 now - m_sendTime);
         m_requestTimer->start(16);
         return false;
@@ -374,7 +374,7 @@ void WebView::onOverlayVisibleChanged(bool visible)
 {
     if (m_overlayVisible == visible) return;
     m_overlayVisible = visible;
-    IDK_LOG("webview-qt", "overlay %s — %s timers\n",
+    IDK_LOG("webview-qt", "overlay %s - %s timers\n",
             visible ? "SHOW" : "HIDE",
             visible ? "restarting" : "stopping");
 
@@ -389,7 +389,7 @@ void WebView::onOverlayVisibleChanged(bool visible)
         m_requestTimer->stop();
         m_pending = false;
     } else {
-        /* Overlay visible again — kick a render immediately. The
+        /* Overlay visible again - kick a render immediately. The
          * compositor also sends a wake-up REQUEST on its transition
          * detection, but painting now gets the first frame on screen
          * faster than waiting for the REQUEST round-trip. */

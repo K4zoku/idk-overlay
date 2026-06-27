@@ -127,7 +127,7 @@ static void resolve_egl_functions(void) {
     fn_eglDestroySurface    = (PFN_eglDestroySurface_fn)     dlsym(lib, "eglDestroySurface");
     fn_eglBindAPI           = (PFN_eglBindAPI_fn)            dlsym(lib, "eglBindAPI");
 
-    /* eglCreateImageKHR / eglDestroyImageKHR are extension functions —
+    /* eglCreateImageKHR / eglDestroyImageKHR are extension functions -
      * must use eglGetProcAddress, they may not be exported from libEGL.so */
     if (fn_eglGetProcAddress) {
         fn_eglCreateImageKHR  = (PFN_eglCreateImageKHR_fn)fn_eglGetProcAddress("eglCreateImageKHR");
@@ -149,7 +149,7 @@ static void resolve_egl_functions(void) {
 /* GL_EXT_memory_object dmabuf import (MangoHud approach)
  *
  * Per GL_EXT_memory_object_fd spec, only GL_HANDLE_TYPE_OPAQUE_FD_EXT is
- * defined — there is NO GL_HANDLE_TYPE_DMA_BUF_EXT. Spec says OPAQUE_FD is
+ * defined - there is NO GL_HANDLE_TYPE_DMA_BUF_EXT. Spec says OPAQUE_FD is
  * for fds created via glGetMemoryObjectFdEXT (GL→GL roundtrip).
  *
  * MangoHud's trick: pass dmabuf fds to glImportMemoryFdEXT with
@@ -157,7 +157,7 @@ static void resolve_egl_functions(void) {
  * the dmabuf correctly based on the actual underlying fd type. This is
  * technically not spec-compliant but works on all Mesa drivers.
  *
- * This is the GLX path (no EGL needed) — works on any GL context.
+ * This is the GLX path (no EGL needed) - works on any GL context.
  * EGL apps can still use the EGL_LINUX_DMA_BUF_EXT path above.
  */
 
@@ -220,7 +220,7 @@ static void resolve_gl_memory_functions(void) {
 /* Import dmabuf as GL texture via GL_EXT_memory_object (MangoHud approach).
  * Returns texture ID on success, 0 on failure. Caller keeps fd ownership.
  *
- * The GL driver takes ownership of the dup'd fd — caller's original fd
+ * The GL driver takes ownership of the dup'd fd - caller's original fd
  * must be kept alive separately (we track it in g_tex_dmabuf_fd[] for
  * cache invalidation on resize). */
 static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
@@ -253,7 +253,7 @@ static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         return 0;
     }
 
-    /* dup() the fd — glImportMemoryFdEXT takes ownership of the passed fd */
+    /* dup() the fd - glImportMemoryFdEXT takes ownership of the passed fd */
     int import_fd = dup(dmabuf_fd);
     if (import_fd < 0) {
         IDK_ERR("comp", "dup(dmabuf_fd=%d) failed: %s\n", dmabuf_fd, strerror(errno));
@@ -310,7 +310,7 @@ static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ALPHA_ENUM);
     }
 
-    /* Set basic filtering/wrap — caller will override if needed */
+    /* Set basic filtering/wrap - caller will override if needed */
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F /* GL_CLAMP_TO_EDGE */);
@@ -332,14 +332,14 @@ static GLuint g_program = 0;
 
 /* Double-buffered textures.
  * For DMABUF textures, we MUST keep the EGLImage and dmabuf_fd alive
- * for the texture's lifetime — Mesa's glEGLImageTargetTexStorageEXT
+ * for the texture's lifetime - Mesa's glEGLImageTargetTexStorageEXT
  * does NOT retain a reference to the dmabuf storage; if we destroy the
  * EGLImage or close the fd, the texture's backing is freed/reused
  * and renders as empty/white. */
 /* Double-buffered overlay textures. Frame N renders from slot A; frame
  * N+1 uploads to slot B (the back slot) then renders from slot B.
  *
- * KNOWN LIMITATION (latent): GL is pipelined — glDrawArrays returns
+ * KNOWN LIMITATION (latent): GL is pipelined - glDrawArrays returns
  * before the GPU finishes sampling the texture. glTexSubImage2D /
  * glTexImage2D on a texture the GPU is still sampling causes a
  * pipeline stall or undefined sampling. The 2-slot ring means frame
@@ -349,10 +349,10 @@ static GLuint g_program = 0;
  * other drivers it could cause artifacts at high frame rates.
  *
  * The correct fix is a 3-slot ring (one rendering, one ready, one
- * uploading) with a glFenceSync after glDrawArrays — but that's a
+ * uploading) with a glFenceSync after glDrawArrays - but that's a
  * larger refactor. The 2-slot scheme is acceptable for the current
  * use case (overlay frame rate is capped by the webview's paint rate,
- * which is typically 60fps — well below the threshold where the
+ * which is typically 60fps - well below the threshold where the
  * pipeline stall matters). */
 static GLuint g_tex[2] = {0, 0};
 static int    g_tex_w[2] = {0, 0};
@@ -380,7 +380,7 @@ static void release_dmabuf_backing(int i) {
     }
 }
 
-/* Draw error counter — reset on new frame upload, invalidate tex at 5 */
+/* Draw error counter - reset on new frame upload, invalidate tex at 5 */
 static int g_draw_err_count = 0;
 
 static bool g_is_gles = false;
@@ -401,7 +401,7 @@ void idk_compositor_egl_notify_resize(int w, int h) {
     bool changed = idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
                                           &g_last_resize_ts, w, h, "comp");
     if (changed) {
-        /* Game viewport changed — keep the current texture alive so the
+        /* Game viewport changed - keep the current texture alive so the
          * overlay keeps rendering during the 1-2 frame window before the
          * webview sends a frame at the new size. Previously we deleted
          * both texture slots here, which produced a black frame; the
@@ -427,7 +427,7 @@ static PFN_glEGLImageTargetTexture2DOES_fn fn_glEGLImageTargetTexture2DOES = NUL
 typedef void (*PFN_glEGLImageTargetTexStorageEXT_fn)(GLenum target, GLeglImage image, const GLint* attrib_list);
 static PFN_glEGLImageTargetTexStorageEXT_fn fn_glEGLImageTargetTexStorageEXT = NULL;
 
-/* Forward declaration — caller must keep *out_img alive for the
+/* Forward declaration - caller must keep *out_img alive for the
  * lifetime of the returned texture. */
 static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                                     uint32_t stride, uint32_t format,
@@ -437,13 +437,13 @@ static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 static char g_sock_path[512];
 static idk_transport_t g_tp;
 
-/* Init compositor — init transport, accept client */
+/* Init compositor - init transport, accept client */
 int idk_compositor_egl_init(void) {
     /* g_inited is set to 1 ONLY after successful init. Previously it
      * was set before idk_tp_init ran, so a transient init failure
      * (bind() fails because another process owns the socket, socket()
      * fails due to fd exhaustion, etc.) left g_inited=1 and all
-     * subsequent calls returned 0 (success) without retrying — the
+     * subsequent calls returned 0 (success) without retrying - the
      * compositor was permanently dead. */
     static int g_inited = 0;
     if (g_inited) return 0;
@@ -503,7 +503,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     /* If dimensions changed, delete old texture and reallocate via glTexImage2D.
      * Also force-delete if the slot was previously DMABUF-backed: a DMABUF
      * texture's storage is owned by the EGLImage and cannot be updated via
-     * glTexSubImage2D — we must recreate it as a regular GL texture. */
+     * glTexSubImage2D - we must recreate it as a regular GL texture. */
     bool size_changed = (GLsizei)w != g_tex_w[back] || (GLsizei)h != g_tex_h[back];
     bool was_dmabuf = (g_tex_img[back] != 0) || (g_tex_dmabuf_fd[back] >= 0);
     if ((size_changed || was_dmabuf) && g_tex[back] != 0) {
@@ -521,7 +521,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
         if (idk_fn_glPixelStorei) {
             idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         }
-    /* RGBA8 for both straight/premultiplied — blend mode differs at render time */
+    /* RGBA8 for both straight/premultiplied - blend mode differs at render time */
         idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                             (GLsizei)w, (GLsizei)h, 0,
                             GL_RGBA, GL_UNSIGNED_BYTE, buf);
@@ -549,7 +549,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     g_tex_idx = back;
     g_has_frame = true;
     g_frame_premultiplied = (premultiplied != 0);
-    g_draw_err_count = 0;  /* fresh texture — reset draw error counter */
+    g_draw_err_count = 0;  /* fresh texture - reset draw error counter */
 
     IDK_LOG("comp", "SHM frame uploaded: %ux%u tex[%d]=%u premul=%d buf_idx=%u\n",
             (unsigned)w, (unsigned)h, back, g_tex[back],
@@ -558,7 +558,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     return g_tex[g_tex_idx];
 }
 
-/* Overlay visibility — same symbol as overlay.c's g_overlay_visible.
+/* Overlay visibility - same symbol as overlay.c's g_overlay_visible.
  * When 0, we drain incoming frames without ACK/REQUEST so the webview
  * stops rendering (it polls REQUEST non-blocking and gets nothing →
  * m_requestTimer stays armed but never fires doRenderAndSend). */
@@ -609,7 +609,7 @@ int idk_compositor_egl_render(void) {
         return -1;
     }
 
-    /* Visible — if we just transitioned from hidden, send a REQUEST
+    /* Visible - if we just transitioned from hidden, send a REQUEST
      * to wake up the webview's request-poll loop. */
     if (g_was_hidden) {
         g_was_hidden = false;
@@ -617,10 +617,10 @@ int idk_compositor_egl_render(void) {
         memset(&wake, 0, sizeof(wake));
         wake.type = IDK_REQUEST_NEXT_FRAME;
         idk_tp_send_request(&g_tp, &wake);
-        IDK_LOG("comp", "overlay became visible — sent wake-up REQUEST\n");
+        IDK_LOG("comp", "overlay became visible - sent wake-up REQUEST\n");
     }
 
-    /* Poll for new frame — keep newest only */
+    /* Poll for new frame - keep newest only */
     int processed = 0;
 
     while (1) {
@@ -646,10 +646,10 @@ int idk_compositor_egl_render(void) {
         GLuint tex = 0;
 
         if (!idk_frame_is_dmabuf(&hdr)) {
-            /* SHM frame — compute pixel size from dimensions (4 bytes/pixel) */
+            /* SHM frame - compute pixel size from dimensions (4 bytes/pixel) */
             uint32_t pixel_size = hdr.width * hdr.height * 4;
             /* buf_idx is no longer in the header; use 0 (single buffer).
-             * Premultiplied flag is not in the new header — assume
+             * Premultiplied flag is not in the new header - assume
              * premultiplied for SHM (Qt RHI always premultiplies). */
             tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                  pixel_size, 0, 1);
@@ -659,7 +659,7 @@ int idk_compositor_egl_render(void) {
             processed = 1;
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
-            /* DMABUF frame — try two import paths:
+            /* DMABUF frame - try two import paths:
              *   1. EGL (eglCreateImageKHR + glEGLImageTargetTexStorageEXT)
              *      for EGL apps (host has current EGL display).
              *   2. GL_EXT_memory_object (MangoHud-style, OPAQUE_FD trick)
@@ -681,7 +681,7 @@ int idk_compositor_egl_render(void) {
                                          hdr.modifier, &img);
 
             if (tex == 0) {
-                /* EGL path failed — try GL_EXT_memory_object MangoHud-style
+                /* EGL path failed - try GL_EXT_memory_object MangoHud-style
                  * fallback. This works on Mesa even for EGL apps when the
                  * EGL driver doesn't support the specific modifier. */
                 IDK_LOG("comp", "EGL dmabuf import failed, trying GL_EXT_memory_object (MangoHud) path\n");
@@ -691,7 +691,7 @@ int idk_compositor_egl_render(void) {
                     IDK_LOG("comp", "GL_EXT_memory_object dmabuf import OK\n");
                     /* GL_EXT_memory_object dup'd the fd internally (driver
                      * owns the dup'd fd). Original dmabuf_fd is no longer
-                     * needed — close it now. */
+                     * needed - close it now. */
                     close(dmabuf_fd);
                     fd_consumed = 0;  /* fd already closed, don't track */
                 } else {
@@ -704,8 +704,8 @@ int idk_compositor_egl_render(void) {
             }
 
             if (tex == 0) {
-                /* Both paths failed — reject, force SHM */
-                IDK_LOG("comp", "DMABUF import failed (EGL + GL_EXT_memory_object) — rejecting, forcing SHM\n");
+                /* Both paths failed - reject, force SHM */
+                IDK_LOG("comp", "DMABUF import failed (EGL + GL_EXT_memory_object) - rejecting, forcing SHM\n");
                 close(dmabuf_fd);
                 processed = -1;  /* ACK=1 → webview falls back to SHM */
             } else {
@@ -779,7 +779,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         egl_dpy = fn_eglGetCurrentDisplay();
     }
     if (egl_dpy == EGL_NO_DISPLAY) {
-        /* GLX host — caller handles via gl_dmabuf_to_texture fallback */
+        /* GLX host - caller handles via gl_dmabuf_to_texture fallback */
         IDK_LOG("comp", "egl_dmabuf_to_texture: no current EGL display (GLX host?)\n");
         return 0;
     }
@@ -789,7 +789,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 
     /* Build attribute list. Include modifier if it's valid (not
      * DRM_FORMAT_MOD_INVALID). Without the modifier, Mesa assumes
-     * linear layout — if the dmabuf is actually tiled/compressed,
+     * linear layout - if the dmabuf is actually tiled/compressed,
      * the imported texture will have garbled/white content. */
     EGLint attrs[16];
     int ai = 0;
@@ -823,10 +823,10 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 
     if (img == EGL_NO_IMAGE_KHR) {
         EGLint egl_err = fn_eglGetError ? fn_eglGetError() : 0;
-        IDK_LOG("comp", "eglCreateImageKHR failed: 0x%04X (dpy=%p) — retrying without modifier\n",
+        IDK_LOG("comp", "eglCreateImageKHR failed: 0x%04X (dpy=%p) - retrying without modifier\n",
                 (unsigned int)egl_err, (void*)egl_dpy);
 
-        /* Retry without modifier — some EGL drivers can't import tiled/
+        /* Retry without modifier - some EGL drivers can't import tiled/
          * compressed dmabufs but accept the same fd without modifier attr
          * (driver falls back to linear interpretation). */
         if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
@@ -840,7 +840,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                 IDK_ERR("comp", "eglCreateImageKHR retry (no modifier) also failed: 0x%04X\n",
                         (unsigned int)egl_err);
             } else {
-                IDK_LOG("comp", "eglCreateImageKHR retry (no modifier) OK — imported as linear\n");
+                IDK_LOG("comp", "eglCreateImageKHR retry (no modifier) OK - imported as linear\n");
             }
         }
 
@@ -882,9 +882,9 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
-    /* TexStorageEXT first (desktop GL — proper EGL_image_storage path),
+    /* TexStorageEXT first (desktop GL - proper EGL_image_storage path),
      * fall back to Texture2DOES (GLES-compatible but may crash on some
-     * desktop GL drivers — only use as last resort). */
+     * desktop GL drivers - only use as last resort). */
     GLboolean ok = GL_FALSE;
     GLenum err = GL_NO_ERROR;
     static int s_texstorage_success_logged = 0;
@@ -906,7 +906,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         }
     }
 
-    /* Texture2DOES fallback — only if TexStorageEXT unavailable or failed.
+    /* Texture2DOES fallback - only if TexStorageEXT unavailable or failed.
      * On desktop GL, glEGLImageTargetTexture2DOES may not work correctly
      * (it's a GLES extension); only use if we have no better option. */
     if (!ok && fn_glEGLImageTargetTexture2DOES) {
@@ -932,7 +932,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
      * via glTexParameteri to avoid driver confusion on subsequent binds. */
     if (s_texstorage_failed && !s_texstorage_success_logged) {
         /* One-time warning */
-        IDK_LOG("comp", "WARNING: using Texture2DOES fallback (TexStorageEXT failed) — "
+        IDK_LOG("comp", "WARNING: using Texture2DOES fallback (TexStorageEXT failed) - "
                 "texture may not be stable across GL contexts\n");
     }
 
@@ -942,7 +942,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    /* Keep EGLImage alive — Mesa's TexStorageEXT doesn't retain a ref */
+    /* Keep EGLImage alive - Mesa's TexStorageEXT doesn't retain a ref */
     if (out_img) *out_img = img;
 
     return tex;
@@ -960,20 +960,20 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         if (!is_prog || !link_status) {
             static int s_reinit_count = 0;
             s_reinit_count++;
-            IDK_LOG("comp", "program %u invalidated (is_prog=%d link=%d) — re-initializing shaders (attempt %d)\n",
+            IDK_LOG("comp", "program %u invalidated (is_prog=%d link=%d) - re-initializing shaders (attempt %d)\n",
                     g_program, (int)is_prog, (int)link_status, s_reinit_count);
             /* Clear g_program so init creates a fresh one.
-             * Don't call glDeleteProgram — the ID may belong to the host. */
+             * Don't call glDeleteProgram - the ID may belong to the host. */
             g_program = 0;
             if (idk_compositor_egl_init_gl() != 0) {
-                IDK_ERR("comp", "shader re-init failed — skipping frame\n");
+                IDK_ERR("comp", "shader re-init failed - skipping frame\n");
                 return;
             }
             IDK_LOG("comp", "shader re-init OK, new g_program=%u\n", g_program);
         }
     }
 
-    /* Global stale frame timeout — clear overlay if no frame for 1s
+    /* Global stale frame timeout - clear overlay if no frame for 1s
        (handles webview crash, driver crash, resize hang, etc.) */
     if (g_has_frame) {
         struct timespec now;
@@ -1133,7 +1133,7 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
             /* Invalidate texture after 5 consecutive errors */
             if (g_draw_err_count == 5) {
                 GLuint dead = g_tex[g_tex_idx];
-                IDK_ERR("comp", "tex[%d]=%u failing repeatedly — deleting + marking invalid\n",
+                IDK_ERR("comp", "tex[%d]=%u failing repeatedly - deleting + marking invalid\n",
                         g_tex_idx, dead);
                 if (dead > 0) glDeleteTextures(1, &dead);
                 g_tex[g_tex_idx] = 0;
@@ -1196,7 +1196,7 @@ int idk_compositor_egl_has_overlay(void) {
 }
 
 void idk_compositor_egl_shutdown(void) {
-    /* SHM cache is function-scoped static in shm_to_texture — OS reclaims */
+    /* SHM cache is function-scoped static in shm_to_texture - OS reclaims */
     if (g_dmabuf_fd >= 0) {
         close(g_dmabuf_fd);
         g_dmabuf_fd = -1;
@@ -1209,7 +1209,7 @@ void idk_compositor_egl_shutdown(void) {
         unlink(g_sock_path);
     }
 
-    /* GL cleanup skipped — OS reclaims on exit */
+    /* GL cleanup skipped - OS reclaims on exit */
     g_program = 0;
     g_tex[0] = g_tex[1] = 0;
     /* Release DMABUF backing (EGLImage + fd) for both slots */
@@ -1224,7 +1224,7 @@ void idk_compositor_egl_shutdown(void) {
 /* Init shaders and GL resources */
 int idk_compositor_egl_init_gl(void) {
     if (idk_gl_loader_init() != 0) {
-        IDK_ERR("comp", "GL loader init failed — cannot init GL resources\n");
+        IDK_ERR("comp", "GL loader init failed - cannot init GL resources\n");
         return -1;
     }
 
@@ -1243,7 +1243,7 @@ int idk_compositor_egl_init_gl(void) {
     }
     g_program = idk_shader_loader_init(&g_gl_version, &g_is_gles);
     if (g_program == 0) {
-        IDK_ERR("comp", "Shader init failed — cannot init GL resources\n");
+        IDK_ERR("comp", "Shader init failed - cannot init GL resources\n");
         return -1;
     }
 

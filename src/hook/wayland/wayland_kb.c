@@ -40,7 +40,7 @@ static void wkb_modifiers(void *d, struct wl_keyboard *kb, uint32_t serial,
                           uint32_t dep, uint32_t lat, uint32_t lck, uint32_t grp);
 static void wkb_repeat_info(void *d, struct wl_keyboard *kb, int32_t rate, int32_t delay);
 
-/* Listener wrapper vtable (non-static — checked by proxy scan) */
+/* Listener wrapper vtable (non-static - checked by proxy scan) */
 const struct wl_keyboard_listener g_kb_wrapper = {
     .keymap       = wkb_keymap,
     .enter        = wkb_enter,
@@ -61,7 +61,7 @@ static void wkb_keymap(void *d, struct wl_keyboard *kb, uint32_t fmt, int32_t fd
     if (fmt == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 && g_xkb_handle && g_xkb_ctx) {
         dup_fd = dup(fd);
         if (dup_fd < 0)
-            WLOG("keymap dup() failed: %s — xkb disabled", strerror(errno));
+            WLOG("keymap dup() failed: %s - xkb disabled", strerror(errno));
     }
 
     if (st->game && st->game->keymap)

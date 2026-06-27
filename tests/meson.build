@@ -7,7 +7,7 @@ test_c_args = [
 ]
 
 # Static library of pure-logic functions from compositor_common.c
-# (no GPU dependencies — just stdlib + syscalls)
+# (no GPU dependencies - just stdlib + syscalls)
 test_comp_common_lib = static_library('test_comp_common',
     '../src/core/compositor_common.c',
     c_args: test_c_args,
@@ -50,7 +50,7 @@ foreach src : ['test_idk_fs.c']
     test(name, test_exe)
 endforeach
 
-# Static library for ipc.c — validation tests
+# Static library for ipc.c - validation tests
 test_ipc_lib = static_library('test_ipc',
     '../src/ipc/ipc.c',
     c_args: test_c_args,

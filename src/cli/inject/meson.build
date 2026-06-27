@@ -1,4 +1,4 @@
-# idk-inject — CLI (wraps syringe_inject)
+# idk-inject - CLI (wraps syringe_inject)
 idk_inject_exe = executable(
     'idk-inject',
     'inject.c',

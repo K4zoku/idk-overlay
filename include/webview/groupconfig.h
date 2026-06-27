@@ -13,11 +13,11 @@
  * Read from INI config file with [Section_Name] sections.
  *
  * Each section can have:
- *   - Match=<regex>   — process name regex to match (optional)
- *   - Url=<url>       — URL to render
- *   - Width=<px>      — initial width
- *   - Height=<px>     — initial height
- *   - X=<px>, Y=<px>  — screen position
+ *   - Match=<regex>   - process name regex to match (optional)
+ *   - Url=<url>       - URL to render
+ *   - Width=<px>      - initial width
+ *   - Height=<px>     - initial height
+ *   - X=<px>, Y=<px>  - screen position
  *
  * If any section has Match=, only sections whose Match regex matches
  * the current process name are loaded. Sections without Match= are

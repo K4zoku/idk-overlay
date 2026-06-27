@@ -8,7 +8,7 @@
  *   X11 Button6/7 (wheel left/right) → IDK_INPUT_AXIS with dx = ∓1
  *
  * The webview side (input_receiver.cpp) expects wayland BTN_* constants
- * for button events — same convention as the Wayland input hook.
+ * for button events - same convention as the Wayland input hook.
  */
 
 #include "hook/x11_internal.h"

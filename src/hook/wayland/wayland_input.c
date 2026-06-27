@@ -7,7 +7,7 @@
  * glx_hook.c / vulkan_layer.c) and written from the input hook path
  * (wayland_kb.c / sidecar.c / x11_kb.c). In practice both run on the
  * game's main thread, but C11 _Atomic is the correct tool for
- * cross-thread visibility — 'volatile' is only a compiler barrier
+ * cross-thread visibility - 'volatile' is only a compiler barrier
  * and is UB under the C11 memory model. */
 _Atomic int g_captured = 0;
 _Atomic int g_hotkey_pressed = 0;
@@ -52,7 +52,7 @@ static int resolve_wayland_symbols(void) {
     if (!g_wl_handle)
         g_wl_handle = dlopen("libwayland-client.so.0", RTLD_NOW);
     if (!g_wl_handle) {
-        WLOG("libwayland-client.so.0 not loaded — input hook disabled");
+        WLOG("libwayland-client.so.0 not loaded - input hook disabled");
         return -1;
     }
 
@@ -120,7 +120,7 @@ static int resolve_xkbcommon_symbols(void) {
     if (!g_xkb_handle)
         g_xkb_handle = dlopen("libxkbcommon.so.0", RTLD_NOW);
     if (!g_xkb_handle) {
-        WLOG("libxkbcommon.so.0 not available — keysym translation disabled");
+        WLOG("libxkbcommon.so.0 not available - keysym translation disabled");
         return -1;
     }
 
@@ -299,7 +299,7 @@ void idk_wayland_input_set_capture(int enable) {
             }
         }
     } else if (!new_state) {
-        WLOG("set_capture(OFF): no game pointer proxy — cursor unchanged");
+        WLOG("set_capture(OFF): no game pointer proxy - cursor unchanged");
     }
 
     WLOG("input capture %s", new_state ? "ENABLED" : "DISABLED");
@@ -325,7 +325,7 @@ int idk_wayland_input_init(void) {
     configure_hotkey();
 
     if (init_input_socket() != 0)
-        WLOG("input socket init failed — events will be dropped (no webview)");
+        WLOG("input socket init failed - events will be dropped (no webview)");
 
     int n = syringe_hook_install("wl_proxy_add_listener",
                                   (void *)hook_wl_proxy_add_listener,

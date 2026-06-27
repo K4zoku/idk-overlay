@@ -1,27 +1,27 @@
 /*
- * idk_ipc.h — Wire protocol types for idk-overlay
+ * idk_ipc.h - Wire protocol types for idk-overlay
  *
- * Wire format (P0.5 cleanup — 2026-06-26):
+ * Wire format (P0.5 cleanup - 2026-06-26):
  *
  * Frame (28 bytes header + fd via SCM_RIGHTS / pidfd_getfd):
  *   +----------------------+
- *   | modifier uint64      |  offset  0 — DRM modifier (0=linear, SHM=0)
+ *   | modifier uint64      |  offset  0 - DRM modifier (0=linear, SHM=0)
  *   | width     uint32     |  offset  8
  *   | height    uint32     |  offset 12
- *   | stride    uint32     |  offset 16 — bytes per row (DMABUF), 0=SHM
- *   | fourcc    uint32     |  offset 20 — DRM fourcc (DMABUF), 0=SHM
- *   | flags     uint8      |  offset 24 — bit0=visible, bit1=dmabuf
- *   | nfd      uint8      |  offset 25 — fd count (1–4), ignored on recv
- *   | _pad     uint8[2]    |  offset 26 — reserved
+ *   | stride    uint32     |  offset 16 - bytes per row (DMABUF), 0=SHM
+ *   | fourcc    uint32     |  offset 20 - DRM fourcc (DMABUF), 0=SHM
+ *   | flags     uint8      |  offset 24 - bit0=visible, bit1=dmabuf
+ *   | nfd      uint8      |  offset 25 - fd count (1–4), ignored on recv
+ *   | _pad     uint8[2]    |  offset 26 - reserved
  *   +----------------------+  total 28 bytes
  *
  * Input event (20 bytes, no fd passing):
  *   +----------------------+
- *   | type   uint8         |  offset  0 — KEY/BUTTON/MOTION/AXIS/STATE/REPEAT
- *   | flags  uint8         |  offset  1 — bit0=press(1)/release(0)
- *   | mods   uint16        |  offset  2 — Ctrl=1,Shift=2,Alt=4,Super=8
- *   | time   uint32        |  offset  4 — wayland timestamp (ms)
- *   | payload union (8B)   |  offset  8 — key/btn/motion/axis/repeat
+ *   | type   uint8         |  offset  0 - KEY/BUTTON/MOTION/AXIS/STATE/REPEAT
+ *   | flags  uint8         |  offset  1 - bit0=press(1)/release(0)
+ *   | mods   uint16        |  offset  2 - Ctrl=1,Shift=2,Alt=4,Super=8
+ *   | time   uint32        |  offset  4 - wayland timestamp (ms)
+ *   | payload union (8B)   |  offset  8 - key/btn/motion/axis/repeat
  *   +----------------------+  total 16 bytes
  *
  * Frame transport is handled by idk_transport API (core/transport.h).
@@ -49,14 +49,14 @@ extern "C" {
 
 #pragma pack(push, 1)
 typedef struct idk_frame_header {
-    uint64_t modifier;  /* offset  0 — DRM modifier (0=linear or SHM)        */
-    uint32_t width;     /* offset  8 — frame width in pixels                  */
-    uint32_t height;    /* offset 12 — frame height in pixels                 */
-    uint32_t stride;    /* offset 16 — bytes per row (DMABUF), 0=SHM          */
-    uint32_t fourcc;    /* offset 20 — DRM fourcc (DMABUF), 0=SHM             */
-    uint8_t  flags;     /* offset 24 — IDK_FRAME_FLAG_*                       */
-    uint8_t  nfd;       /* offset 25 — fd count (1–4 for send, 0 on recv)     */
-    uint8_t  _pad[2];   /* offset 26 — reserved, must be 0                    */
+    uint64_t modifier;  /* offset  0 - DRM modifier (0=linear or SHM)        */
+    uint32_t width;     /* offset  8 - frame width in pixels                  */
+    uint32_t height;    /* offset 12 - frame height in pixels                 */
+    uint32_t stride;    /* offset 16 - bytes per row (DMABUF), 0=SHM          */
+    uint32_t fourcc;    /* offset 20 - DRM fourcc (DMABUF), 0=SHM             */
+    uint8_t  flags;     /* offset 24 - IDK_FRAME_FLAG_*                       */
+    uint8_t  nfd;       /* offset 25 - fd count (1–4 for send, 0 on recv)     */
+    uint8_t  _pad[2];   /* offset 26 - reserved, must be 0                    */
 } idk_frame_header_t;   /* total 28 bytes                                     */
 #pragma pack(pop)
 
@@ -137,10 +137,10 @@ enum idk_input_type {
 
 #pragma pack(push, 1)
 typedef struct idk_input_event {
-    uint8_t  type;   /* offset  0 — IDK_INPUT_*                              */
-    uint8_t  flags;  /* offset  1 — IDK_INPUT_FLAG_*                         */
-    uint16_t mods;   /* offset  2 — IDK_MOD_* bitmask                        */
-    uint32_t time;   /* offset  4 — wayland timestamp (ms)                   */
+    uint8_t  type;   /* offset  0 - IDK_INPUT_*                              */
+    uint8_t  flags;  /* offset  1 - IDK_INPUT_FLAG_*                         */
+    uint16_t mods;   /* offset  2 - IDK_MOD_* bitmask                        */
+    uint32_t time;   /* offset  4 - wayland timestamp (ms)                   */
     union {          /* offset  8, size 12                                   */
         struct { uint32_t keycode; uint32_t keysym; uint32_t _p1; } key;     /* KEY    */
         struct { int32_t  x;       int32_t  y; uint32_t button; } btn;      /* BUTTON: x,y first, then button */

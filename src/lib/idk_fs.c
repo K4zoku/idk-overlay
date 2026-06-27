@@ -17,7 +17,7 @@
 
 static idk_transport_t g_tp;
 
-/* SHM helper — copy pixels into a memfd for sending. */
+/* SHM helper - copy pixels into a memfd for sending. */
 static int copy_to_shm(const void *src, size_t size) {
     char shm_name[64];
     snprintf(shm_name, sizeof(shm_name), "/idk-framesource-%d", (int)getpid());

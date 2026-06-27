@@ -1,5 +1,5 @@
 #!/bin/sh
-# idk-overlay — wrapper script to launch a game with idk-overlay injected
+# idk-overlay - wrapper script to launch a game with idk-overlay injected
 #
 # Usage:
 #   idk-overlay [options] <game> [game args...]
@@ -9,7 +9,6 @@
 #   --no-vk         Disable Vulkan hooks
 #   --no-gl         Disable OpenGL/EGL hooks
 #   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
-#   --qt-client     Also start idk-webview after launching game
 #   --webview PATH  Path to idk-webview binary (default: auto-detect)
 #   -h, --help      Show this help
 #
@@ -91,10 +90,6 @@ while [ $# -gt 0 ]; do
             OVERLAY_LIB="${1#--lib=}"
             shift
             ;;
-        --qt-client)
-            START_QT=1
-            shift
-            ;;
         --webview)
             WEBVIEW_PATH="$2"
             shift 2
@@ -105,7 +100,7 @@ while [ $# -gt 0 ]; do
             ;;
         -h|--help)
             cat <<'HELP'
-idk-overlay — launch a game with overlay injected
+idk-overlay - launch a game with overlay injected
 
 Usage: idk-overlay [options] <game> [game args...]
 
@@ -114,7 +109,6 @@ Options:
   --no-vk         Disable Vulkan hooks
   --no-gl         Disable OpenGL/EGL hooks
   --lib PATH      Path to libidk-overlay.so (default: auto-detect)
-  --qt-client     Also start idk-webview after launching game
   --webview PATH  Path to idk-webview binary (default: auto-detect)
   -h, --help      Show this help
 HELP

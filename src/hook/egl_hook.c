@@ -111,7 +111,7 @@ static int install_egl_hook(void) {
         return 0;
     }
 
-    /* Step 4: LD_PRELOAD fallback — RTLD_NEXT resolves the real function. */
+    /* Step 4: LD_PRELOAD fallback - RTLD_NEXT resolves the real function. */
     orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))
         hook_orig("eglSwapBuffers");
     if (orig_eglSwapBuffers && orig_eglSwapBuffers != (void *)eglSwapBuffers) {

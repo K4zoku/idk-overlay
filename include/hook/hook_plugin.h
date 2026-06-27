@@ -4,7 +4,7 @@
 /* Plugin descriptor for hook modules.
  *
  * Each graphics API backend (EGL, GLX, Vulkan syringe) registers one of
- * these so overlay.c can discover and initialize it generically — no
+ * these so overlay.c can discover and initialize it generically - no
  * hardcoded per-API code needed in the orchestrator.
  *
  * Probing is done generically: overlay.c calls dlopen(name, NOLOAD) for
@@ -22,7 +22,7 @@ typedef struct idk_hook_plugin {
     void (*shutdown)(void);
 } idk_hook_plugin_t;
 
-/* Built-in plugins — declared here, defined in their respective hook files */
+/* Built-in plugins - declared here, defined in their respective hook files */
 extern idk_hook_plugin_t idk_plugin_egl;
 extern idk_hook_plugin_t idk_plugin_glx;
 

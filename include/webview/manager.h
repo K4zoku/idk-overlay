@@ -14,7 +14,7 @@ class WebView;
 class InputReceiver;
 
 /**
- * Manager — manages socket connection to idk-overlay and webview lifecycle.
+ * Manager - manages socket connection to idk-overlay and webview lifecycle.
  *
  * Adapted from imgoverlay's Manager. Handles:
  * - Connecting to idk-overlay socket

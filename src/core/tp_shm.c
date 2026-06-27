@@ -22,18 +22,18 @@
 #define SHM_SIZE 4096
 
 /* Offsets within the shared page */
-#define SHM_O_MAGIC       0   /* uint32_t   — magic value */
-#define SHM_O_PROD_STATE  4   /* atomic_int — 0=init,1=ready,-1=dead */
-#define SHM_O_CONS_STATE  8   /* atomic_int — 0=init,1=ready,-1=dead */
-#define SHM_O_PROD_PID    12  /* int32_t    — producer PID (for consumer pidfd) */
-#define SHM_O_CONS_PID    16  /* int32_t    — consumer PID (for producer liveness check) */
-#define SHM_O_DMABUF_NFD  20  /* int32_t    — # of dmabuf fds (0-4) */
-#define SHM_O_DMABUF_FDS  24  /* int32_t[4] — fd numbers in producer */
+#define SHM_O_MAGIC       0   /* uint32_t   - magic value */
+#define SHM_O_PROD_STATE  4   /* atomic_int - 0=init,1=ready,-1=dead */
+#define SHM_O_CONS_STATE  8   /* atomic_int - 0=init,1=ready,-1=dead */
+#define SHM_O_PROD_PID    12  /* int32_t    - producer PID (for consumer pidfd) */
+#define SHM_O_CONS_PID    16  /* int32_t    - consumer PID (for producer liveness check) */
+#define SHM_O_DMABUF_NFD  20  /* int32_t    - # of dmabuf fds (0-4) */
+#define SHM_O_DMABUF_FDS  24  /* int32_t[4] - fd numbers in producer */
 #define SHM_O_HDR         40  /* idk_frame_header_t (28 bytes) */
 #define SHM_O_ACK         68  /* idk_ack_msg_t (12 bytes) */
-#define SHM_O_SLOT_STATE  80  /* atomic_int — 0=empty,1=frame,2=ack */
-#define SHM_O_FRAME_SEQ   84  /* atomic_int — incremented each frame sent */
-#define SHM_O_REQ_SEQ     88  /* atomic_int — request sequence number     */
+#define SHM_O_SLOT_STATE  80  /* atomic_int - 0=empty,1=frame,2=ack */
+#define SHM_O_FRAME_SEQ   84  /* atomic_int - incremented each frame sent */
+#define SHM_O_REQ_SEQ     88  /* atomic_int - request sequence number     */
 
 _Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
                "SHM layout exceeds page size");
@@ -46,9 +46,9 @@ _Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
 #define SLOT_CONSUMED 3
 
 /* _rsv[48] layout for SHM backend */
-/*  [ 0..7 ]  void *shm_ptr       — mmap'd SHM address
- *  [ 8..43 ]  char  shm_name[36]  — SHM name (for reinit/lookup)
- *  [44..47]  int   last_req_seq   — last seen REQUEST sequence         */
+/*  [ 0..7 ]  void *shm_ptr       - mmap'd SHM address
+ *  [ 8..43 ]  char  shm_name[36]  - SHM name (for reinit/lookup)
+ *  [44..47]  int   last_req_seq   - last seen REQUEST sequence         */
 
 #define TP_SH_SHM_PTR(rsv)      (*(void **)(rsv))
 #define TP_SH_SHM_NAME(rsv)     ((char *)((rsv) + 8))
@@ -84,12 +84,12 @@ static int futex_wait(atomic_int *uaddr, int val, int timeout_ms) {
     struct timespec ts, *tsp = NULL;
     if (timeout_ms >= 0) {
         /* FUTEX_WAIT interprets timeout as a RELATIVE duration (not absolute).
-         * Do NOT add clock_gettime — just set the duration directly. */
+         * Do NOT add clock_gettime - just set the duration directly. */
         ts.tv_sec  = timeout_ms / 1000;
         ts.tv_nsec = (long)(timeout_ms % 1000) * 1000000L;
         tsp = &ts;
     }
-    /* NO FUTEX_PRIVATE_FLAG — the futex lives in shared memory mapped by
+    /* NO FUTEX_PRIVATE_FLAG - the futex lives in shared memory mapped by
      * two different processes. PRIVATE only works for process-internal
      * futexes (heap/stack/anonymous mmap). With PRIVATE, futex_wake from
      * the other process won't find this waiter. */
@@ -126,8 +126,8 @@ static void *shm_setup(const char *name, int *out_fd, int is_creator) {
     return ptr;
 }
 
-/* Consumer init — NON-BLOCKING: creates SHM, writes PID, sets CONS_STATE=1.
- * Does NOT wait for producer — that happens lazily in tp_shm_accept
+/* Consumer init - NON-BLOCKING: creates SHM, writes PID, sets CONS_STATE=1.
+ * Does NOT wait for producer - that happens lazily in tp_shm_accept
  * (called every frame from compositor render loop). This avoids blocking
  * the hook install thread, which would race with the game's main thread
  * if install_addr (trampoline code patching) runs after a long init. */
@@ -218,7 +218,7 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
         }
         /* futex_wait(addr, val, timeout) only blocks if *addr == val.
          * If cons_state is 0 (consumer created SHM but hasn't set
-         * CONS_STATE=1 yet — shouldn't happen per current code, but
+         * CONS_STATE=1 yet - shouldn't happen per current code, but
          * defensively), futex_wait(cons_state, 1, ...) returns
          * immediately with EAGAIN and the loop would busy-spin,
          * burning CPU and racing the 30s timeout accumulator (which
@@ -276,7 +276,7 @@ void tp_shm_destroy(idk_transport_t *tp) {
         shm_unlink(shm_name_save);
 }
 
-/* Soft-disconnect — used by the compositor's recv-failure path so a
+/* Soft-disconnect - used by the compositor's recv-failure path so a
  * restarted webview can reconnect on a subsequent frame.
  *
  * SHM consumer: closes the pidfd (_client_fd), resets the producer
@@ -301,7 +301,7 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
         atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
         atomic_store(shm_atom(ptr, SHM_O_REQ_SEQ), 0);
 
-        /* Close pidfd — new producer will have a different PID. */
+        /* Close pidfd - new producer will have a different PID. */
         if (tp->_client_fd >= 0) { close(tp->_client_fd); tp->_client_fd = -1; }
 
         /* Re-arm consumer "partially ready" so a new producer's
@@ -313,7 +313,7 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
 
         IDK_LOG("tp", "shm: consumer soft-disconnected (pidfd closed, SHM kept open for reconnect)\n");
     } else if (tp->role == IDK_TP_PRODUCER) {
-        /* Producer has no server fd — full destroy is the only sane option. */
+        /* Producer has no server fd - full destroy is the only sane option. */
         tp_shm_destroy(tp);
         return;
     }
@@ -344,7 +344,7 @@ int tp_shm_accept(idk_transport_t *tp) {
         return 0;  /* still waiting */
     }
 
-    /* Producer connected — open pidfd */
+    /* Producer connected - open pidfd */
     int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
     if (prod_pid <= 0) return -1;
 
@@ -355,7 +355,7 @@ int tp_shm_accept(idk_transport_t *tp) {
     }
     tp->_client_fd = pidfd;
 
-    /* Signal fully ready — producer waits for this */
+    /* Signal fully ready - producer waits for this */
     atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 2);
     futex_wake(shm_atom(ptr, SHM_O_CONS_STATE));
     tp->ready = true;
@@ -389,7 +389,7 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
 
     /* Out-of-band liveness check: producer may have crashed (SIGKILL,
      * segfault) without setting PROD_STATE=-1. The producer-side
-     * tp_shm_send checks consumer liveness via kill(cons_pid, 0) —
+     * tp_shm_send checks consumer liveness via kill(cons_pid, 0) -
      * mirror that here. Without this, a crashed webview leaves
      * PROD_STATE=1 and the compositor polls forever, freezing the
      * overlay on the last frame. */
@@ -425,7 +425,7 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
         fds[i] = stolen;
     }
 
-    /* Mark slot consumed — prevents re-reading the same frame before
+    /* Mark slot consumed - prevents re-reading the same frame before
      * tp_shm_send_ack transitions to SLOT_ACK. The producer's
      * tp_shm_send checks for SLOT_EMPTY || SLOT_ACK, so SLOT_CONSUMED
      * keeps it from overwriting until we're done. */
@@ -472,7 +472,7 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
     /* Wait for slot to be empty (consumer must have read previous ack).
      * Unlike the old code which returned EAGAIN immediately, we wait
      * (with futex + small timeout) so the caller doesn't have to busy-
-     * loop retry — the webview's tryExportDMABufOpenGL retries are
+     * loop retry - the webview's tryExportDMABufOpenGL retries are
      * tight and can burn CPU for seconds. */
     for (int tries = 0; ; tries++) {
         int s = atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE));
@@ -489,7 +489,7 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
     }
 
     /* Write dmabuf fd numbers into SHM (these are fd numbers in OUR
-     * process — consumer steals them via pidfd_getfd) */
+     * process - consumer steals them via pidfd_getfd) */
     *shm_i32(ptr, SHM_O_DMABUF_NFD) = nfd;
     for (int i = 0; i < nfd; i++)
         shm_i32(ptr, SHM_O_DMABUF_FDS)[i] = fds[i];
@@ -550,7 +550,7 @@ int tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
             }
         }
 
-        /* futex_wait on slot while value == s — wakes when consumer
+        /* futex_wait on slot while value == s - wakes when consumer
          * changes it (to SLOT_CONSUMED or SLOT_ACK).
          * Using the current slot value means we correctly block through
          * SLOT_FRAME → SLOT_CONSUMED → SLOT_ACK transitions without

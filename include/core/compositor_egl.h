@@ -1,11 +1,11 @@
  /*
- * compositor_egl.h — EGL/GL compositor for overlay frames
+ * compositor_egl.h - EGL/GL compositor for overlay frames
  *
  * Simpler API than before:
- *   1. idk_compositor_egl_init() — connect to webview socket (main thread)
- *   2. idk_compositor_egl_init_gl() — init GL shaders/VBO (in GL context)
- *   3. idk_compositor_egl_render() — receive frame from socket (non-blocking, in swap hook)
- *   4. idk_compositor_egl_render_overlay() — render last frame as fullscreen quad
+ *   1. idk_compositor_egl_init() - connect to webview socket (main thread)
+ *   2. idk_compositor_egl_init_gl() - init GL shaders/VBO (in GL context)
+ *   3. idk_compositor_egl_render() - receive frame from socket (non-blocking, in swap hook)
+ *   4. idk_compositor_egl_render_overlay() - render last frame as fullscreen quad
  */
 
 #ifndef IDK_COMPOSITOR_EGL_H

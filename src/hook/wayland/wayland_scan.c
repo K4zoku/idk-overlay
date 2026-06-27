@@ -109,7 +109,7 @@ int hook_wl_proxy_add_dispatcher(struct wl_proxy *proxy,
     if (real_wl_proxy_get_class) {
         const char *cls = real_wl_proxy_get_class(proxy);
         if (cls && (strcmp(cls, "wl_pointer") == 0 || strcmp(cls, "wl_keyboard") == 0))
-            WLOG("NOTE: %s uses dispatcher (GTK/Qt-style) — input hook "
+            WLOG("NOTE: %s uses dispatcher (GTK/Qt-style) - input hook "
                  "won't intercept. Listener path is required.", cls);
     }
     return orig_wl_proxy_add_dispatcher

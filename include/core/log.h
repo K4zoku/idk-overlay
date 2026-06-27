@@ -1,5 +1,5 @@
 /*
- * idk_log.h — Conditional logging for idk-overlay
+ * idk_log.h - Conditional logging for idk-overlay
  *
  * All log output is suppressed unless IDK_DEBUG env var is set.
  * This keeps the injected process stderr clean for normal operation.
@@ -38,7 +38,7 @@ static inline void idk_timestamp(char *buf, size_t len) {
              tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(ts.tv_nsec / 1000000));
 }
 
-/* Info/debug log — only prints if IDK_DEBUG is set.
+/* Info/debug log - only prints if IDK_DEBUG is set.
  * Includes millisecond timestamp for easier debugging of timing issues. */
 #define IDK_LOG(tag, fmt, ...) do { \
     if (idk_debug_enabled()) { \
@@ -48,7 +48,7 @@ static inline void idk_timestamp(char *buf, size_t len) {
     } \
 } while(0)
 
-/* Error log — always prints (errors should be visible even without IDK_DEBUG) */
+/* Error log - always prints (errors should be visible even without IDK_DEBUG) */
 #define IDK_ERR(tag, fmt, ...) \
     do { \
         char _ts[16]; \

@@ -1,18 +1,18 @@
-/* x11_input.c — X11 input hook for overlay input capture.
+/* x11_input.c - X11 input hook for overlay input capture.
  *
  * Hooks XNextEvent-family functions to intercept the game's X11 event loop.
  * When capture is toggled on (Shift+Tab), keyboard/mouse events are
  * swallowed from the game and forwarded to the webview via IPC.
  *
  * SHARES state with the Wayland input hook:
- *   - g_captured, g_mods, g_hotkey_* — capture state + hotkey config
- *   - g_repeat_rate, g_repeat_delay — keyboard repeat info
+ *   - g_captured, g_mods, g_hotkey_* - capture state + hotkey config
+ *   - g_repeat_rate, g_repeat_delay - keyboard repeat info
  *   - init_input_socket, send_event_to_webview, send_capture_state,
- *     send_repeat_info, teardown_input_socket — IPC socket layer
- *   - configure_hotkey, is_hotkey — hotkey parsing/detection
+ *     send_repeat_info, teardown_input_socket - IPC socket layer
+ *   - configure_hotkey, is_hotkey - hotkey parsing/detection
  *
  * Wayland and X11 are mutually exclusive in practice (games use one or
- * the other), but both hook sets can coexist — whichever library is
+ * the other), but both hook sets can coexist - whichever library is
  * loaded installs its hook. The shared state ensures only one capture
  * toggle exists at runtime.
  */
@@ -100,7 +100,7 @@ void idk_x11_input_set_capture(int enable) {
     g_captured = new_state;
     XLOG("set_capture(%s)", new_state ? "ON" : "OFF");
 
-    /* No XGrabPointer — our XNextEvent-family hooks already intercept events
+    /* No XGrabPointer - our XNextEvent-family hooks already intercept events
      * before the game sees them. Grabbing would lock the cursor into the game
      * window (relative mouse mode), which is NOT what we want for an overlay.
      * The game continues to receive non-input events (Expose, ConfigureNotify,
@@ -117,7 +117,7 @@ int idk_x11_input_is_captured(void) {
 
 /* Event dispatch */
 
-/* Forward declarations — defined in x11_kb.c / x11_ptr.c */
+/* Forward declarations - defined in x11_kb.c / x11_ptr.c */
 extern int x11_handle_key_event(XEventStorage *ev);
 extern int x11_handle_button_event(XEventStorage *ev);
 extern int x11_handle_motion_event(XEventStorage *ev);
@@ -186,7 +186,7 @@ int x11_dispatch_event(XEventStorage *ev) {
  * variants). For non-blocking (XCheck*) variants, return 0 to indicate
  * "no event available". */
 /* Fill ev with a harmless NoExpose event so the game's main loop continues.
- * Games like glxgears block on XNextEvent — if we swallow the event and
+ * Games like glxgears block on XNextEvent - if we swallow the event and
  * loop back to orig_XNextEvent, it blocks again, preventing the game from
  * reaching glXSwapBuffers (→ compositor never processes frames → ACK timeout).
  * Returning a NoExpose event lets the game's loop proceed to render+swap. */
@@ -204,7 +204,7 @@ static int hook_XNextEvent(Display *dpy, XEventStorage *ev) {
     int r = orig_XNextEvent(dpy, ev);
     if (r != 0) return r;
     if (x11_dispatch_event(ev)) {
-        /* Event swallowed (captured/hotkey) — return NoExpose instead of
+        /* Event swallowed (captured/hotkey) - return NoExpose instead of
          * looping, so the game's main loop proceeds to render + swap. */
         fill_noexpose(ev, dpy);
     }
@@ -305,7 +305,7 @@ static int hook_XWindowEvent(Display *dpy, Window w, long mask, XEventStorage *e
 
 /* Init / shutdown */
 
-/* XSelectInput hook — inject pointer event masks so we receive mouse events
+/* XSelectInput hook - inject pointer event masks so we receive mouse events
  * even if the game didn't request them (e.g. glxgears only selects KeyPress).
  * We OR-in ButtonPressMask | ButtonReleaseMask | PointerMotionMask so that
  * ButtonPress/ButtonRelease/MotionNotify events flow into the X event queue
@@ -328,16 +328,16 @@ int idk_x11_input_init(void) {
 
     if (resolve_x11_symbols() != 0) return -1;
 
-    /* Reuse Wayland's configure_hotkey() — same env var (IDK_HOTKEY_CAPTURE),
+    /* Reuse Wayland's configure_hotkey() - same env var (IDK_HOTKEY_CAPTURE),
      * same parsing, same scancode/keysym tables. The hotkey detection
      * (is_capture_hotkey/is_overlay_hotkey) is also shared. */
     configure_hotkey();
 
-    /* Reuse Wayland's init_input_socket() — same socket path scheme
+    /* Reuse Wayland's init_input_socket() - same socket path scheme
      * (/tmp/idk-overlay-<pid>-input), same accept thread, same
      * send_event_to_webview helper. The webview side is identical. */
     if (init_input_socket() != 0)
-        XERR("input socket init failed — events will be dropped");
+        XERR("input socket init failed - events will be dropped");
 
     /* Install syringe hooks for XNextEvent-family. */
     #define INSTALL(name) \
@@ -381,7 +381,7 @@ void idk_x11_input_shutdown(void) {
     }
 
     /* Note: teardown_input_socket() is shared with Wayland. Only call
-     * it once — Wayland's shutdown will handle it if both are active.
+     * it once - Wayland's shutdown will handle it if both are active.
      * If only X11 was active, we call it here. */
     if (g_input_listen_fd >= 0) {
         teardown_input_socket();

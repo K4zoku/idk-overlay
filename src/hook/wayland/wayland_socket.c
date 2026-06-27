@@ -17,7 +17,7 @@ static void *accept_thread_main(void *arg) {
             /* EINVAL/EBADF/ENOTSOCK on accept() typically means the
              * listen fd was closed under us by teardown_input_socket()
              * during shutdown (game exit). This is the expected
-             * shutdown path — don't log it as fatal (was spamming
+             * shutdown path - don't log it as fatal (was spamming
              * 'Invalid argument' on every game exit).
              *
              * Detect deliberate shutdown by checking if
@@ -27,16 +27,16 @@ static void *accept_thread_main(void *arg) {
                 int listen_state = g_input_listen_fd;
                 pthread_mutex_unlock(&g_client_fd_lock);
                 if (listen_state < 0) {
-                    /* Shutdown in progress — exit silently. */
+                    /* Shutdown in progress - exit silently. */
                     break;
                 }
-                /* fd still open but accept() returns EINVAL/EBADF —
+                /* fd still open but accept() returns EINVAL/EBADF -
                  * something else closed it (rare). Log non-fatal. */
-                WLOG("accept_thread_main: listen fd closed externally — input thread exiting");
+                WLOG("accept_thread_main: listen fd closed externally - input thread exiting");
                 break;
             }
-            /* Truly unexpected error — log with errno for diagnosis. */
-            WERR("accept_thread_main: accept() fatal error: %s — input thread exiting",
+            /* Truly unexpected error - log with errno for diagnosis. */
+            WERR("accept_thread_main: accept() fatal error: %s - input thread exiting",
                  strerror(errno));
             break;
         }
@@ -52,12 +52,12 @@ static void *accept_thread_main(void *arg) {
 
 int init_input_socket(void) {
     /* Guard against double-init. When both X11 and Wayland input hooks
-     * are installed (XWayland case), both call init_input_socket() —
+     * are installed (XWayland case), both call init_input_socket() -
      * without this guard, the second call would bind() the same path
      * and fail with EADDRINUSE. The socket is shared between X11 and
      * Wayland paths (send_event_to_webview is called from both). */
     if (g_input_listen_fd >= 0 || g_accept_thread_started) {
-        WLOG("input socket already initialized (fd=%d) — sharing",
+        WLOG("input socket already initialized (fd=%d) - sharing",
              g_input_listen_fd);
         return 0;
     }
@@ -127,7 +127,7 @@ void send_event_to_webview(const idk_input_event_t *ev) {
     int fd = g_client_fd;
     pthread_mutex_unlock(&g_client_fd_lock);
     if (fd < 0) {
-        /* No webview connected — drop silently (this is the normal
+        /* No webview connected - drop silently (this is the normal
          * state before the webview connects, logging here would
          * spam). The caller's WLOG in the hotkey path handles
          * diagnostics. */
@@ -135,7 +135,7 @@ void send_event_to_webview(const idk_input_event_t *ev) {
     }
     int rc = idk_ipc_send_input(fd, ev);
     if (rc != 0) {
-        /* Send failed — likely EPIPE/ECONNRESET (webview crashed or
+        /* Send failed - likely EPIPE/ECONNRESET (webview crashed or
          * closed the connection). Close the dead fd so the next
          * accept_thread_main iteration can accept a new connection
          * cleanly. Without this, every subsequent event send fails
@@ -165,7 +165,7 @@ void send_overlay_state(uint8_t visible) {
     idk_input_event_t ev = { 0 };
     ev.type = IDK_INPUT_OVERLAY;
     ev.u.overlay.visible = visible ? 1 : 0;
-    IDK_LOG("wl-input", "send_overlay_state(%u) — sending to webview\n", visible);
+    IDK_LOG("wl-input", "send_overlay_state(%u) - sending to webview\n", visible);
     send_event_to_webview(&ev);
 }
 
@@ -174,7 +174,7 @@ void send_capture_state(uint32_t capture) {
     ev.type  = IDK_INPUT_STATE;
     ev.flags = capture ? IDK_INPUT_FLAG_CAPTURE : 0;
     ev.mods  = (uint16_t)g_mods;
-    IDK_LOG("wl-input", "send_capture_state(%u) flags=0x%x mods=0x%x — sending to webview\n",
+    IDK_LOG("wl-input", "send_capture_state(%u) flags=0x%x mods=0x%x - sending to webview\n",
             capture, ev.flags, ev.mods);
     send_event_to_webview(&ev);
 }
@@ -184,7 +184,7 @@ void send_repeat_info(void) {
     ev.type = IDK_INPUT_REPEAT;
     /* Set CAPTURE flag so webview's capture-state tracking doesn't
      * misinterpret this as "capture disabled". The webview checks
-     * (ev.flags & CAPTURE) on every event to track capture state —
+     * (ev.flags & CAPTURE) on every event to track capture state -
      * REPEAT events are sent right after capture enable, so they
      * must carry the CAPTURE flag. */
     ev.flags = IDK_INPUT_FLAG_CAPTURE;

@@ -1,10 +1,10 @@
 /*
- * idk_gl_loader.h — Runtime GL symbol resolution
+ * idk_gl_loader.h - Runtime GL symbol resolution
  *
  * Pattern: all GL functions are resolved at runtime via dlsym, never
  * linked at build time. This lets libidk-overlay.so inject into any
  * process regardless of which GL implementation it uses (Mesa GL,
- * Mesa GLES, NVIDIA, etc.) — we just grab whatever is already loaded.
+ * Mesa GLES, NVIDIA, etc.) - we just grab whatever is already loaded.
  *
  * Usage:
  *   1. #include "idk_gl_loader.h" in your .c file
@@ -12,7 +12,7 @@
  *   3. Use GL functions as normal (macros redirect to function pointers)
  *
  * The macros below redirect direct calls like glGetIntegerv(...) to
- * (*idk_fn_glGetIntegerv)(...) — so existing code that calls GL functions
+ * (*idk_fn_glGetIntegerv)(...) - so existing code that calls GL functions
  * by name doesn't need to change.
  *
  * If a symbol fails to resolve, the function pointer stays NULL and
@@ -336,7 +336,7 @@ extern PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader;
  * then libGLESv2.so.2, then libGL.so / libGLESv2.so. Uses the already-
  * loaded library (RTLD_NOLOAD) if available.
  * @return 0 on success, -1 on failure. Individual function pointers may
- *         be NULL even on success — caller should check critical ones. */
+ *         be NULL even on success - caller should check critical ones. */
 int idk_gl_loader_init(void);
 
 #ifdef __cplusplus

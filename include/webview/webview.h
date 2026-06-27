@@ -68,13 +68,13 @@ public:
     bool m_pending = false;
     int m_sendTime = 0;
 
-    // Resize transition guard — skip frame send after resize until paint event
+    // Resize transition guard - skip frame send after resize until paint event
     bool m_resizePending = false;
 
-    // Re-entrance guard for resizeForGame — prevents nested calls via processEvents
+    // Re-entrance guard for resizeForGame - prevents nested calls via processEvents
     bool m_resizing = false;
 
-    // SHM format flag — true if grabFramebuffer returned premultiplied alpha
+    // SHM format flag - true if grabFramebuffer returned premultiplied alpha
     bool m_framePremultiplied = false;
 
 
@@ -84,7 +84,7 @@ public:
     bool m_dmaBufFailed = false;
     /* Consecutive DMABUF rejection counter. Incremented on each ack=1 from
      * compositor, reset on ack=0. Only set m_dmaBufFailed=true after 5
-     * consecutive rejections — handles transient failures (first frame
+     * consecutive rejections - handles transient failures (first frame
      * after resize, NVIDIA driver hiccups on vkGetMemoryFdPropertiesKHR). */
     int m_dmabufRejectCount = 0;
     bool m_needSharedCtx = true;
@@ -95,14 +95,14 @@ public:
     bool       m_dmabufResolved = false;
     void     (*m_queryFn)(void);       // eglExportDMABUFImageQueryMESA/EXT (MESA-ext signature)
     void     (*m_exportFn)(void);      // eglExportDMABUFImageMESA/EXT
-    /* Our own GL texture for hybrid DMABUF path — grabFramebuffer() →
+    /* Our own GL texture for hybrid DMABUF path - grabFramebuffer() →
      * glTexSubImage2D → export as dmabuf. Bypasses Qt RHI's texture
      * which has stale/white content when exported directly. */
     GLuint m_dmaTex = 0;
     int m_dmaTexW = 0;
     int m_dmaTexH = 0;
     /* Cached EGLImage + exported dmabuf fd. Reused across frames as long
-     * as m_dmaTex / size don't change — avoids recreating eglCreateImage +
+     * as m_dmaTex / size don't change - avoids recreating eglCreateImage +
      * eglExportDMABUFImageMESA every frame (expensive on Mesa). The fd is
      * dup'd per send (sendmsg takes ownership of the dup, not the original).
      * On size change or shutdown, both are destroyed. */
@@ -126,10 +126,10 @@ public:
     PFN_vkGetMemoryFdKHR m_vkGetMemoryFdKHR = nullptr;
 #endif
 
-    // ACK poll timer — polls compositor ACK after frame send (single-shot)
+    // ACK poll timer - polls compositor ACK after frame send (single-shot)
     QTimer *m_ackPollTimer = nullptr;
 
-    // REQUEST poll timer — polls compositor REQUEST after ACK received (single-shot)
+    // REQUEST poll timer - polls compositor REQUEST after ACK received (single-shot)
     QTimer *m_requestTimer = nullptr;
 
     // Overlay visibility (mirrors g_overlay_visible on the hook side,

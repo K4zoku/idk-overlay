@@ -9,7 +9,7 @@
 
 /*
  * IMPORTANT: the _size symbols are ABSOLUTE symbols (type A in nm output),
- * created by `ld -r -b binary`. Their VALUE is the byte count — they are
+ * created by `ld -r -b binary`. Their VALUE is the byte count - they are
  * NOT pointers to memory containing the size.
  *
  * Declaring them as `extern const size_t sym_size` and then reading
@@ -45,7 +45,7 @@ GLSL_SHADER_PAIR(410);
 
 /* SPIR-V embedded shaders (per-variant, build-time only) */
 /* Only defined when the variant's glslc compile succeeded at build time.
- * Each variant has its own HAS_SPV_* define — missing ones = SPIR-V
+ * Each variant has its own HAS_SPV_* define - missing ones = SPIR-V
  * couldn't compile that flavour.                                        */
 
 #ifdef __cplusplus

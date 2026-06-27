@@ -57,7 +57,7 @@ void idk_tp_destroy(idk_transport_t *tp);
  * For socket consumer: closes _client_fd, keeps _server_fd open.
  * Next accept() picks up the new connection.
  *
- * For producers (webview side): equivalent to destroy — producers
+ * For producers (webview side): equivalent to destroy - producers
  * don't have a server fd to keep. */
 void idk_tp_disconnect_client(idk_transport_t *tp);
 

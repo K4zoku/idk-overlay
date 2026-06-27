@@ -52,7 +52,7 @@ static bool vk_size_pending = false;
 /* Set PER-FRAME when this frame's DMABUF import failed. The ACK for this
  * frame will carry ack=1 to tell the webview "this DMABUF didn't work".
  *
- * NOT latched — a transient failure (e.g. first frame after resize when
+ * NOT latched - a transient failure (e.g. first frame after resize when
  * Qt RHI's texture isn't fully rebuilt yet) should NOT permanently disable
  * DMABUF. The webview tracks consecutive ack=1 count and only falls back
  * to SHM after N consecutive failures. */
@@ -68,7 +68,7 @@ static struct timespec vk_last_resize_ts = {0};
  * Skip overlay rendering for SWAPCHAIN_COOLDOWN_MS after each swapchain
  * recreation. The game's present goes through unmodified, overlay returns
  * once the storm settles. (Submit is async via the rolling-fence ring,
- * but cooldown is still useful — stale frames during rapid resize.) */
+ * but cooldown is still useful - stale frames during rapid resize.) */
 static struct timespec vk_last_swapchain_create_ts = {0};
 #define VK_SWAPCHAIN_COOLDOWN_MS 100
 
@@ -124,7 +124,7 @@ static VkDescriptorSet       vk_desc_set = VK_NULL_HANDLE;
 static VkRenderPass    vk_render_pass = VK_NULL_HANDLE;
 static VkFormat        vk_rp_format = VK_FORMAT_UNDEFINED;
 
-/* Framebuffer (per render call — created/destroyed each frame) */
+/* Framebuffer (per render call - created/destroyed each frame) */
 /* Actually we create framebuffer per-frame because swapchain image changes */
 
 /* Current overlay texture */
@@ -152,7 +152,7 @@ static int    vk_shm_fd = -1;
  * Unlike SHM (which is uploaded every frame via staging buffer),
  * DMABUF is imported ONCE per (fd, w, h, stride, format, modifier) tuple
  * and the imported VkImage is sampled directly. The dmabuf fd MUST stay
- * open for the lifetime of the imported VkImage — closing it before
+ * open for the lifetime of the imported VkImage - closing it before
  * vkDestroyImage may cause GPU memory corruption. */
 static int           vk_dmabuf_fd = -1;       /* currently-imported dmabuf fd */
 static uint32_t      vk_dmabuf_w = 0;
@@ -164,7 +164,7 @@ static VkImage       vk_dmabuf_img = VK_NULL_HANDLE;
 static VkDeviceMemory vk_dmabuf_img_mem = VK_NULL_HANDLE;
 static VkImageView   vk_dmabuf_view = VK_NULL_HANDLE;
 
-/* "Pending" dmabuf — received but not yet imported (import happens in
+/* "Pending" dmabuf - received but not yet imported (import happens in
  * render_overlay because we need a command buffer for layout transition). */
 static int           vk_dmabuf_pending_fd = -1;
 static uint32_t      vk_dmabuf_pending_w = 0;
@@ -194,7 +194,7 @@ static struct vk_async_slot vk_async_ring[VK_ASYNC_RING_SIZE];
 static int vk_async_ring_idx = 0;   /* next slot to use */
 static int vk_async_ring_init = 0;  /* fences created? */
 
-/* Dispatch table — function pointers resolved via gpa */
+/* Dispatch table - function pointers resolved via gpa */
 static PFN_vkGetDeviceProcAddr vk_gpa = NULL;
 
 /* Helper macro to load device functions.
@@ -219,7 +219,7 @@ void comp_vk_set_instance_gpa(PFN_vkGetInstanceProcAddr gpa) {
 static int vk_create_pipeline_objects(void) {
     VkResult r;
 
-    /* Descriptor set layout: 1 binding — sampled image */
+    /* Descriptor set layout: 1 binding - sampled image */
     VkDescriptorSetLayoutBinding binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -372,7 +372,7 @@ static int vk_create_pipeline(VkFormat format) {
 
     if (vk_create_render_pass(format) != 0) return -1;
 
-    /* Shader modules — SPIR-V bytecode embedded via ld -b binary (see
+    /* Shader modules - SPIR-V bytecode embedded via ld -b binary (see
      * include/shaders/vk_shaders.h). Symbols resolved at link time from
      * spv_o_files in meson.build. */
 #ifdef HAS_VK_SPV
@@ -402,7 +402,7 @@ static int vk_create_pipeline(VkFormat format) {
           .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag_mod, .pName = "main" },
     };
 
-    /* No vertex input — fullscreen triangle generated in shader */
+    /* No vertex input - fullscreen triangle generated in shader */
     VkPipelineVertexInputStateCreateInfo vis_ci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
     };
@@ -475,7 +475,7 @@ static int vk_create_pipeline(VkFormat format) {
     vkDestroyShaderModule(vk_dev, vert_mod, NULL);
     vkDestroyShaderModule(vk_dev, frag_mod, NULL);
 #else
-    IDK_ERR("comp-vk", "VK SPIR-V shaders not built (glslc missing) — cannot create pipeline\n");
+    IDK_ERR("comp-vk", "VK SPIR-V shaders not built (glslc missing) - cannot create pipeline\n");
     return -1;
 #endif /* HAS_VK_SPV */
 
@@ -697,30 +697,30 @@ static int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size,
  *   DRM_FORMAT_ARGB8888 (A:R:G:B word) ↔ Vk B8G8R8A8_UNORM (B,G,R,A memory)
  *   DRM_FORMAT_ABGR8888 (A:B:G:R word) ↔ Vk R8G8B8A8_UNORM (R,G,B,A memory)
  *   DRM_FORMAT_RGBA8888 (R:G:B:A word) ↔ Vk A8B8G8R8_UNORM_PACK32 (A,B,G,R memory)
- *   DRM_FORMAT_BGRA8888 (B:G:R:A word) — A in high byte, BGR in low bytes.
+ *   DRM_FORMAT_BGRA8888 (B:G:R:A word) - A in high byte, BGR in low bytes.
  *     Memory: B,G,R,A. Map to B8G8R8A8_UNORM (Vulkan has no A8R8G8B8_UNORM_PACK32,
- *     but B8G8R8A8 has the same memory layout B,G,R,A — the format name describes
+ *     but B8G8R8A8 has the same memory layout B,G,R,A - the format name describes
  *     the same byte order, just different component-naming convention).
  *
  * Qt RHI on Mesa exports GL_RGBA8 textures as DRM_FORMAT_ABGR8888 ("AB24" =
  * fourcc_code('A','B','2','4') = 0x34324241). GL_RGBA8 stores R,G,B,A in
  * memory, which matches VkFormat R8G8B8A8_UNORM. Confirmed working on NVIDIA. */
 static VkFormat drm_fourcc_to_vk_format(uint32_t fourcc) {
-    /* "AB24" (0x34324241) = DRM_FORMAT_ABGR8888 — A:B:G:R word = R,G,B,A memory.
+    /* "AB24" (0x34324241) = DRM_FORMAT_ABGR8888 - A:B:G:R word = R,G,B,A memory.
      * Qt RHI GL_RGBA8 default. Map to R8G8B8A8_UNORM. */
     if (fourcc == 0x34324241u) return VK_FORMAT_R8G8B8A8_UNORM;
-    /* "AR24" (0x34325241) = DRM_FORMAT_ARGB8888 — A:R:G:B word = B,G,R,A memory.
+    /* "AR24" (0x34325241) = DRM_FORMAT_ARGB8888 - A:R:G:B word = B,G,R,A memory.
      * Map to B8G8R8A8_UNORM. */
     if (fourcc == 0x34325241u) return VK_FORMAT_B8G8R8A8_UNORM;
-    /* "XB24" (0x34324258) = DRM_FORMAT_XBGR8888 — X:B:G:R word = R,G,B,X memory.
+    /* "XB24" (0x34324258) = DRM_FORMAT_XBGR8888 - X:B:G:R word = R,G,B,X memory.
      * Map to R8G8B8A8_UNORM (alpha ignored). */
     if (fourcc == 0x34324258u) return VK_FORMAT_R8G8B8A8_UNORM;
-    /* "XR24" (0x34325258) = DRM_FORMAT_XRGB8888 — X:R:G:B word = B,G,R,X memory.
+    /* "XR24" (0x34325258) = DRM_FORMAT_XRGB8888 - X:R:G:B word = B,G,R,X memory.
      * Map to B8G8R8A8_UNORM (alpha ignored). */
     if (fourcc == 0x34325258u) return VK_FORMAT_B8G8R8A8_UNORM;
-    /* "RA24" (0x34324152) = DRM_FORMAT_RGBA8888 — R:G:B:A word = A,B,G,R memory. */
+    /* "RA24" (0x34324152) = DRM_FORMAT_RGBA8888 - R:G:B:A word = A,B,G,R memory. */
     if (fourcc == 0x34324152u) return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
-    /* "BA24" (0x34324142) = DRM_FORMAT_BGRA8888 — B:G:R:A word.
+    /* "BA24" (0x34324142) = DRM_FORMAT_BGRA8888 - B:G:R:A word.
      * Memory: B,G,R,A (same as ARGB8888). Map to B8G8R8A8_UNORM. */
     if (fourcc == 0x34324142u) return VK_FORMAT_B8G8R8A8_UNORM;
     /* Fallback: assume ABGR8888 (Qt RHI's GL_RGBA8 default on Mesa). */
@@ -730,10 +730,10 @@ static VkFormat drm_fourcc_to_vk_format(uint32_t fourcc) {
 /* IDK_DRM_FORMAT_MOD_INVALID is in compositor_common.h */
 
 /* Import a dmabuf fd as a VkImage and create a sampled view.
- * Returns 0 on success, -1 on failure. The fd is owned by the caller —
+ * Returns 0 on success, -1 on failure. The fd is owned by the caller -
  * the imported VkImage holds its own reference (the underlying memory
  * remains valid as long as either the fd OR the VkImage is alive, but
- * we MUST keep the fd open to be safe — see vk_dmabuf_fd tracking). */
+ * we MUST keep the fd open to be safe - see vk_dmabuf_fd tracking). */
 static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
                               uint32_t fourcc, uint64_t modifier,
                               VkCommandBuffer cmd) {
@@ -755,21 +755,21 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
      * consumer driver can't interpret the producer's tiling layout.
      * Reject immediately and force SHM fallback.
      *
-     * Modifier=0 (linear) or INVALID bypasses this check — linear dmabufs
+     * Modifier=0 (linear) or INVALID bypasses this check - linear dmabufs
      * are vendor-agnostic and can be imported by any driver. */
     if (vk_drm_vendor_id != 0 && modifier != 0 && modifier != IDK_DRM_FORMAT_MOD_INVALID) {
         uint32_t mod_vendor = IDK_DRM_MOD_VENDOR(modifier);
         if (mod_vendor != vk_drm_vendor_id) {
-            IDK_LOG("comp-vk", "dmabuf: cross-GPU vendor mismatch (modifier vendor=0x%02x, our vendor=0x%02x) — rejecting, force SHM\n",
+            IDK_LOG("comp-vk", "dmabuf: cross-GPU vendor mismatch (modifier vendor=0x%02x, our vendor=0x%02x) - rejecting, force SHM\n",
                     mod_vendor, vk_drm_vendor_id);
             vk_dmabuf_failed_this_frame = 1;
-            /* fd NOT consumed by ICD — caller will close it. */
+            /* fd NOT consumed by ICD - caller will close it. */
             return -1;
         }
     }
 
     /* If we already have an import for this exact frame identity, skip.
-     * NOTE: Qt reuses the same dmabuf fd across frames only sometimes —
+     * NOTE: Qt reuses the same dmabuf fd across frames only sometimes -
      * more often it creates a new fd per frame. So this cache rarely hits,
      * but when it does, we save a full vkCreateImage+AllocateMemory cycle. */
     if (vk_dmabuf_img != VK_NULL_HANDLE &&
@@ -785,7 +785,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
         /* Tear down old import.
          * NOTE: vkFreeMemory closes the imported fd (ICD took ownership
          * via VkImportMemoryFdInfoKHR on successful vkAllocateMemory).
-         * Do NOT close(vk_dmabuf_fd) — that would double-close. */
+         * Do NOT close(vk_dmabuf_fd) - that would double-close. */
         if (vk_dmabuf_view) { vkDestroyImageView(vk_dev, vk_dmabuf_view, NULL); vk_dmabuf_view = VK_NULL_HANDLE; }
         if (vk_dmabuf_img)  { vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);  vk_dmabuf_img  = VK_NULL_HANDLE; }
         if (vk_dmabuf_img_mem) { vkFreeMemory(vk_dev, vk_dmabuf_img_mem, NULL); vk_dmabuf_img_mem = VK_NULL_HANDLE; }
@@ -797,21 +797,21 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
          *
          * DMABUF import requires VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT.
          * The modifier info can be passed in 3 ways:
-         *   (a) VkImageDrmFormatModifierExplicitCreateInfoEXT — exact modifier + plane layouts
-         *   (b) VkImageDrmFormatModifierListCreateInfoEXT — list of acceptable modifiers
-         *   (c) No modifier struct — driver queries dmabuf's modifier via kernel
+         *   (a) VkImageDrmFormatModifierExplicitCreateInfoEXT - exact modifier + plane layouts
+         *   (b) VkImageDrmFormatModifierListCreateInfoEXT - list of acceptable modifiers
+         *   (c) No modifier struct - driver queries dmabuf's modifier via kernel
          *
          * APPROACH: use (a) with explicit modifier + plane layout. This was
          * confirmed working on NVIDIA (v7). For Intel X-tiled, the stride from
          * eglExportDMABUFImageMESA is already tile-aligned (verified: 7680=512*15,
          * 2048=512*4, 3072=512*6), so VkSubresourceLayout.rowPitch=stride is correct.
          *
-         * (c) doesn't work reliably — without the modifier struct, drivers may
+         * (c) doesn't work reliably - without the modifier struct, drivers may
          * default to LINEAR tiling instead of querying the kernel, causing
          * corruption on tiled dmabufs (Intel X-tiled, NVIDIA block-linear). */
         /* VkSubresourceLayout for the dmabuf plane.
          * size = stride * h (entire image). Setting size=0 ("entire plane")
-         * is allowed by spec but Intel ANV interprets it incorrectly —
+         * is allowed by spec but Intel ANV interprets it incorrectly -
          * sampling returns garbage. Use the actual computed size instead. */
         VkSubresourceLayout drm_layout = {
             .offset = 0,
@@ -854,17 +854,17 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 
         r = vkCreateImage(vk_dev, &ici, NULL, &vk_dmabuf_img);
         if (r != VK_SUCCESS && use_explicit) {
-            /* Fall back to LINEAR tiling — last resort, may not work for tiled. */
+            /* Fall back to LINEAR tiling - last resort, may not work for tiled. */
             IDK_LOG("comp-vk", "dmabuf: explicit modifier import failed (%d), trying LINEAR\n", r);
             ext_mem_ci.pNext = NULL;
             ici.tiling = VK_IMAGE_TILING_LINEAR;
             r = vkCreateImage(vk_dev, &ici, NULL, &vk_dmabuf_img);
         }
         if (r != VK_SUCCESS) {
-            IDK_ERR("comp-vk", "dmabuf: CreateImage failed: %d (fmt=0x%x mod=0x%lx) — frame rejected\n",
+            IDK_ERR("comp-vk", "dmabuf: CreateImage failed: %d (fmt=0x%x mod=0x%lx) - frame rejected\n",
                     r, fourcc, (unsigned long)modifier);
             vk_dmabuf_failed_this_frame = 1;
-            /* fd NOT consumed by ICD — caller will close it. */
+            /* fd NOT consumed by ICD - caller will close it. */
             return -1;
         }
 
@@ -894,11 +894,11 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
                                         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
                                         fd, &fd_props);
         if (r != VK_SUCCESS) {
-            IDK_ERR("comp-vk", "dmabuf: GetMemoryFdPropertiesKHR failed: %d — frame rejected\n", r);
+            IDK_ERR("comp-vk", "dmabuf: GetMemoryFdPropertiesKHR failed: %d - frame rejected\n", r);
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
             vk_dmabuf_failed_this_frame = 1;
-            /* fd NOT consumed by ICD — caller will close it. */
+            /* fd NOT consumed by ICD - caller will close it. */
             return -1;
         }
 
@@ -907,7 +907,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             IDK_ERR("comp-vk", "dmabuf: vk_fn_GetPhysMemProps not loaded\n");
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
-            /* fd NOT consumed by ICD — caller will close it. */
+            /* fd NOT consumed by ICD - caller will close it. */
             return -1;
         }
         VkPhysicalDeviceMemoryProperties mp;
@@ -929,12 +929,12 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             }
         }
         if (mem_type == 0xFFFFFFFF) {
-            IDK_ERR("comp-vk", "dmabuf: no compatible mem type (image=0x%x fd=0x%x) — frame rejected\n",
+            IDK_ERR("comp-vk", "dmabuf: no compatible mem type (image=0x%x fd=0x%x) - frame rejected\n",
                     mr2.memoryRequirements.memoryTypeBits, fd_props.memoryTypeBits);
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
             vk_dmabuf_failed_this_frame = 1;
-            /* fd NOT consumed by ICD — caller will close it. */
+            /* fd NOT consumed by ICD - caller will close it. */
             return -1;
         }
 
@@ -943,7 +943,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
             .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
             .pNext = NULL,
             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-            .fd = fd,  /* ICD takes ownership on success — see note below */
+            .fd = fd,  /* ICD takes ownership on success - see note below */
         };
         VkMemoryAllocateInfo mai = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -953,11 +953,11 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
         };
         r = vkAllocateMemory(vk_dev, &mai, NULL, &vk_dmabuf_img_mem);
         if (r != VK_SUCCESS) {
-            IDK_ERR("comp-vk", "dmabuf: AllocateMemory(import) failed: %d — frame rejected\n", r);
+            IDK_ERR("comp-vk", "dmabuf: AllocateMemory(import) failed: %d - frame rejected\n", r);
             vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);
             vk_dmabuf_img = VK_NULL_HANDLE;
             vk_dmabuf_failed_this_frame = 1;
-            /* fd NOT consumed by ICD (vkAllocateMemory failed) — caller will close it. */
+            /* fd NOT consumed by ICD (vkAllocateMemory failed) - caller will close it. */
             return -1;
         }
         /* ICD took ownership of fd on success → don't close it ourselves.
@@ -1004,9 +1004,9 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
      *
      * On cache hit (same VkImage, Qt wrote new content to dmabuf), we skip
      * step 1 (already released from previous frame's present) and only do
-     * step 2 — acquire with EXTERNAL src + our queue dst.
+     * step 2 - acquire with EXTERNAL src + our queue dst.
      *
-     * On first import, the image is in PREINITIALIZED layout — acquire
+     * On first import, the image is in PREINITIALIZED layout - acquire
      * transitions it to SHADER_READ_ONLY.
      *
      * srcAccessMask for acquire = 0 (the producer's writes are made visible
@@ -1015,7 +1015,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
      *
      * This is the canonical Vulkan external memory pattern. Both EXTERNAL
      * queue family indices must be set (not IGNORED) for the ownership
-     * transfer to take effect — IGNORED would skip the transfer and leave
+     * transfer to take effect - IGNORED would skip the transfer and leave
      * cached data stale on Intel ANV. */
     VkImageMemoryBarrier bar = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1039,7 +1039,7 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 
 /* Frame receive */
 
-/* Overlay visibility — same symbol as overlay.c's g_overlay_visible.
+/* Overlay visibility - same symbol as overlay.c's g_overlay_visible.
  * When 0, drain incoming frames without ACK/REQUEST so the webview
  * stops rendering (see compositor_egl.c for full rationale). */
 extern _Atomic int g_overlay_visible;
@@ -1074,7 +1074,7 @@ int idk_vk_compositor_render(void) {
         return -1;
     }
 
-    /* Visible — if we just transitioned from hidden, send a REQUEST
+    /* Visible - if we just transitioned from hidden, send a REQUEST
      * to wake up the webview's request-poll loop. */
     if (vk_was_hidden) {
         vk_was_hidden = 0;
@@ -1082,7 +1082,7 @@ int idk_vk_compositor_render(void) {
         memset(&wake, 0, sizeof(wake));
         wake.type = IDK_REQUEST_NEXT_FRAME;
         idk_tp_send_request(&vk_tp, &wake);
-        IDK_LOG("comp-vk", "overlay became visible — sent wake-up REQUEST\n");
+        IDK_LOG("comp-vk", "overlay became visible - sent wake-up REQUEST\n");
     }
 
     int processed = 0;
@@ -1103,7 +1103,7 @@ int idk_vk_compositor_render(void) {
         if (processed > 0) { close(fd); continue; }
 
         if (!idk_frame_is_dmabuf(&hdr)) {
-            /* SHM frame — will be uploaded in render_overlay via staging buffer */
+            /* SHM frame - will be uploaded in render_overlay via staging buffer */
             vk_overlay_w = hdr.width;
             vk_overlay_h = hdr.height;
             if (vk_shm_fd >= 0) close(vk_shm_fd);
@@ -1115,7 +1115,7 @@ int idk_vk_compositor_render(void) {
             }
             processed = 1;
         } else {
-            /* DMABUF frame — stash for import in render_overlay.
+            /* DMABUF frame - stash for import in render_overlay.
              * fourcc from header tells the VK compositor which VkFormat
              * to use for VkImage creation. */
             if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
@@ -1153,14 +1153,14 @@ int idk_vk_compositor_render(void) {
  * vkQueueSubmit from multiple threads, but our vk_async_ring_idx /
  * vk_async_ring[] state is not thread-safe. In practice games call
  * QueuePresentKHR from a single render thread, so the lock is
- * uncontended — but if a game ever presents from multiple threads,
+ * uncontended - but if a game ever presents from multiple threads,
  * we'd corrupt the ring state without this. */
 static pthread_mutex_t vk_render_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImage,
                                       uint32_t width, uint32_t height,
                                       VkFormat swapchainFormat) {
-    (void)cmd;  /* caller passes VK_NULL_HANDLE — we manage our own cmd buffer */
+    (void)cmd;  /* caller passes VK_NULL_HANDLE - we manage our own cmd buffer */
     if (!vk_has_frame || swapchainImage == VK_NULL_HANDLE) return;
 
     pthread_mutex_lock(&vk_render_lock);
@@ -1173,7 +1173,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
      * Let the game present unmodified for SWAPCHAIN_COOLDOWN_MS after
      * each swapchain recreation, then resume overlay rendering.
      * (The submit is now async via the rolling-fence ring, but the
-     * cooldown is still useful — rapid swapchain recreation produces
+     * cooldown is still useful - rapid swapchain recreation produces
      * stale frames anyway.) */
     if (vk_last_swapchain_create_ts.tv_sec != 0) {
         struct timespec now;
@@ -1181,18 +1181,18 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         long delta_ms = (now.tv_sec - vk_last_swapchain_create_ts.tv_sec) * 1000L
                       + (now.tv_nsec - vk_last_swapchain_create_ts.tv_nsec) / 1000000L;
         if (delta_ms < VK_SWAPCHAIN_COOLDOWN_MS) {
-            return;  /* skip this frame — let game present unmodified */
+            return;  /* skip this frame - let game present unmodified */
         }
     }
 
     IDK_LOG("comp-vk", "render_overlay: has_frame=%d img=%p %ux%u fmt=%d\n",
             vk_has_frame, (void*)swapchainImage, width, height, (int)swapchainFormat);
 
-    /* Create pipeline if needed — pass the actual swapchain format so the
+    /* Create pipeline if needed - pass the actual swapchain format so the
      * render pass attachment format matches the swapchain image format.
      * Mismatched formats cause undefined behavior (garbled colors). */
     if (swapchainFormat == VK_FORMAT_UNDEFINED) {
-        /* Fallback for safety — should never happen with a real swapchain */
+        /* Fallback for safety - should never happen with a real swapchain */
         swapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
     }
     if (vk_pipeline == VK_NULL_HANDLE || vk_rp_format != swapchainFormat) {
@@ -1202,7 +1202,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         }
     }
 
-    /* Allocate our own command buffer — the caller passes VK_NULL_HANDLE
+    /* Allocate our own command buffer - the caller passes VK_NULL_HANDLE
      * because it doesn't manage command buffer lifecycle for us. */
     VK_LOAD(vkAllocateCommandBuffers);
     VK_LOAD(vkFreeCommandBuffers);
@@ -1240,7 +1240,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
     /* Upload overlay texture.
      * DMABUF path: import the pending dmabuf fd as a VkImage (zero-copy).
      * SHM path: mmap + copy to staging buffer + vkCmdCopyBufferToImage.
-     * DMABUF is preferred when available — no host→device copy. */
+     * DMABUF is preferred when available - no host→device copy. */
     if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
         int pending_fd = vk_dmabuf_pending_fd;
         vk_dmabuf_pending_fd = -1;  /* clear before call so vk_upload_dmabuf
@@ -1268,7 +1268,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
             vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
             return;
         }
-        /* Import succeeded — ICD owns the fd, vk_dmabuf_fd tracks it. */
+        /* Import succeeded - ICD owns the fd, vk_dmabuf_fd tracks it. */
     } else if (vk_shm_fd >= 0) {
         if (vk_upload_shm(vk_shm_fd, vk_overlay_w, vk_overlay_h,
                           vk_overlay_w * vk_overlay_h * 4, 0, recording_cmd) != 0) {
@@ -1282,7 +1282,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
     }
 
     if (vk_overlay_view == VK_NULL_HANDLE) {
-        IDK_ERR("comp-vk", "overlay_view NULL — skipping render\n");
+        IDK_ERR("comp-vk", "overlay_view NULL - skipping render\n");
         vkEndCommandBuffer(recording_cmd);
         vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
         return;
@@ -1385,7 +1385,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
      *   slot->cmd = recording_cmd; slot->fb = fb; slot->view = swapchain_view
      *
      * Cleanup of cmd/fb/view is deferred to the next time we come back
-     * to this slot — the GPU still references them until the fence
+     * to this slot - the GPU still references them until the fence
      * signals. VK_LOAD for the device functions was done above. */
 
     /* Lazy fence creation on first 2 frames. */
@@ -1393,7 +1393,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         for (int i = 0; i < VK_ASYNC_RING_SIZE; i++) {
             if (vkCreateFence(vk_dev, &fci, NULL, &vk_async_ring[i].fence) != VK_SUCCESS) {
-                IDK_ERR("comp-vk", "async ring: vkCreateFence(%d) failed — falling back to sync\n", i);
+                IDK_ERR("comp-vk", "async ring: vkCreateFence(%d) failed - falling back to sync\n", i);
                 /* Destroy fences already created in slots [0, i) so we
                  * don't leak them when the next frame re-enters this
                  * init loop (vk_async_ring_init stays 0) and overwrites
@@ -1428,7 +1428,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
     struct vk_async_slot *slot = &vk_async_ring[slot_idx];
 
     /* Wait for this slot's previous work to complete (should already be
-     * signaled — the GPU finished ~1 frame ago). 1s timeout is a safety
+     * signaled - the GPU finished ~1 frame ago). 1s timeout is a safety
      * net for driver hangs; we don't want to spin forever. */
     if (slot->fence != VK_NULL_HANDLE && slot->cmd != VK_NULL_HANDLE) {
         VkResult wr = vkWaitForFences(vk_dev, 1, &slot->fence, VK_TRUE, 1000000000ULL);
@@ -1440,13 +1440,13 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
             slot->fb = VK_NULL_HANDLE;
             slot->view = VK_NULL_HANDLE;
             if (vkResetFences(vk_dev, 1, &slot->fence) != VK_SUCCESS) {
-                IDK_ERR("comp-vk", "async ring: vkResetFences failed — falling back to sync\n");
+                IDK_ERR("comp-vk", "async ring: vkResetFences failed - falling back to sync\n");
                 vkDestroyFence(vk_dev, slot->fence, NULL);
                 VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
                 vkCreateFence(vk_dev, &fci, NULL, &slot->fence);
             }
         } else {
-            IDK_ERR("comp-vk", "async ring: wait returned %d — slot leak likely\n", (int)wr);
+            IDK_ERR("comp-vk", "async ring: wait returned %d - slot leak likely\n", (int)wr);
             /* On timeout, leak the resources rather than risk use-after-free. */
             slot->cmd = VK_NULL_HANDLE;
             slot->fb = VK_NULL_HANDLE;
@@ -1455,7 +1455,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         }
     }
 
-    /* Submit new work — NO wait. The fence signals when the GPU is done. */
+    /* Submit new work - NO wait. The fence signals when the GPU is done. */
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                         .commandBufferCount = 1, .pCommandBuffers = &recording_cmd };
     VkResult r = vkQueueSubmit(vk_queue, 1, &si, slot->fence);
@@ -1465,7 +1465,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
         slot->fb = fb;
         slot->view = swapchain_view;
     } else {
-        IDK_ERR("comp-vk", "QueueSubmit failed: %d — falling back to immediate cleanup\n", (int)r);
+        IDK_ERR("comp-vk", "QueueSubmit failed: %d - falling back to immediate cleanup\n", (int)r);
         vkDestroyFramebuffer(vk_dev, fb, NULL);
         vkDestroyImageView(vk_dev, swapchain_view, NULL);
         vkFreeCommandBuffers(vk_dev, vk_cmd_pool, 1, &local_cmd);
@@ -1492,7 +1492,7 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
     vk_gpa = gpa;
 
     /* Load instance-level functions via the VkInstance stored during CreateInstance.
-     * vkGetPhysicalDeviceMemoryProperties is instance-level — needs a valid VkInstance.
+     * vkGetPhysicalDeviceMemoryProperties is instance-level - needs a valid VkInstance.
      * We get the instance from vulkan_layer.c (stored during CreateInstance) and use
      * the instanceGpa parameter passed in by the layer (the layer's GetInstanceProcAddr). */
     extern VkInstance idk_vk_layer_get_instance(void);
@@ -1521,7 +1521,7 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
      * dmabuf import produces garbage → reject, force SHM.
      *
      * IMPORTANT: use the `instanceGpa` PARAMETER (passed by vulkan_layer.c),
-     * NOT the `vk_fn_GetInstanceProcAddr` static — that static is only set
+     * NOT the `vk_fn_GetInstanceProcAddr` static - that static is only set
      * by comp_vk_set_instance_gpa() which is never called, so it stays NULL
      * and the vendor detection silently no-ops. */
     if (inst != VK_NULL_HANDLE && instanceGpa) {
@@ -1538,7 +1538,7 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
                     vk_drm_vendor_id == 0x01 ? "Intel" :
                     vk_drm_vendor_id == 0x02 ? "AMD" : "unknown");
         } else {
-            IDK_ERR("comp-vk", "vkGetPhysicalDeviceProperties not loaded — cross-GPU detection disabled\n");
+            IDK_ERR("comp-vk", "vkGetPhysicalDeviceProperties not loaded - cross-GPU detection disabled\n");
         }
     } else {
         IDK_ERR("comp-vk", "No instance/gpa for vendor detection (inst=%p gpa=%p)\n",
@@ -1672,12 +1672,12 @@ void idk_vk_compositor_shutdown(void) {
         if (vk_shm_fd >= 0) { close(vk_shm_fd); vk_shm_fd = -1; }
 
         /* Command pool (must be destroyed AFTER all command buffers
-         * allocated from it are freed — vkFreeCommandBuffers above). */
+         * allocated from it are freed - vkFreeCommandBuffers above). */
         if (vk_cmd_pool != VK_NULL_HANDLE) vkDestroyCommandPool(vk_dev, vk_cmd_pool, NULL);
         vk_cmd_pool = VK_NULL_HANDLE;
     }
 
-    /* Overlay view (bound to either shm_img or dmabuf_img — destroyed above). */
+    /* Overlay view (bound to either shm_img or dmabuf_img - destroyed above). */
     vk_overlay_img = VK_NULL_HANDLE;
     vk_overlay_view = VK_NULL_HANDLE;
     vk_overlay_w = 0;

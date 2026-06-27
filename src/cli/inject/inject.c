@@ -36,7 +36,6 @@ static void usage(const char *prog) {
         "                 falls back to /tmp/idk-overlay-<pid>)\n"
         "  --vk 0|1       Enable Vulkan hooks (default: 1)\n"
         "  --gl 0|1       Enable OpenGL hooks (default: 1)\n"
-        "  -v, --verbose  Enable verbose logging\n"
         "  -h, --help     Show this help\n",
         prog);
 }
@@ -68,7 +67,6 @@ int main(int argc, char **argv) {
     const char *sock_path = NULL;
     int enable_vk = 1;
     int enable_gl = 1;
-    int verbose = 0;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -77,8 +75,6 @@ int main(int argc, char **argv) {
             enable_vk = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--gl") == 0 && i + 1 < argc) {
             enable_gl = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
-            verbose = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -135,9 +131,7 @@ int main(int argc, char **argv) {
     int rc = syringe_inject(target_pid, lib_path);
 
     if (rc == 0) {
-        fprintf(stderr, "[+] Injection complete!\n");
-        fprintf(stderr, "    Socket: %s\n", sock_path);
-        fprintf(stderr, "    Start webview: IDK_SOCKET=%s idk-webview\n", sock_path);
+        IDK_ERR("inject", "Injection complete\n");
     } else {
         IDK_ERR("inject", "injection failed: %s\n", strerror(errno));
         return 1;

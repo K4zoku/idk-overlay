@@ -60,7 +60,7 @@ endif
 subdir('src/shaders')
 subdir('src/lib')
 
-# ── libidk-overlay.so — inject path (EGL + Vulkan hooks) ───────────────
+# ── libidk-overlay.so - inject path (EGL + Vulkan hooks) ───────────────
 idk_overlay_so = library(
     'idk-overlay',
     [

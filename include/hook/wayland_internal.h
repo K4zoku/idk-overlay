@@ -297,7 +297,7 @@ extern __thread int g_in_dispatch;
 extern struct wl_proxy *g_intercepted_proxies[];
 extern int g_intercepted_count;
 
-/* Listener wrapper vtables (extern — checked by proxy scan) */
+/* Listener wrapper vtables (extern - checked by proxy scan) */
 extern const struct wl_pointer_listener g_ptr_wrapper;
 extern const struct wl_keyboard_listener g_kb_wrapper;
 

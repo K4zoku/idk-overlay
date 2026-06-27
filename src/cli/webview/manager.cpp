@@ -49,7 +49,7 @@ Manager::Manager(const QString &confFile,
     , m_tray(new QSystemTrayIcon(this))
 {
     /* Socket path priority: CLI > IDK_SOCKET env > default.
-     * Socket is no longer in config — it's always dynamic (set by the
+     * Socket is no longer in config - it's always dynamic (set by the
      * injected lib's fork+exec, or by the user via --socket/IDK_SOCKET). */
     if (!cliSocketPath.isEmpty()) {
         m_socketPath = cliSocketPath;
@@ -58,7 +58,7 @@ Manager::Manager(const QString &confFile,
         if (envSocket && *envSocket) {
             m_socketPath = QString::fromUtf8(envSocket);
         } else {
-            /* Fallback for manual launch without env — use the same
+            /* Fallback for manual launch without env - use the same
              * default the injected lib uses ($XDG_RUNTIME_DIR/idk-overlay-<pid>,
              * /tmp/idk-overlay-<pid> fallback). The webview's PID is used
              * because the forked-webview path inherits IDK_SOCKET from the
@@ -82,7 +82,7 @@ Manager::Manager(const QString &confFile,
     m_was_connected = false;
 
     if (fd >= 0) {
-        /* Reusing existing fd — idk_fs_init stores it, no connect() */
+        /* Reusing existing fd - idk_fs_init stores it, no connect() */
         if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
             m_was_connected = true;
             emit socketConnected();
@@ -111,7 +111,7 @@ Manager::Manager(const QString &confFile,
                 startInputReceiver();
             } else if (!connected_now && m_was_connected) {
                 /* connected → disconnected: try reconnect once */
-                IDK_LOG("webview", "idk_fs disconnected — attempting reconnect\n");
+                IDK_LOG("webview", "idk_fs disconnected - attempting reconnect\n");
                 emit socketDisconnected();
                 stopInputReceiver();
                 if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
@@ -124,7 +124,7 @@ Manager::Manager(const QString &confFile,
                     m_disconnect_count = 1;
                 }
             } else if (!connected_now && !m_was_connected) {
-                /* Still not connected — retry (logged sparsely at 1,5,30,60..) */
+                /* Still not connected - retry (logged sparsely at 1,5,30,60..) */
                 m_disconnect_count++;
                 bool should_log = (m_disconnect_count == 1 ||
                                    m_disconnect_count == 5 ||
@@ -174,7 +174,7 @@ Manager::Manager(const QString &confFile,
 
     initWebViews();
     /* startInputReceiver() may have been called before initWebViews()
-     * (during socket connect in the constructor) — if so, m_webview
+     * (during socket connect in the constructor) - if so, m_webview
      * was never set on InputReceiver because m_views was empty. */
     if (m_inputRx && !m_views.isEmpty())
         m_inputRx->setWebView(m_views.first());
@@ -189,7 +189,7 @@ Manager::~Manager()
     /* Delete top-level Qt widgets that have no parent. m_container is
      * reparented to m_window by the layout, so deleting m_window also
      * deletes m_container. m_tabBar and m_statusLabel were never added
-     * to any layout and have no parent — they must be deleted explicitly
+     * to any layout and have no parent - they must be deleted explicitly
      * or they leak (along with any child widgets). m_tray is parented
      * to `this` and is auto-deleted by Qt. */
     delete m_window;
@@ -259,7 +259,7 @@ void Manager::initWebViews()
             if (!matchPattern.isEmpty()) {
                 QRegularExpression sectionRe(matchPattern);
                 if (!sectionRe.isValid() || !sectionRe.match(processName).hasMatch()) {
-                    continue;  /* skip — doesn't match */
+                    continue;  /* skip - doesn't match */
                 }
             } else {
                 continue;  /* skip sections without Match= when filtering */
@@ -320,7 +320,7 @@ void Manager::startInputReceiver()
                 this, &Manager::onOverlayVisibleChanged);
     }
 
-    /* Always refresh the webview — may be called before initWebViews()
+    /* Always refresh the webview - may be called before initWebViews()
      * (where m_views is still empty) or from a reconnect timer (where
      * m_views is already populated). */
     if (!m_views.isEmpty())
@@ -332,9 +332,9 @@ void Manager::startInputReceiver()
         return;
     }
 
-    /* Connection failed — retry every 2s for 30s, then give up.
+    /* Connection failed - retry every 2s for 30s, then give up.
      * Use a member counter instead of a heap-allocated int captured by
-     * the lambda — if the Manager is destroyed while the retry timer
+     * the lambda - if the Manager is destroyed while the retry timer
      * is still active, the captured 'new int' leaks. The member is
      * cleaned up automatically when the Manager is destroyed. */
     if (!m_inputRetryTimer) {
@@ -348,8 +348,8 @@ void Manager::startInputReceiver()
                 return;
             }
             if (m_inputRetries >= 15) {
-                /* Give up after 30s — no input hook available */
-                IDK_LOG("webview", "input receiver giving up after 30s — "
+                /* Give up after 30s - no input hook available */
+                IDK_LOG("webview", "input receiver giving up after 30s - "
                         "game may not be a wayland client\n");
                 m_inputRetryTimer->stop();
             }

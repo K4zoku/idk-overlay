@@ -1,5 +1,5 @@
 /*
- * wayland_input_types.h — Minimal vendored Wayland protocol types
+ * wayland_input_types.h - Minimal vendored Wayland protocol types
  *
  * Only includes what idk-overlay's input hook needs:
  *   - wl_fixed_t (int32_t)
@@ -40,7 +40,7 @@ struct wl_seat;
 struct wl_registry;
 struct wl_event_queue;
 
-/* wl_message — from wayland-util.h, needed for manual protocol interface
+/* wl_message - from wayland-util.h, needed for manual protocol interface
  * construction (wp_cursor_shape_manager_v1, wp_cursor_shape_device_v1). */
 struct wl_interface;
 struct wl_message {
@@ -60,7 +60,7 @@ typedef int32_t wl_fixed_t;
 
 /* Pointer listener (version 1, extended in version 5) */
 /*
- * Field order is the wire order — DO NOT REARRANGE. Missing callbacks
+ * Field order is the wire order - DO NOT REARRANGE. Missing callbacks
  * are NULL (set to NULL in the struct literal); libwayland skips them.
  *
  * The first 5 fields are in version 1 (enter, leave, motion, button, axis).

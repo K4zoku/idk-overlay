@@ -64,7 +64,7 @@ static const SymQtEntry SYM_QT[] = {
 
 /* Translate a single xkb keysym to a Qt::Key value.
  * For printable ASCII (0x20-0x7f) the Qt key is just the unicode
- * codepoint (lowercased for letters — Qt convention).
+ * codepoint (lowercased for letters - Qt convention).
  * Returns 0 if the keysym cannot be translated. */
 static int keysymToQtKey(quint32 sym)
 {
@@ -183,7 +183,7 @@ void InputReceiver::sendFocusIn()
     fp->setFocus(Qt::OtherFocusReason);
 
     /* Synthesize one MouseMove so Chromium's RenderWidgetHost has a valid
-     * previous mouse position — some sites won't hit-test correctly
+     * previous mouse position - some sites won't hit-test correctly
      * otherwise. We rely on the next real mouse event to take over. */
     QMouseEvent mv(QEvent::MouseMove,
                    QPointF(m_mouseX, m_mouseY),
@@ -361,7 +361,7 @@ void InputReceiver::onRepeatTimeout()
     qApp->sendEvent(fp, &p);
 
     if (m_repeatArmed) {
-        /* First repeat fired — switch to repeat interval (1000/rate ms) */
+        /* First repeat fired - switch to repeat interval (1000/rate ms) */
         m_repeatArmed = false;
         int interval = m_repeatRate > 0 ? (1000 / m_repeatRate) : 40;
         m_repeatTimer->setSingleShot(false);
@@ -386,7 +386,7 @@ void InputReceiver::injectMouseEvent(const idk_input_event_t &ev)
         x = ev.u.motion.x;
         y = ev.u.motion.y;
     } else {
-        /* AXIS — use last known mouse position */
+        /* AXIS - use last known mouse position */
         x = m_mouseX;
         y = m_mouseY;
     }

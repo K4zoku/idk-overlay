@@ -153,7 +153,7 @@ bool RhiTextureExtractor::ensureDmaBufSharedCtx()
         static bool s_logged = false;
         if (!s_logged) {
             s_logged = true;
-            IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed (eglError=0x%x) — "
+            IDK_LOG("webview-qt", "ensureDmaBufSharedCtx: eglCreateContext failed (eglError=0x%x) - "
                     "DMABUF disabled, using SHM fallback\n", err);
         }
         m_view->m_useDmaBuf = false;
@@ -355,7 +355,7 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
             IDK_LOG("webview-qt", "tryExportDMABufOpenGL: export query failed\n");
             /* Close any fds the driver may have populated before failing.
              * Per spec eFn shouldn't write fds on failure, but driver
-             * bugs can cause partial population — without this loop,
+             * bugs can cause partial population - without this loop,
              * those fds leak. fds[] was initialized to {-1,-1,-1,-1}
              * so we only close the ones that were actually written. */
             for (int i = 0; i < 4; i++) {
@@ -389,7 +389,7 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
         frame.modifier = m_view->m_dmaExportModifier;
 
         /* Pass the original dmabuf fd (not a dup) so the SHM backend can
-         * write its number into the shared page — the fd stays open as
+         * write its number into the shared page - the fd stays open as
          * long as m_dmaExportFd is valid (across frames of same size).
          * The socket backend (SCM_RIGHTS) transfers the fd atomically. */
         int fds_arr[4] = { m_view->m_dmaExportFd, -1, -1, -1 };
@@ -595,7 +595,7 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
         vkDestroyBuffer(dev, buffer, nullptr);
         return false;
     }
-    /* Check vkBindBufferMemory return — if it fails, vkCmdCopyImageToBuffer
+    /* Check vkBindBufferMemory return - if it fails, vkCmdCopyImageToBuffer
      * operates on an unbound buffer → UB. Previously the return value was
      * silently discarded. */
     if (vkBindBufferMemory(dev, buffer, memory, 0) != VK_SUCCESS) {
@@ -621,7 +621,7 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    /* Check vkBeginCommandBuffer — if it fails, all subsequent vkCmd*
+    /* Check vkBeginCommandBuffer - if it fails, all subsequent vkCmd*
      * calls are no-ops or UB. Previously the return value was discarded. */
     if (vkBeginCommandBuffer(cmdBuf, &beginInfo) != VK_SUCCESS) {
         IDK_LOG("webview-qt", "tryExportDMABufVulkan: vkBeginCommandBuffer failed\n");
@@ -672,7 +672,7 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         0, 0, nullptr, 0, nullptr, 1, &back);
 
-    /* Check vkEndCommandBuffer — if it fails, vkQueueSubmit will fail,
+    /* Check vkEndCommandBuffer - if it fails, vkQueueSubmit will fail,
      * but the error path should free cmdBuf cleanly. Previously the
      * return value was discarded. */
     if (vkEndCommandBuffer(cmdBuf) != VK_SUCCESS) {
@@ -709,7 +709,7 @@ bool RhiTextureExtractor::tryExportDMABufVulkan()
 
     /* Use a finite timeout (1 second) instead of UINT64_MAX. A GPU
      * hang (driver bug, TDR, lost device) would otherwise block the
-     * webview forever — it freezes and cannot recover. The compositor's
+     * webview forever - it freezes and cannot recover. The compositor's
      * VK path already uses a 1s timeout for its ring fences. On
      * timeout, treat as failure and clean up. */
     VkResult waitResult = vkWaitForFences(dev, 1, &fence, VK_TRUE, 1000000000ULL);

@@ -340,5 +340,5 @@ if vk_spv_ok
     add_project_arguments('-DHAS_VK_SPV', language: 'c')
     message('Vulkan overlay shaders: SPIR-V enabled (object embedding)')
 else
-    message('Vulkan overlay shaders: glslc not found — VK pipeline will be unavailable at runtime')
+    message('Vulkan overlay shaders: glslc not found - VK pipeline will be unavailable at runtime')
 endif

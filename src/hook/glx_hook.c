@@ -77,13 +77,13 @@ static int install_glx_hook(void) {
      * patching).
      *
      * BUG: syringe resolves orig via dlsym(RTLD_DEFAULT, ...) which,
-     * under LD_PRELOAD, returns OUR hook — not libGL's real function.
+     * under LD_PRELOAD, returns OUR hook - not libGL's real function.
      * syringe then sets *orig_out = our_hook_address (self-reference).
      * The runtime `if (orig == self) return;` would catch this but
      * turn glXSwapBuffers into a no-op (gears freeze, 38K FPS reported,
      * no actual swap). Override orig with the real address instead.
      * Safe because syringe skips the inline trampoline when orig==hook,
-     * so the real function is unpatched — we can call it directly. */
+     * so the real function is unpatched - we can call it directly. */
     int n = syringe_hook_install("glXSwapBuffers",
                                   (void *)glXSwapBuffers,
                                   (void **)&orig_glXSwapBuffers);

@@ -177,7 +177,7 @@ static int try_glsl(unsigned int *out_vs, unsigned int *out_fs,
 
     if (!idk_fn_glCreateShader || !idk_fn_glShaderSource || !idk_fn_glCompileShader ||
         !idk_fn_glGetShaderiv) {
-        IDK_ERR("shdr", "try_glsl: critical GL shader functions are NULL — cannot compile\n");
+        IDK_ERR("shdr", "try_glsl: critical GL shader functions are NULL - cannot compile\n");
         return 0;
     }
 

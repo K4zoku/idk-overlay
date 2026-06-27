@@ -4,7 +4,7 @@
 #include <dlfcn.h>
 
 /* Resolve the original (next) function via RTLD_NEXT. Safe to call from
- * any context — returns the real implementation that was overridden. */
+ * any context - returns the real implementation that was overridden. */
 static inline void *hook_orig(const char *sym) {
     return dlsym(RTLD_NEXT, sym);
 }

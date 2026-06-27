@@ -27,7 +27,7 @@ static void wptr_axis_source(void *d, struct wl_pointer *p, uint32_t src);
 static void wptr_axis_stop(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis);
 static void wptr_axis_discrete(void *d, struct wl_pointer *p, uint32_t axis, int32_t disc);
 
-/* Listener wrapper vtable (non-static — checked by proxy scan) */
+/* Listener wrapper vtable (non-static - checked by proxy scan) */
 const struct wl_pointer_listener g_ptr_wrapper = {
     .enter          = wptr_enter,
     .leave          = wptr_leave,

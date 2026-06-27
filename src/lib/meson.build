@@ -1,4 +1,4 @@
-# libidk-framesource.so — frame sender library (used by idk-webview)
+# libidk-framesource.so - frame sender library (used by idk-webview)
 idk_fs_lib = library(
     'idk-framesource',
     ['idk_fs.c', '../core/transport.c', '../core/tp_socket.c', '../core/tp_shm.c'],

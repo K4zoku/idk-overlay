@@ -1,12 +1,12 @@
 /*
- * gl_loader.c — Runtime GL symbol resolution
+ * gl_loader.c - Runtime GL symbol resolution
  *
  * Resolves all GL function pointers via dlsym at runtime. No link-time
- * dependency on libGL / libGLESv2 — we grab whatever the target process
+ * dependency on libGL / libGLESv2 - we grab whatever the target process
  * has already loaded (RTLD_NOLOAD).
  *
  * The compositor (compositor.c) calls idk_gl_loader_init() once when
- * it first has a GL context, then uses GL functions normally — the
+ * it first has a GL context, then uses GL functions normally - the
  * macros in idk_gl_loader.h redirect calls to the function pointers
  * resolved here.
  */
@@ -83,7 +83,7 @@ PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader     = NULL;
 
 /* Init: try in order: libGL.so.1, libGLESv2.so.2, then unversioned.
  * Uses RTLD_NOLOAD first to grab already-loaded library.
- * RTLD_NOLOAD first — if target already loaded one of these, reuse it.
+ * RTLD_NOLOAD first - if target already loaded one of these, reuse it.
  * This is important: the GL context the target created is bound to the
  * specific libGL.so.1 it loaded. We must use the SAME library.
  */
@@ -116,7 +116,7 @@ int idk_gl_loader_init(void) {
         return -1;
     }
 
-    /* Resolve all symbols. Don't bail on first NULL — some functions
+    /* Resolve all symbols. Don't bail on first NULL - some functions
      * may be missing (e.g. GLES2 doesn't have everything desktop GL has).
      * Caller checks critical ones. */
     #define RESOLVE(name) \
@@ -188,7 +188,7 @@ int idk_gl_loader_init(void) {
     #undef RESOLVE
 
     if (!idk_fn_glGetIntegerv || !idk_fn_glDrawArrays || !idk_fn_glUseProgram) {
-        IDK_ERR("gl-loader", "Critical GL functions missing — "
+        IDK_ERR("gl-loader", "Critical GL functions missing - "
                         "glGetIntegerv=%p glDrawArrays=%p glUseProgram=%p\n",
                 (void*)idk_fn_glGetIntegerv,
                 (void*)idk_fn_glDrawArrays,

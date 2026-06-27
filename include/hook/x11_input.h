@@ -1,5 +1,5 @@
 /*
- * x11_input.h — X11 input hooking for overlay input capture
+ * x11_input.h - X11 input hooking for overlay input capture
  *
  * Hooks XNextEvent / XPeekEvent / XCheckMaskEvent family to intercept
  * the game's X11 event loop. When "input capture" mode is toggled on,
@@ -9,11 +9,11 @@
  * if XDG_RUNTIME_DIR is unset).
  *
  * Capture is toggled by a hotkey (default: Shift+Tab, configurable via
- * IDK_HOTKEY_CAPTURE env var). The hotkey itself is always swallowed — it
+ * IDK_HOTKEY_CAPTURE env var). The hotkey itself is always swallowed - it
  * only toggles capture, never reaches either side.
  *
  * Socket path and wire protocol are identical to the Wayland input hook
- * (wayland_input.h) — the webview side needs no changes. Wayland and X11
+ * (wayland_input.h) - the webview side needs no changes. Wayland and X11
  * hooks can coexist; whichever library is loaded installs its hook.
  */
 #ifndef IDK_X11_INPUT_H
@@ -27,7 +27,7 @@ extern "C" {
 
 /**
  * Install XNextEvent-family hooks + open input IPC socket.
- * Idempotent — safe to call multiple times.
+ * Idempotent - safe to call multiple times.
  *
  * Should be called after libX11.so.6 is loaded by the game. In practice
  * this means: from idk_overlay_init() (synchronous probe) and from

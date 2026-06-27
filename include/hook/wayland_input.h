@@ -1,5 +1,5 @@
 /*
- * wayland_input.h — Wayland input hooking for overlay input capture
+ * wayland_input.h - Wayland input hooking for overlay input capture
  *
  * Hooks wl_proxy_add_listener (and optionally wl_proxy_add_dispatcher)
  * to intercept the game's wl_pointer / wl_keyboard listener registration.
@@ -15,7 +15,7 @@
  *     reaches either side).
  *
  * The input IPC socket is $XDG_RUNTIME_DIR/idk-overlay-<pid>-input
- * (or /tmp/idk-overlay-<pid>-input if XDG_RUNTIME_DIR is unset) —
+ * (or /tmp/idk-overlay-<pid>-input if XDG_RUNTIME_DIR is unset) -
  * separate from the frame socket to avoid multiplexing. The webview
  * connects to it and reads idk_ipc_input_event_t messages.
  */
@@ -30,7 +30,7 @@ extern "C" {
 
 /**
  * Install wl_proxy_add_listener hook (and wl_proxy_add_dispatcher).
- * Idempotent — safe to call multiple times.
+ * Idempotent - safe to call multiple times.
  *
  * Should be called after libwayland-client.so.0 is loaded by the game.
  * In practice this means: from the EGL/GLX/Vulkan swap hook on first

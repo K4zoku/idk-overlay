@@ -27,7 +27,7 @@
 #include "core/log.h"
 #include "hook/overlay.h"
 
-/* Overlay visibility — defined in overlay.c. When 0, skip render_overlay
+/* Overlay visibility - defined in overlay.c. When 0, skip render_overlay
  * so the game's present goes through unmodified (matches the EGL/GLX
  * hook behavior in egl_hook.c / glx_hook.c). */
 extern _Atomic int g_overlay_visible;
@@ -325,7 +325,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(
      *
      * IMPORTANT: Only DEVICE extensions go here. VK_KHR_external_memory_capabilities
      * is an INSTANCE extension (type="instance" in vk.xml) and must NOT be
-     * passed to vkCreateDevice — NVIDIA silently accepts but later pipeline
+     * passed to vkCreateDevice - NVIDIA silently accepts but later pipeline
      * creation fails with VK_ERROR_UNKNOWN (-13).
      *
      * Device extensions needed:
@@ -337,7 +337,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(
      * don't need to explicitly add it to vkCreateInstance.
      *
      * We make a shallow copy of pCreateInfo with an enlarged extension
-     * array — original pCreateInfo is const, callers don't expect mutation. */
+     * array - original pCreateInfo is const, callers don't expect mutation. */
     const char *dmabuf_exts[] = {
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
         VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
@@ -499,7 +499,7 @@ static VKAPI_ATTR void VKAPI_CALL idk_DestroySwapchainKHR(
     IDK_LOG("vk-layer", "DestroySwapchainKHR (swapchain=%p)\n", (void *)swapchain);
 }
 
-/* Hook: vkGetDeviceQueue — track device→queue mapping for dispatch */
+/* Hook: vkGetDeviceQueue - track device→queue mapping for dispatch */
 
 static VKAPI_ATTR void VKAPI_CALL idk_GetDeviceQueue(
     VkDevice device,
@@ -523,7 +523,7 @@ static VKAPI_ATTR void VKAPI_CALL idk_GetDeviceQueue(
     }
 }
 
-/* Hook: vkQueuePresentKHR — render overlay on swapchain image before present */
+/* Hook: vkQueuePresentKHR - render overlay on swapchain image before present */
 
 static VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(
     VkQueue queue,

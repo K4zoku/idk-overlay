@@ -1,7 +1,7 @@
 /*
- * compositor_vk.h — Vulkan-native compositor API
+ * compositor_vk.h - Vulkan-native compositor API
  *
- * Pure Vulkan rendering pipeline — no GL/EGL dependency.
+ * Pure Vulkan rendering pipeline - no GL/EGL dependency.
  * Receives overlay frames (SHM or DMABUF) from webview via socket,
  * imports to VkImage, renders overlay on swapchain image via
  * VkPipeline (SPIR-V shaders + alpha blending).
@@ -50,13 +50,13 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
 /* Check if compositor has a frame to render. */
 int idk_vk_compositor_has_overlay(void);
 
-/* Notify resize (same as GL compositor — embedded in ACK). */
+/* Notify resize (same as GL compositor - embedded in ACK). */
 void idk_vk_compositor_notify_resize(int w, int h);
 
 /* Notify that a swapchain was created (used to skip overlay during storms). */
 void idk_vk_compositor_notify_swapchain_created(void);
 
-/* Shut down — destroy Vulkan resources. */
+/* Shut down - destroy Vulkan resources. */
 void idk_vk_compositor_shutdown(void);
 
 #ifdef __cplusplus

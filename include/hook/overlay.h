@@ -1,5 +1,5 @@
 /*
- * idk_overlay.h — Public interface for the injectable frame-capture library
+ * idk_overlay.h - Public interface for the injectable frame-capture library
  *
  * Usage:
  *   This header is included by the injected .so. The .so's __attribute__((constructor))
@@ -20,7 +20,7 @@ extern "C" {
 /**
  * Initialize the overlay capture system.
  *
- * Called from __attribute__((constructor)) — installs hooks automatically
+ * Called from __attribute__((constructor)) - installs hooks automatically
  * via syringe_hook_install() for the graphics stack the target uses.
  *
  * @param socket_path  Unix socket path for IPC (e.g., "/run/user/1000/idk-overlay-1234").
@@ -39,7 +39,7 @@ void idk_overlay_shutdown(void);
 
 /**
  * Try to install the Wayland input hook (idk_wayland_input_init).
- * Idempotent and safe to call from any thread — internally guarded by
+ * Idempotent and safe to call from any thread - internally guarded by
  * a once-flag. The hook only installs if libwayland-client.so.0 is
  * loaded in the process. Designed to be called from the EGL/GLX/Vulkan
  * swap hook on first swap (after the graphics hook is confirmed working

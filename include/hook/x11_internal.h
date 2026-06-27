@@ -61,7 +61,7 @@ typedef int Bool;
 #define IDK_KEY_SCROLLLOCK 70
 #define IDK_KEY_PAUSE      119
 
-/* XEvent generic header — first 5 fields are common to all X event types */
+/* XEvent generic header - first 5 fields are common to all X event types */
 typedef struct {
     int type;
     unsigned long serial;
@@ -70,7 +70,7 @@ typedef struct {
     Window window;
 } XAnyEventHeaders;
 
-/* Minimum XEvent struct — Xlib defines it as a union of all event types,
+/* Minimum XEvent struct - Xlib defines it as a union of all event types,
  * with a minimum size of 192 bytes on amd64. We declare a byte buffer
  * large enough to hold any XEvent, and cast as needed. */
 #define X11_EVENT_BUFFER_SIZE 192
@@ -137,7 +137,7 @@ typedef union {
 #define Button8         8   /* back */
 #define Button9         9   /* forward */
 
-/* X event masks (from X.h) — used by XGrabPointer, XSelectInput */
+/* X event masks (from X.h) - used by XGrabPointer, XSelectInput */
 #define NoEventMask              (0L)
 #define KeyPressMask             (1L<<0)
 #define KeyReleaseMask           (1L<<1)

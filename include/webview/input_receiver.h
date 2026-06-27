@@ -5,7 +5,7 @@
 #include <QString>
 #include <QTimer>
 
-#include "public/idk_ipc.h"  /* idk_input_event_t — same struct as wire protocol */
+#include "public/idk_ipc.h"  /* idk_input_event_t - same struct as wire protocol */
 
 class QIODevice;
 class QWebEngineView;
@@ -57,7 +57,7 @@ private:
     Qt::MouseButtons m_buttons;
     bool m_focusSent = false;          /* Chromium focus has been pushed */
 
-    /* Key repeat state — Wayland key repeat is client-side. When captured,
+    /* Key repeat state - Wayland key repeat is client-side. When captured,
      * the game's SDL3 repeat timer never starts (we swallow key presses).
      * We implement repeat here using the rate/delay from wl_keyboard.repeat_info. */
     QTimer *m_repeatTimer = nullptr;

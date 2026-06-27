@@ -26,7 +26,7 @@
 
 typedef unsigned long KeySym;
 
-/* Capture hotkey globals — defined in wayland_input.c, shared with X11 */
+/* Capture hotkey globals - defined in wayland_input.c, shared with X11 */
 extern uint32_t g_hotkey_keysym;
 extern uint32_t g_hotkey_scancode;
 extern uint32_t g_hotkey_mods;
@@ -42,14 +42,14 @@ static int g_hooks_installed = 0;
 static int g_egl_hook_installed = 0;
 static pid_t g_webview_pid = -1;
 
-/* Overlay visibility — controlled by hotkey, checked by compositor render.
+/* Overlay visibility - controlled by hotkey, checked by compositor render.
  * _Atomic (not volatile) so cross-thread reads/writes are well-defined
  * under C11. Written from input hooks (x11_kb / wayland_kb / sidecar),
  * read from compositor render path (egl_hook / glx_hook / vulkan_layer
  * / compositor_egl / compositor_vk). */
 _Atomic int g_overlay_visible = 1;
 
-/* Overlay hotkey config — separate from capture hotkey.
+/* Overlay hotkey config - separate from capture hotkey.
  * If both hotkeys are the same key, combined behavior:
  *   press when !captured → capture ON + show overlay
  *   press when captured  → capture OFF (overlay stays) */
@@ -80,7 +80,7 @@ static void *hook_install_thread(void *arg) {
 
     /* Background retry for input hooks that may load late (Qt/SDL
      * platform plugins dlopen libX11/libwayland-client after our
-     * constructor runs). Install BOTH — see comment in
+     * constructor runs). Install BOTH - see comment in
      * idk_overlay_init() for why both are needed (XWayland vs
      * Wayland-native can't be reliably detected).
      *
@@ -333,13 +333,13 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
      * games, making the X11 probe always succeed and masking Wayland).
      *
      * Why both? On XWayland, the game loads libX11 (for X events) AND
-     * libwayland-client (Qt/SDL platform plugins) — but only X11 events
+     * libwayland-client (Qt/SDL platform plugins) - but only X11 events
      * fire (game uses XNextEvent, not wl_keyboard). On Wayland-native,
      * only Wayland events fire (wl_keyboard, not XNextEvent).
      *
      * Both hooks share the same globals (g_captured, g_hotkey_pressed,
      * g_overlay_visible) and the same input socket (init_input_socket
-     * guards against double-init). Hotkey detection is idempotent —
+     * guards against double-init). Hotkey detection is idempotent -
      * g_hotkey_pressed latch prevents double-toggle if both paths fire
      * (shouldn't happen, but defense in depth).
      *

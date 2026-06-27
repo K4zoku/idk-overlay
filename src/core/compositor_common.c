@@ -1,5 +1,5 @@
 /*
- * compositor_common.c — shared code between GL and Vulkan compositors.
+ * compositor_common.c - shared code between GL and Vulkan compositors.
  *
  * See include/core/compositor_common.h for API docs.
  */

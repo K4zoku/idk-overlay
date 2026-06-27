@@ -1,5 +1,5 @@
 /*
- * compositor_common.h — shared code between GL and Vulkan compositors.
+ * compositor_common.h - shared code between GL and Vulkan compositors.
  *
  * Contains frame helpers, resize debounce logic, SHM mmap cache, and
  * cross-GPU dmabuf vendor detection.
@@ -47,7 +47,7 @@ bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_
 void idk_comp_get_path(char *buf, size_t bufsz);
 
 /* Resolve the per-process runtime directory used for sockets and SHM.
- * Returns $XDG_RUNTIME_DIR when set and non-empty (preferred —
+ * Returns $XDG_RUNTIME_DIR when set and non-empty (preferred -
  * 0700-per-user tmpfs, no token auth needed, auto-cleaned on logout).
  * Falls back to /tmp otherwise. The returned string has no trailing
  * slash and is at most bufsz-1 bytes (NUL-terminated). */

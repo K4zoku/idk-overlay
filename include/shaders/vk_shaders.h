@@ -11,7 +11,7 @@
  *   spv_overlay_vk_frag, spv_overlay_vk_frag_size
  *
  * IMPORTANT: the _size symbols are ABSOLUTE symbols (type A in nm output),
- * created by `ld -r -b binary`. Their VALUE is the byte count — they are
+ * created by `ld -r -b binary`. Their VALUE is the byte count - they are
  * NOT pointers to memory containing the size. See include/gl/shader.h for
  * the full explanation of why these are declared as arrays and cast via
  * the _SIZE macros.

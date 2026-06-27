@@ -516,7 +516,7 @@ void (*orig_wl_proxy_destroy)(struct wl_proxy *) = NULL;
 
 void hook_wl_proxy_destroy(struct wl_proxy *proxy) {
     if (proxy && proxy == g_game_pointer_proxy) {
-        WLOG("wl_proxy_destroy: game pointer %p — destroying cursor shape device",
+        WLOG("wl_proxy_destroy: game pointer %p - destroying cursor shape device",
              (void *)proxy);
         if (g_cursor_shape_device) {
             real_wl_proxy_marshal_flags(g_cursor_shape_device, 0,

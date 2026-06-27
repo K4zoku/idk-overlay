@@ -99,7 +99,7 @@ TEST(recv_input_validates_type_range) {
         idk_input_event_t ev;
         memset(&ev, 0, sizeof(ev));
         ev.type = (uint8_t)t;
-        /* type in range — would not hit the EBADMSG branch */
+        /* type in range - would not hit the EBADMSG branch */
         ASSERT_TRUE(ev.type >= IDK_INPUT_KEY && ev.type <= IDK_INPUT_REPEAT);
     }
     /* Out of range */
