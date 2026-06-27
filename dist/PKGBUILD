@@ -1,0 +1,32 @@
+# Maintainer: Kazoku <k4zoku@pm.me>
+_pkgbase=idk-overlay
+pkgname=${_pkgbase}-git
+pkgver=0.1
+pkgrel=1
+pkgdesc="Linux game overlay engine with WebView support (EGL/GLX/Vulkan, Wayland/X11)"
+arch=('x86_64')
+url="https://github.com/K4zoku/idk-overlay"
+license=('MIT')
+depends=('qt6-base' 'qt6-webengine' 'wayland' 'libx11' 'libgl')
+provides=("${_pkgbase}")
+conflicts=("${_pkgbase}")
+# added cmake to resolve layer-shell-qt build dependency
+makedepends=('git' 'gcc' 'meson' 'ninja')
+optdepends=('shaderc: SPIR-V shader compilation support')
+source=("${_pkgbase}::git+${url}.git")
+sha256sums=('SKIP')
+
+# pkgver() {
+#     cd "${_pkgbase}" || exit 1
+#     git describe --tags | sed 's/^v//;s/_/./;s/\([^-]*-g\)/r\1/;s/-/./g'
+# }
+
+build() {
+    arch-meson --wrap-mode=default "${_pkgbase}" build
+    meson compile -C build
+}
+
+package() {
+    meson install -C build --destdir "${pkgdir}"
+    install -Dm644 "${_pkgbase}/LICENSE" "${pkgdir}/usr/share/licenses/${_pkgbase}/LICENSE"
+}

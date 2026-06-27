@@ -37,7 +37,23 @@ This project started as a workaround for a simple problem: [tosu](https://github
 
 ## 📥 Installation
 
+### Arch Linux
+
+PKGBUILD available at [dist/PKGBUILD](dist/PKGBUILD)
+
+```bash
+git clone https://github.com/K4zoku/idk-overlay
+cd idk-overlay/dist
+makepkg -si
+```
+
 _AUR package coming soon_
+
+### Other distributions
+
+No official packages yet. See [Building from source](#%EF%B8%8F-building-from-source) below.
+
+If you can port `idk-overlay` to other package managers, contributions are welcome!
 
 ### 🏗️ Building from source
 
