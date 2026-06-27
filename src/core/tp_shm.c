@@ -50,9 +50,10 @@ _Static_assert(SHM_O_FRAME_SEQ + 4 <= SHM_SIZE,
 
 #define SHM_MAGIC_VAL 0x4D485349  /* "SHMI" */
 
-#define SLOT_EMPTY 0
-#define SLOT_FRAME 1
-#define SLOT_ACK   2
+#define SLOT_EMPTY   0
+#define SLOT_FRAME   1
+#define SLOT_ACK     2
+#define SLOT_CONSUMED 3
 
 /* ── _rsv[48] layout for SHM backend ─────────────────────────────────── */
 /*  [ 0..7 ]  void *shm_ptr     — mmap'd SHM address
@@ -251,6 +252,11 @@ int tp_shm_init(idk_transport_t *tp, const char *name) {
 }
 
 void tp_shm_destroy(idk_transport_t *tp) {
+    /* Save SHM name before we clear _rsv */
+    char shm_name_save[40] = {0};
+    const char *sn = TP_SH_SHM_NAME(tp->_rsv);
+    if (sn[0]) memcpy(shm_name_save, sn, sizeof(shm_name_save) - 1);
+
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
     if (ptr) {
         if (tp->role == IDK_TP_CONSUMER) {
@@ -264,9 +270,11 @@ void tp_shm_destroy(idk_transport_t *tp) {
     if (tp->_client_fd >= 0) { close(tp->_client_fd); tp->_client_fd = -1; }
     tp->ready = false;
 
-    const char *shm_name = TP_SH_SHM_NAME(tp->_rsv);
-    if (shm_name[0] && tp->role == IDK_TP_CONSUMER)
-        shm_unlink(shm_name);
+    /* Clear _rsv so dangling pointer is never accessible again */
+    memset(tp->_rsv, 0, sizeof(tp->_rsv));
+
+    if (shm_name_save[0] && tp->role == IDK_TP_CONSUMER)
+        shm_unlink(shm_name_save);
 }
 
 /* ── Consumer API ─────────────────────────────────────────────────────── */
@@ -278,7 +286,12 @@ int tp_shm_accept(idk_transport_t *tp) {
     if (tp->ready) return 1;
 
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
-    if (!ptr) return -1;
+    if (!ptr) {
+        /* _rsv cleared → transport was destroyed or never initialized */
+        if (tp->_server_fd < 0 && tp->_client_fd < 0)
+            return -1;
+        return -1;
+    }
 
     /* Check if producer has connected */
     int ps = atomic_load(shm_atom(ptr, SHM_O_PROD_STATE));
@@ -356,6 +369,12 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
         fds[i] = stolen;
     }
 
+    /* Mark slot consumed — prevents re-reading the same frame before
+     * tp_shm_send_ack transitions to SLOT_ACK. The producer's
+     * tp_shm_send checks for SLOT_EMPTY || SLOT_ACK, so SLOT_CONSUMED
+     * keeps it from overwriting until we're done. */
+    atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_CONSUMED);
+
     return 1;
 }
 
@@ -394,11 +413,23 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
         return -1;
     }
 
-    /* Wait for slot to be empty (consumer must have read previous ack) */
-    int s = atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE));
-    if (s != SLOT_EMPTY && s != SLOT_ACK) {
-        errno = EAGAIN;
-        return -1;
+    /* Wait for slot to be empty (consumer must have read previous ack).
+     * Unlike the old code which returned EAGAIN immediately, we wait
+     * (with futex + small timeout) so the caller doesn't have to busy-
+     * loop retry — the webview's tryExportDMABufOpenGL retries are
+     * tight and can burn CPU for seconds. */
+    for (int tries = 0; ; tries++) {
+        int s = atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE));
+        if (s == SLOT_EMPTY || s == SLOT_ACK) break;
+        if (s == -1 || atomic_load(shm_atom(ptr, SHM_O_CONS_STATE)) == -1) {
+            errno = ECONNRESET;
+            return -1;
+        }
+        if (tries >= 500) {
+            errno = EAGAIN;
+            return -1;
+        }
+        futex_wait(shm_atom(ptr, SHM_O_SLOT_STATE), s, 2);
     }
 
     /* Write dmabuf fd numbers into SHM (these are fd numbers in OUR
@@ -430,28 +461,46 @@ int tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
         return -1;
     }
 
+    /* Compute absolute deadline for real timeout tracking */
+    struct timespec deadline;
+    if (timeout_ms >= 0) {
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_nsec += (long)timeout_ms * 1000000L;
+        deadline.tv_sec  += deadline.tv_nsec / 1000000000L;
+        deadline.tv_nsec %= 1000000000L;
+    }
+
     /* Wait for slot to become SLOT_ACK */
     atomic_int *slot = shm_atom(ptr, SHM_O_SLOT_STATE);
-    int waited_ms = 0;
-    while (atomic_load(slot) != SLOT_ACK) {
+    while (1) {
+        int s = atomic_load(slot);
+        if (s == SLOT_ACK) break;
+
         /* Check consumer dead */
-        if (atomic_load(shm_atom(ptr, SHM_O_CONS_STATE)) == -1) {
+        if (s == -1 || atomic_load(shm_atom(ptr, SHM_O_CONS_STATE)) == -1) {
             errno = ECONNRESET;
             return -1;
         }
-        if (timeout_ms >= 0 && waited_ms >= timeout_ms) {
-            errno = ETIMEDOUT;
-            return -1;
+
+        /* Real elapsed-time check */
+        if (timeout_ms >= 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec > deadline.tv_sec ||
+                (now.tv_sec == deadline.tv_sec &&
+                 now.tv_nsec >= deadline.tv_nsec)) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
         }
-        /* futex_wait on slot while it's SLOT_FRAME — wakes when
-         * consumer changes it (to SLOT_ACK or SLOT_EMPTY) */
-        int tick_ms = 1000;
-        if (timeout_ms >= 0 && timeout_ms - waited_ms < tick_ms)
-            tick_ms = timeout_ms - waited_ms;
-        if (tick_ms <= 0) tick_ms = 1;
-        int rc = futex_wait(slot, SLOT_FRAME, tick_ms);
+
+        /* futex_wait on slot while value == s — wakes when consumer
+         * changes it (to SLOT_CONSUMED or SLOT_ACK).
+         * Using the current slot value means we correctly block through
+         * SLOT_FRAME → SLOT_CONSUMED → SLOT_ACK transitions without
+         * busy-looping or premature timeouts. */
+        int rc = futex_wait(slot, s, 100);
         (void)rc;
-        waited_ms += tick_ms;
     }
 
     /* Read ack and reset slot */

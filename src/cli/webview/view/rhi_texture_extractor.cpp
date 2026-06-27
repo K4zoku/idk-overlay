@@ -368,15 +368,6 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
             if (fds[i] >= 0) ::close(fds[i]);
     }
 
-    int sendFd = dup(m_view->m_dmaExportFd);
-    if (sendFd < 0) {
-        IDK_LOG("webview-qt", "tryExportDMABufOpenGL: dup failed: %s\n", strerror(errno));
-        glBindTexture(GL_TEXTURE_2D, 0);
-        if (savedDpy != EGL_NO_DISPLAY)
-            eglMakeCurrent(savedDpy, savedDraw, savedRead, savedCtx);
-        return false;
-    }
-
     {
         idk_fs_frame_t frame;
         memset(&frame, 0, sizeof(frame));
@@ -388,9 +379,12 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
         frame.fourcc  = m_view->m_dmaExportFourcc;
         frame.modifier = m_view->m_dmaExportModifier;
 
-        int fds_arr[4] = { sendFd, -1, -1, -1 };
+        /* Pass the original dmabuf fd (not a dup) so the SHM backend can
+         * write its number into the shared page — the fd stays open as
+         * long as m_dmaExportFd is valid (across frames of same size).
+         * The socket backend (SCM_RIGHTS) transfers the fd atomically. */
+        int fds_arr[4] = { m_view->m_dmaExportFd, -1, -1, -1 };
         int rc = idk_fs_send_dma_buf(fds_arr, &frame);
-        ::close(sendFd);
 
         if (rc == 0) {
             m_view->m_buffer = (m_view->m_buffer + 1) % 2;

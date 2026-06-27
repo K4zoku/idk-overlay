@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
 
 #include "hook/overlay.h"
 #include "hook/hook_plugin.h"
@@ -210,10 +211,6 @@ static void fork_webview(void) {
         return;
     }
 
-    /* Default to SHM backend for forked webview (faster, no socket overhead).
-     * User can override by setting IDK_TP_BACKEND before launching the game. */
-    setenv("IDK_TP_BACKEND", "shm", 0);  /* don't overwrite if already set */
-
     /* Pass game process name so webview can match config sections.
      * Read from /proc/self/comm (truncated to 15 chars by kernel). */
     char comm[64] = {0};
@@ -236,7 +233,11 @@ static void fork_webview(void) {
     }
 
     if (g_webview_pid == 0) {
-        /* Child — exec webview */
+        /* Child — die when parent dies */
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        /* Close inherited fds to avoid leaking graphics resources */
+        for (int i = 3; i < 1024; i++) close(i);
+
         IDK_LOG("overlay", "forked webview child, exec %s (comm=%s socket=%s backend=%s)\n",
                 bin, comm, g_socket_path, getenv("IDK_TP_BACKEND") ?: "socket");
 

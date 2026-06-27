@@ -699,16 +699,21 @@ int idk_compositor_egl_render(void) {
                                          hdr.modifier, &img);
 
             if (tex == 0) {
-                /* EGL path failed (likely GLX host with no current display).
-                 * Try GL_EXT_memory_object MangoHud-style fallback. */
+                /* EGL path failed — try GL_EXT_memory_object MangoHud-style
+                 * fallback. This works on Mesa even for EGL apps when the
+                 * EGL driver doesn't support the specific modifier. */
+                IDK_LOG("comp", "EGL dmabuf import failed, trying GL_EXT_memory_object (MangoHud) path\n");
                 tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                             hdr.stride, hdr.fourcc);
                 if (tex) {
+                    IDK_LOG("comp", "GL_EXT_memory_object dmabuf import OK\n");
                     /* GL_EXT_memory_object dup'd the fd internally (driver
                      * owns the dup'd fd). Original dmabuf_fd is no longer
                      * needed — close it now. */
                     close(dmabuf_fd);
                     fd_consumed = 0;  /* fd already closed, don't track */
+                } else {
+                    IDK_ERR("comp", "GL_EXT_memory_object dmabuf import also failed\n");
                 }
             } else {
                 /* EGL path: eglCreateImageKHR kept fd alive via EGLImage,
@@ -812,6 +817,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
     attrs[ai++] = 0;
     attrs[ai++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
     attrs[ai++] = (EGLint)stride;
+    int ai_nom = ai;  /* index before modifier attrs, used for retry */
     if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
         attrs[ai++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
         attrs[ai++] = (EGLint)(modifier & 0xFFFFFFFF);
@@ -828,10 +834,31 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
         egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
 
     if (img == EGL_NO_IMAGE_KHR) {
-        IDK_ERR("comp", "eglCreateImageKHR failed: 0x%04X (dpy=%p)\n",
-                (unsigned int)(fn_eglGetError ? fn_eglGetError() : 0),
-                (void*)egl_dpy);
-        return 0;
+        EGLint egl_err = fn_eglGetError ? fn_eglGetError() : 0;
+        IDK_LOG("comp", "eglCreateImageKHR failed: 0x%04X (dpy=%p) — retrying without modifier\n",
+                (unsigned int)egl_err, (void*)egl_dpy);
+
+        /* Retry without modifier — some EGL drivers can't import tiled/
+         * compressed dmabufs but accept the same fd without modifier attr
+         * (driver falls back to linear interpretation). */
+        if (modifier != 0 && modifier != DRM_FORMAT_MOD_INVALID) {
+            /* Retry without modifier by terminating the list before
+             * the modifier attributes and re-adding EGL_NONE. */
+            attrs[ai_nom] = EGL_NONE;
+            img = fn_eglCreateImageKHR(
+                egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
+            if (img == EGL_NO_IMAGE_KHR) {
+                egl_err = fn_eglGetError ? fn_eglGetError() : 0;
+                IDK_ERR("comp", "eglCreateImageKHR retry (no modifier) also failed: 0x%04X\n",
+                        (unsigned int)egl_err);
+            } else {
+                IDK_LOG("comp", "eglCreateImageKHR retry (no modifier) OK — imported as linear\n");
+            }
+        }
+
+        if (img == EGL_NO_IMAGE_KHR) {
+            return 0;
+        }
     }
 
     GLuint tex;

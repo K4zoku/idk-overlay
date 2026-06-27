@@ -165,6 +165,7 @@ int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_fs_frame_t *frame) {
                 f.width, f.height, f.stride, f.flags,
                 (unsigned long long)f.modifier, dma_buf_fds[0]);
     }
+
     return rc;
 }
 
