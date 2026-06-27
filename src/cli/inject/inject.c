@@ -20,6 +20,7 @@
 
 #include "syringe.h"
 #include "core/log.h"
+#include "core/compositor_common.h"
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -32,7 +33,8 @@ static void usage(const char *prog) {
         "  library.so     Path to libidk-overlay.so (default: auto-detect)\n"
         "\n"
         "Options:\n"
-        "  --socket PATH  Unix socket path for IPC (default: /tmp/idk-overlay-<pid>)\n"
+        "  --socket PATH  Unix socket path for IPC (default: $XDG_RUNTIME_DIR/idk-overlay-<pid>,\n"
+        "                 falls back to /tmp/idk-overlay-<pid>)\n"
         "  --vk 0|1       Enable Vulkan hooks (default: 1)\n"
         "  --gl 0|1       Enable OpenGL hooks (default: 1)\n"
         "  -v, --verbose  Enable verbose logging\n"
@@ -106,9 +108,16 @@ int main(int argc, char **argv) {
         lib_path = abs_path;
     }
 
-    /* Default socket path: PID-based */
-    char default_sock[64];
-    snprintf(default_sock, sizeof(default_sock), "/tmp/idk-overlay-%d", target_pid);
+    /* Default socket path: $XDG_RUNTIME_DIR/idk-overlay-<pid>, /tmp fallback.
+     * Uses the TARGET pid (the game's pid), not ours — the injected lib
+     * will be running inside the target process. */
+    char default_sock[PATH_MAX];
+    {
+        char dir[PATH_MAX];
+        idk_comp_get_runtime_dir(dir, sizeof(dir));
+        snprintf(default_sock, sizeof(default_sock), "%s/idk-overlay-%d",
+                 dir, (int)target_pid);
+    }
     if (!sock_path) {
         sock_path = default_sock;
     }

@@ -71,9 +71,10 @@ sudo meson install -C build
 # Launch game with overlay + auto-start webview
 ./bin/idk-overlay --qt-client osu-lazer
 
-# Or manually:
-IDK_SOCKET=/tmp/idk-overlay-$$ LD_PRELOAD=./build/libidk-overlay.so osu-lazer &
-IDK_SOCKET=/tmp/idk-overlay-$$ ./build/src/cli/webview/idk-webview
+# Or manually (socket defaults to $XDG_RUNTIME_DIR/idk-overlay-<pid>,
+# /tmp/idk-overlay-<pid> fallback if XDG_RUNTIME_DIR is unset):
+LD_PRELOAD=./build/libidk-overlay.so osu-lazer &
+./build/src/cli/webview/idk-webview
 ```
 
 ### Option 2: ptrace inject (live process)
@@ -85,15 +86,15 @@ osu-lazer &
 # → Auto-detects .NET → diagnostic IPC (no ptrace, no root)
 # → Or ptrace for native apps
 
-# Start webview
-IDK_SOCKET=/tmp/idk-overlay-$(pgrep osu!) ./build/src/cli/webview/idk-webview
+# Start webview (socket path defaults to $XDG_RUNTIME_DIR/idk-overlay-<pid>)
+./build/src/cli/webview/idk-webview
 ```
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `IDK_SOCKET` | `/tmp/idk-overlay-<pid>` | Unix socket path (PID-based, avoids conflicts) |
+| `IDK_SOCKET` | `$XDG_RUNTIME_DIR/idk-overlay-<pid>` (or `/tmp/idk-overlay-<pid>` fallback) | Unix socket path (PID-based, avoids conflicts) |
 | `IDK_VK` | `1` | Enable Vulkan hooks |
 | `IDK_GL` | `1` | Enable OpenGL/EGL hooks |
 | `IDK_DEBUG` | (unset) | Set to `1` to enable debug logging |

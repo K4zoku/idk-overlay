@@ -46,6 +46,20 @@ bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_
 
 void idk_comp_get_path(char *buf, size_t bufsz);
 
+/* Resolve the per-process runtime directory used for sockets and SHM.
+ * Returns $XDG_RUNTIME_DIR when set and non-empty (preferred —
+ * 0700-per-user tmpfs, no token auth needed, auto-cleaned on logout).
+ * Falls back to /tmp otherwise. The returned string has no trailing
+ * slash and is at most bufsz-1 bytes (NUL-terminated). */
+void idk_comp_get_runtime_dir(char *buf, size_t bufsz);
+
+/* Build the default socket path "<runtime_dir>/idk-overlay-<pid>"
+ * (frame socket) or "<runtime_dir>/idk-overlay-<pid>-input" (input
+ * socket, when with_input_suffix != 0). bufsz must be at least
+ * sizeof(sun_path)+1 to be safely usable as a sockaddr_un.sun_path. */
+void idk_comp_get_default_socket_path(char *buf, size_t bufsz,
+                                      int with_input_suffix);
+
 /* ── ACK builder ──────────────────────────────────────────────────────── */
 
 /* Build an idk_ack_msg_t from resize state. Caller then sends via

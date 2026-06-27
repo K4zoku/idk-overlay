@@ -4,7 +4,9 @@
  * Hooks XNextEvent / XPeekEvent / XCheckMaskEvent family to intercept
  * the game's X11 event loop. When "input capture" mode is toggled on,
  * keyboard/mouse events are swallowed from the game and forwarded to
- * the webview via IPC (idk_input_event_t on /tmp/idk-overlay-<pid>-input).
+ * the webview via IPC (idk_input_event_t on
+ * $XDG_RUNTIME_DIR/idk-overlay-<pid>-input, or /tmp/idk-overlay-<pid>-input
+ * if XDG_RUNTIME_DIR is unset).
  *
  * Capture is toggled by a hotkey (default: Shift+Tab, configurable via
  * IDK_HOTKEY_CAPTURE env var). The hotkey itself is always swallowed — it

@@ -14,9 +14,10 @@
  *   - The hotkey itself is swallowed (it only toggles capture, never
  *     reaches either side).
  *
- * The input IPC socket is /tmp/idk-overlay-<pid>-input — separate from
- * the frame socket to avoid multiplexing. The webview connects to it
- * and reads idk_ipc_input_event_t messages.
+ * The input IPC socket is $XDG_RUNTIME_DIR/idk-overlay-<pid>-input
+ * (or /tmp/idk-overlay-<pid>-input if XDG_RUNTIME_DIR is unset) —
+ * separate from the frame socket to avoid multiplexing. The webview
+ * connects to it and reads idk_ipc_input_event_t messages.
  */
 #ifndef IDK_WAYLAND_INPUT_H
 #define IDK_WAYLAND_INPUT_H
@@ -35,8 +36,10 @@ extern "C" {
  * In practice this means: from the EGL/GLX/Vulkan swap hook on first
  * call (the existing pattern in egl_hook.c / glx_hook.c).
  *
- * Also opens the input IPC socket as a server: /tmp/idk-overlay-<pid>-input
- * (or $IDK_SOCKET-input if IDK_SOCKET is set). The webview connects to it.
+ * Also opens the input IPC socket as a server:
+ * $XDG_RUNTIME_DIR/idk-overlay-<pid>-input (or /tmp/idk-overlay-<pid>-input
+ * if XDG_RUNTIME_DIR is unset; or $IDK_SOCKET-input if IDK_SOCKET is set).
+ * The webview connects to it.
  *
  * @return 0 on success, -1 on failure (e.g. libwayland not available).
  */

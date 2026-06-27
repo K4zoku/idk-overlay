@@ -23,8 +23,9 @@ extern "C" {
  * Called from __attribute__((constructor)) — installs hooks automatically
  * via syringe_hook_install() for the graphics stack the target uses.
  *
- * @param socket_path  Unix socket path for IPC (e.g., "/tmp/idk-overlay-1234").
- *                     If NULL, defaults to "/tmp/idk-overlay".
+ * @param socket_path  Unix socket path for IPC (e.g., "/run/user/1000/idk-overlay-1234").
+ *                     If NULL, defaults to "$XDG_RUNTIME_DIR/idk-overlay-<pid>"
+ *                     (or "/tmp/idk-overlay-<pid>" if XDG_RUNTIME_DIR is unset).
  * @param enable_vk    Non-zero to hook Vulkan (vkQueuePresentKHR).
  * @param enable_gl    Non-zero to hook OpenGL (glXSwapBuffers, eglSwapBuffers).
  * @return             0 on success, -1 on failure.

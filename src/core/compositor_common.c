@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>  /* PATH_MAX */
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -46,12 +47,41 @@ bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_
 
 /* ── Path helpers ────────────────────────────────────────────────────── */
 
+void idk_comp_get_runtime_dir(char *buf, size_t bufsz) {
+    /* XDG_RUNTIME_DIR is the correct per-user runtime location:
+     *   - 0700-per-user tmpfs (no token auth needed)
+     *   - cleaned up automatically on logout (systemd `tmpfiles.d`)
+     *   - backed by tmpfs, so socket/SHM I/O is RAM-speed
+     * Fall back to /tmp if unset (e.g. minimal containers, non-systemd
+     * init, ssh sessions without PAM setting XDG_RUNTIME_DIR). */
+    const char *xdg = getenv("XDG_RUNTIME_DIR");
+    if (xdg && xdg[0]) {
+        snprintf(buf, bufsz, "%s", xdg);
+        /* Strip a trailing slash so callers can append "/foo" cleanly. */
+        size_t n = strlen(buf);
+        while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
+        return;
+    }
+    snprintf(buf, bufsz, "/tmp");
+}
+
+void idk_comp_get_default_socket_path(char *buf, size_t bufsz,
+                                      int with_input_suffix) {
+    char dir[PATH_MAX];
+    idk_comp_get_runtime_dir(dir, sizeof(dir));
+    if (with_input_suffix) {
+        snprintf(buf, bufsz, "%s/idk-overlay-%d-input", dir, (int)getpid());
+    } else {
+        snprintf(buf, bufsz, "%s/idk-overlay-%d", dir, (int)getpid());
+    }
+}
+
 void idk_comp_get_path(char *buf, size_t bufsz) {
     const char *env = getenv("IDK_SOCKET");
     if (env && env[0]) {
         snprintf(buf, bufsz, "%s", env);
     } else {
-        snprintf(buf, bufsz, "/tmp/idk-overlay-%d", getpid());
+        idk_comp_get_default_socket_path(buf, bufsz, 0);
     }
 }
 

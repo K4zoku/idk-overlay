@@ -1,4 +1,5 @@
 #include "hook/wayland_internal.h"
+#include "core/compositor_common.h"
 
 int g_input_listen_fd = -1;
 int g_client_fd = -1;
@@ -31,7 +32,7 @@ int init_input_socket(void) {
     if (base && base[0])
         snprintf(path, sizeof(path), "%.107s-input", base);
     else
-        snprintf(path, sizeof(path), "/tmp/idk-overlay-%d-input", (int)getpid());
+        idk_comp_get_default_socket_path(path, sizeof(path), 1);
 
     unlink(path);
 

@@ -13,6 +13,8 @@
 #include <QDebug>
 #include <QRegularExpression>
 
+#include <unistd.h>  /* getpid() */
+
 #include "public/idk_fs.h"
 #include "core/log.h"
 
@@ -56,8 +58,21 @@ Manager::Manager(const QString &confFile,
         if (envSocket && *envSocket) {
             m_socketPath = QString::fromUtf8(envSocket);
         } else {
-            /* Fallback for manual launch without env — use default */
-            m_socketPath = QStringLiteral("/tmp/idk-overlay");
+            /* Fallback for manual launch without env — use the same
+             * default the injected lib uses ($XDG_RUNTIME_DIR/idk-overlay-<pid>,
+             * /tmp/idk-overlay-<pid> fallback). The webview's PID is used
+             * because the forked-webview path inherits IDK_SOCKET from the
+             * parent game process, so this branch is only hit when the user
+             * launches idk-webview manually. */
+            const char *xdg = getenv("XDG_RUNTIME_DIR");
+            QString dir = (xdg && *xdg)
+                ? QString::fromUtf8(xdg)
+                : QStringLiteral("/tmp");
+            /* Strip trailing slash so the final path is canonical. */
+            while (dir.size() > 1 && dir.endsWith(QLatin1Char('/')))
+                dir.chop(1);
+            m_socketPath = dir + QStringLiteral("/idk-overlay-")
+                          + QString::number(getpid());
         }
     }
 

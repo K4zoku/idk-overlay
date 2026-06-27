@@ -108,7 +108,8 @@ _Static_assert(sizeof(idk_request_msg_t) == 8,
  * can receive text input, clicks, etc.
  *
  * Socket direction:
- *   - Game listens on /tmp/idk-overlay-<pid>-input (server)
+ *   - Game listens on $XDG_RUNTIME_DIR/idk-overlay-<pid>-input (server)
+ *     (or /tmp/idk-overlay-<pid>-input if XDG_RUNTIME_DIR is unset)
  *   - Webview connects to it (client)
  *   - Game writes idk_input_event_t messages
  *   - Webview reads them in its event loop

@@ -21,6 +21,7 @@
 #include "hook/x11_input.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
+#include "core/compositor_common.h"
 
 /* KeySym = unsigned long (same as X11's KeySym / XKB keysym) */
 typedef unsigned long KeySym;
@@ -329,7 +330,7 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     if (socket_path)
         snprintf(g_socket_path, sizeof(g_socket_path), "%s", socket_path);
     else
-        snprintf(g_socket_path, sizeof(g_socket_path), "/tmp/idk-overlay-%d", getpid());
+        idk_comp_get_default_socket_path(g_socket_path, sizeof(g_socket_path), 0);
 
     /* Fork+exec webview as child process. Done before any threads spawn
      * (fork in multi-threaded process is unsafe — only async-signal-safe
