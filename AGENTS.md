@@ -22,6 +22,7 @@ Tests are standalone C executables with a custom `TEST()`/`RUN()`/`ASSERT_*` mac
 - **Code style**: LLVM clang-format at 120 columns, 4-space indent, LF, trailing whitespace trimmed
 - **No unnecessary comments**: do not add comments that restate what the code already says. Do not add blank-line separators within functions. Let the code speak.
 - **No backward compat**: don't preserve deprecated APIs, shims, or compatibility layers unless explicitly asked.
+- **Performance over complexity**: prefer the faster path even if it makes code less elegant. This is a real-time overlay composited into a game's frame — every microsecond matters.
 - **No `-fstack-protector`** (inject library targets) — game injection requires it off
 - **Wire protocol**: all structs have `_Static_assert` on `sizeof()` and `#pragma pack(push, 1)` — always update both when changing types
 - **Shaders**: GLSL embedded via `ld -r -b binary` + `objcopy` symbol rename; SPIR-V optional via `glslc` (toggle `-Dspirv=true`)
