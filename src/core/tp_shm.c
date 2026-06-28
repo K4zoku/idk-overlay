@@ -545,11 +545,6 @@ int tp_shm_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
         errno = ECONNRESET;
         return -1;
     }
-    int cons_pid = *shm_i32(ptr, SHM_O_CONS_PID);
-    if (cons_pid > 0 && kill(cons_pid, 0) < 0 && errno == ESRCH) {
-        errno = ECONNRESET;
-        return -1;
-    }
 
     int is_critical = (ev->type == IDK_INPUT_STATE || ev->type == IDK_INPUT_OVERLAY);
 
@@ -576,7 +571,6 @@ int tp_shm_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
     atomic_fetch_add(shm_atom(ptr, SHM_O_FRAME_SEQ), 1);
     atomic_thread_fence(memory_order_release);
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_FRAME);
-    futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
 
     int efd = TP_SH_EVENTFD(tp->_rsv);
     if (efd > 0) {
@@ -594,10 +588,6 @@ int tp_shm_recv_input(idk_transport_t *tp, idk_input_event_t *ev) {
         return -1;
     }
     if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1) {
-        return -1;
-    }
-    int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
-    if (prod_pid > 0 && kill(prod_pid, 0) < 0 && errno == ESRCH) {
         return -1;
     }
 
