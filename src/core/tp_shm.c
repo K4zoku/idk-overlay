@@ -12,6 +12,7 @@
 #include <sys/eventfd.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <pthread.h>
 
 #include "core/transport.h"
 #include "core/log.h"
@@ -61,6 +62,60 @@ static inline atomic_int *shm_atom(void *base, int offset) {
 
 static inline int32_t *shm_i32(void *base, int offset) {
     return (int32_t *)((char *)base + offset);
+}
+
+static void tp_shm_health_check(void *ptr) {
+    int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
+    if (prod_pid > 0 && kill(prod_pid, 0) < 0 && errno == ESRCH)
+        atomic_store(shm_atom(ptr, SHM_O_PROD_STATE), -1);
+    int cons_pid = *shm_i32(ptr, SHM_O_CONS_PID);
+    if (cons_pid > 0 && kill(cons_pid, 0) < 0 && errno == ESRCH)
+        atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), -1);
+}
+
+#define MAX_SHM_TP 4
+
+static struct {
+    idk_transport_t *tp;
+    pthread_t        thread;
+    atomic_bool      stop;
+} g_shm_health[MAX_SHM_TP];
+
+static void *shm_health_loop(void *arg) {
+    idk_transport_t *tp = arg;
+    while (1) {
+        bool stop;
+        for (int i = 0; i < MAX_SHM_TP; i++) {
+            if (g_shm_health[i].tp != tp) continue;
+            stop = atomic_load(&g_shm_health[i].stop);
+            break;
+        }
+        if (stop) break;
+        sleep(2);
+        void *ptr = TP_SH_SHM_PTR(tp->_rsv);
+        if (ptr) tp_shm_health_check(ptr);
+    }
+    return NULL;
+}
+
+static void shm_start_health_thread(idk_transport_t *tp) {
+    for (int i = 0; i < MAX_SHM_TP; i++) {
+        if (g_shm_health[i].tp) continue;
+        g_shm_health[i].tp = tp;
+        atomic_store(&g_shm_health[i].stop, false);
+        pthread_create(&g_shm_health[i].thread, NULL, shm_health_loop, tp);
+        return;
+    }
+}
+
+static void shm_stop_health_thread(idk_transport_t *tp) {
+    for (int i = 0; i < MAX_SHM_TP; i++) {
+        if (g_shm_health[i].tp != tp) continue;
+        atomic_store(&g_shm_health[i].stop, true);
+        pthread_join(g_shm_health[i].thread, NULL);
+        g_shm_health[i].tp = NULL;
+        return;
+    }
 }
 
 static void make_shm_name(const char *name, char *buf, size_t max) {
@@ -141,6 +196,8 @@ static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     TP_SH_SHM_PTR(tp->_rsv) = ptr;
     tp->ready = false;
 
+    shm_start_health_thread(tp);
+
     IDK_LOG("tp", "shm: consumer created %s (pid=%d, waiting for producer)\n",
             shm_name, (int)getpid());
     return 0;
@@ -213,6 +270,7 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
     }
 
     tp->ready = true;
+    shm_start_health_thread(tp);
     int cons_pid = *shm_i32(ptr, SHM_O_CONS_PID);
     IDK_LOG("tp", "shm: producer ready on %s (consumer pid=%d)\n", shm_name, cons_pid);
     return 0;
@@ -226,6 +284,8 @@ int tp_shm_init(idk_transport_t *tp, const char *name) {
 }
 
 void tp_shm_destroy(idk_transport_t *tp) {
+    shm_stop_health_thread(tp);
+
     char shm_name_save[40] = {0};
     const char *sn = TP_SH_SHM_NAME(tp->_rsv);
     if (sn[0]) memcpy(shm_name_save, sn, sizeof(shm_name_save) - 1);
@@ -432,7 +492,6 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
     atomic_thread_fence(memory_order_release);
 
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_FRAME);
-    futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
 
     return 0;
 }

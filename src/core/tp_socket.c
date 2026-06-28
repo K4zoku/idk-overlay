@@ -211,10 +211,7 @@ int tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
 void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
     if (tp->_client_fd < 0 || !ack) return;
 
-    int fl = fcntl(tp->_client_fd, F_GETFL, 0);
-    if (fl >= 0) fcntl(tp->_client_fd, F_SETFL, fl | O_NONBLOCK);
-    ssize_t n = write(tp->_client_fd, ack, sizeof(*ack));
-    if (fl >= 0) fcntl(tp->_client_fd, F_SETFL, fl);
+    ssize_t n = send(tp->_client_fd, ack, sizeof(*ack), MSG_NOSIGNAL);
 
     if (n < 0 && (errno == EPIPE || errno == ECONNRESET ||
                   errno == ESHUTDOWN || errno == ECONNABORTED)) {
