@@ -93,6 +93,17 @@ sudo meson install -C build
 
 You don't need to launch the webview yourself. As soon as the library is injected into the game, it automatically forks a child process for the webview and calls `prctl(PR_SET_PDEATHSIG, SIGTERM)` on it, so the webview always shuts down together with the game rather than being left running on its own.
 
+### How process filtering works
+
+When using `LD_PRELOAD`, the library is injected into **every** process spawned by the launcher — wrapper scripts, AppImage helpers, Wine processes (`wineserver`, `wineboot`), etc. Without filtering, each one would fork a webview + open SHM → OOM.
+
+The library uses **GL library detection** as the filter: it polls for `libGL.so`, `libEGL.so`, or `libvulkan.so` to be loaded (via `dlopen(RTLD_NOLOAD)`). Only when one of these is detected does it fork the webview and install hooks. Wrapper scripts and Wine helpers never load GL libraries, so they're automatically filtered out.
+
+This is more reliable than process-name filtering because:
+- Wine's process name changes from `wine` to `osu!.exe` **after** the constructor runs (timing issue)
+- AppImage extractors have unpredictable names
+- GL detection has no timing issue — the game loads GL when it's ready to render
+
 ### Vulkan games - layer (required)
 
 Vulkan doesn't support late injection the way OpenGL/EGL does, so for Vulkan games the overlay has to be attached through a Vulkan layer from the moment the process starts, instead of being injected afterwards:
@@ -135,7 +146,6 @@ idk-inject $(pgrep osu!)  # actual osu!lazer process name
 | `IDK_DEBUG` | (unset) | Set to `1` for debug logging. |
 | `IDK_HOTKEY_CAPTURE` | `Shift+Tab` | Hotkey to toggle input capture. |
 | `IDK_HOTKEY_OVERLAY` | `F8` | Hotkey to toggle overlay visibility. |
-| `IDK_TARGET` | (unset) | Regex to filter which process gets the overlay. When set, the library only initializes if `/proc/self/comm` matches this regex. Prevents the overlay from being injected into wrapper scripts, AppImage helpers, and other child processes spawned by the launcher. If unset, the library reads `Match=` patterns from the config file and only initializes if `comm` matches at least one. |
 
 ### 🛠️ Configuration
 

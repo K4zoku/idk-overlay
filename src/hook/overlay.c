@@ -73,20 +73,43 @@ static int plugin_lib_loaded(const idk_hook_plugin_t *p) {
     return 0;
 }
 
+static void fork_webview(void);
+
 static void *hook_install_thread(void *arg) {
     (void)arg;
 
     usleep(50000);
 
-    /* Background retry for input hooks that may load late (Qt/SDL
-     * platform plugins dlopen libX11/libwayland-client after our
-     * constructor runs). Install BOTH - see comment in
-     * idk_overlay_init() for why both are needed (XWayland vs
-     * Wayland-native can't be reliably detected).
-     *
-     * The g_x11_input_tried / g_wl_input_tried latches prevent
-     * double-install: each *_try_install_* function checks its own
-     * latch and returns immediately if already tried. */
+    /* ── Phase 1: Wait for a graphics library to load ───────────────*/
+    int gl_detected = 0;
+    for (int i = 0; i < 1200; i++) {
+        if (g_enable_gl) {
+            void *h;
+            h = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libGL.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) { dlclose(h); gl_detected = 1; break; }
+            h = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) { dlclose(h); gl_detected = 1; break; }
+        }
+        if (g_enable_vk) {
+            void *h = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_NOLOAD);
+            if (!h) h = dlopen("libvulkan.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) { dlclose(h); gl_detected = 1; break; }
+        }
+        usleep(50000);  /* 50ms */
+    }
+
+    if (!gl_detected) {
+        IDK_LOG("overlay", "no GL/Vulkan library loaded after 60s — not a game process, exiting\n");
+        return NULL;
+    }
+
+    IDK_LOG("overlay", "graphics library detected — initializing overlay\n");
+
+    /* ── Phase 2: Fork webview + install input hooks ─────────────── */
+    fork_webview();
+
     for (int i = 0; i < 150 && !g_x11_input_tried; i++) {
         void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
         if (!h) h = dlopen("libX11.so", RTLD_NOW | RTLD_NOLOAD);
@@ -109,6 +132,7 @@ static void *hook_install_thread(void *arg) {
         usleep(10000);
     }
 
+    /* ── Phase 3: Install graphics hooks ─────────────────────────── */
     int n_plugins = sizeof(g_plugins) / sizeof(g_plugins[0]);
     int done[n_plugins];
     memset(done, 0, sizeof(done));
@@ -128,10 +152,6 @@ static void *hook_install_thread(void *arg) {
                 done[p] = 1;
                 continue;
             }
-
-            /* Skip GLX if EGL already installed (app uses EGL, not GLX).
-             * Prevents wasteful double-hooking on systems where both
-             * libEGL and libGL are loaded. */
             if (strcmp(plug->name, "glx") == 0 && g_egl_hook_installed) {
                 IDK_LOG("overlay", "glx: skipped (egl already hooked)\n");
                 done[p] = 1;
@@ -325,48 +345,6 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
 
     load_hotkey_config();
 
-    fork_webview();
-
-    /* Install BOTH X11 and Wayland input hooks if their libs are loaded.
-     * Use RTLD_NOLOAD so we only detect libs the game has already loaded
-     * (dlopen(RTLD_NOW) would force-load libX11 even for Wayland-native
-     * games, making the X11 probe always succeed and masking Wayland).
-     *
-     * Why both? On XWayland, the game loads libX11 (for X events) AND
-     * libwayland-client (Qt/SDL platform plugins) - but only X11 events
-     * fire (game uses XNextEvent, not wl_keyboard). On Wayland-native,
-     * only Wayland events fire (wl_keyboard, not XNextEvent).
-     *
-     * Both hooks share the same globals (g_captured, g_hotkey_pressed,
-     * g_overlay_visible) and the same input socket (init_input_socket
-     * guards against double-init). Hotkey detection is idempotent -
-     * g_hotkey_pressed latch prevents double-toggle if both paths fire
-     * (shouldn't happen, but defense in depth).
-     *
-     * Without both hooks:
-     *   - Wayland-native with only X11 hooks → no hotkey (XNextEvent
-     *     never called by game)
-     *   - XWayland with only Wayland hooks → no hotkey (wl_keyboard
-     *     listener never receives the game's key events; they go to
-     *     XNextEvent instead)
-     *   - Detecting which one to use is unreliable (libwayland can be
-     *     loaded as a plugin dependency even for XWayland games)
-     *
-     * So: install both, let only the active path fire. */
-    void *xh = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
-    if (!xh) xh = dlopen("libX11.so", RTLD_NOW | RTLD_NOLOAD);
-    if (xh) {
-        dlclose(xh);  /* RTLD_NOLOAD just checks, doesn't add refcount */
-        idk_overlay_try_install_x11_input();
-    }
-
-    void *wlh = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
-    if (!wlh) wlh = dlopen("libwayland-client.so", RTLD_NOW | RTLD_NOLOAD);
-    if (wlh) {
-        dlclose(wlh);
-        idk_overlay_try_install_wayland_input();
-    }
-
     pthread_t t;
     if (pthread_create(&t, NULL, hook_install_thread, NULL) == 0)
         pthread_detach(t);
@@ -409,108 +387,8 @@ int idk_overlay_try_install_x11_input(void) {
     return r;
 }
 
-static int should_init_overlay(void) {
-    char comm[256] = {0};
-    int fd = open("/proc/self/comm", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, comm, sizeof(comm) - 1);
-        close(fd);
-        if (n > 0) {
-            comm[n] = '\0';
-            char *nl = strchr(comm, '\n');
-            if (nl) *nl = '\0';
-        }
-    }
-    if (!comm[0]) {
-        IDK_LOG("overlay", "process-filter: can't read /proc/self/comm - skipping init\n");
-        return 0;
-    }
-
-    /* Source 1: IDK_TARGET env var (explicit user override). */
-    const char *env_target = getenv("IDK_TARGET");
-    if (env_target && env_target[0]) {
-        regex_t re;
-        if (regcomp(&re, env_target, REG_NOSUB | REG_EXTENDED) == 0) {
-            int match = (regexec(&re, comm, 0, NULL, 0) == 0);
-            regfree(&re);
-            if (!match) {
-                IDK_LOG("overlay", "process-filter: comm='%s' doesn't match IDK_TARGET='%s' - skipping\n",
-                        comm, env_target);
-                return 0;
-            }
-            IDK_LOG("overlay", "process-filter: comm='%s' matches IDK_TARGET='%s' - allowing\n",
-                    comm, env_target);
-            return 1;
-        }
-        IDK_ERR("overlay", "process-filter: IDK_TARGET='%s' invalid regex - falling through to config\n",
-                env_target);
-    }
-
-    /* Source 2: config file Match= patterns. Collect all Match= values
-     * from all sections. If ANY section has Match=, only init if comm
-     * matches at least one. If no section has Match=, init everywhere. */
-    char cpath[PATH_MAX];
-    get_config_path(cpath, sizeof(cpath));
-    FILE *f = fopen(cpath, "r");
-    if (!f) {
-        /* No config file → no Match= patterns → init everywhere. */
-        IDK_LOG("overlay", "process-filter: no config file at '%s' - skipping (comm='%s')\n",
-                cpath, comm);
-        return 0;
-    }
-
-    int has_match_sections = 0;
-    int matched = 0;
-    char line[512];
-    while (fgets(line, sizeof(line), f)) {
-        char *s = line;
-        while (*s == ' ' || *s == '\t') s++;
-        char *e = s + strlen(s) - 1;
-        while (e > s && (*e == '\n' || *e == '\r' || *e == ' ')) *e-- = '\0';
-        if (*s == '#' || *s == ';' || !*s) continue;
-        char *eq = strchr(s, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        char *v = eq + 1;
-        while (*v == ' ') v++;
-        if (!strcasecmp(s, "Match") && v[0]) {
-            has_match_sections = 1;
-            regex_t re;
-            if (regcomp(&re, v, REG_NOSUB | REG_EXTENDED) == 0) {
-                if (regexec(&re, comm, 0, NULL, 0) == 0) {
-                    matched = 1;
-                }
-                regfree(&re);
-            }
-        }
-    }
-    fclose(f);
-
-    if (!has_match_sections) {
-        /* No Match= in any section → init everywhere (backwards compat). */
-        IDK_LOG("overlay", "process-filter: no Match= sections in config - skipping (comm='%s')\n",
-                comm);
-        return 0;
-    }
-
-    if (!matched) {
-        IDK_LOG("overlay", "process-filter: comm='%s' doesn't match any Match= section - skipping\n", comm);
-        return 0;
-    }
-    IDK_LOG("overlay", "process-filter: comm='%s' matches a Match= section - allowing\n", comm);
-    return 1;
-}
-
 __attribute__((constructor))
 static void on_load(void) {
-    /* Process filter: only init in the target game process, not in
-     * every child spawned by wrapper scripts / AppImage. Without this,
-     * LD_PRELOAD injects the lib into bash, AppRun, etc. - each one
-     * forks a webview + opens SHM → OOM. */
-    if (!should_init_overlay()) {
-        return;
-    }
-
     const char *env_vk = getenv("IDK_VK");
     const char *env_gl = getenv("IDK_GL");
     const char *env_path = getenv("IDK_SOCKET");
