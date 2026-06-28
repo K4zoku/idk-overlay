@@ -1,12 +1,9 @@
-/* Transport abstraction: routes idk_transport API calls to SHM or socket backend. */
-
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
 #include "core/transport.h"
 
-/* Backend declarations */
 extern int  tp_socket_init(idk_transport_t *tp, const char *name);
 extern void tp_socket_destroy(idk_transport_t *tp);
 extern void tp_socket_disconnect_client(idk_transport_t *tp);
@@ -22,6 +19,8 @@ extern int  tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack,
 extern int  tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
 extern int  tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
                                     int timeout_ms);
+extern int  tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
+extern int  tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
 
 extern int  tp_shm_init(idk_transport_t *tp, const char *name);
 extern void tp_shm_destroy(idk_transport_t *tp);
@@ -38,6 +37,8 @@ extern int  tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack,
 extern int  tp_shm_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
 extern int  tp_shm_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
                                  int timeout_ms);
+extern int  tp_shm_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
+extern int  tp_shm_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
 
 static int resolve_backend(void) {
     const char *env = getenv("IDK_TP_BACKEND");
@@ -58,6 +59,8 @@ typedef struct {
     int  (*wait_ack)(idk_transport_t *, idk_ack_msg_t *, int);
     int  (*send_request)(idk_transport_t *, const idk_request_msg_t *);
     int  (*recv_request)(idk_transport_t *, idk_request_msg_t *, int);
+    int  (*send_input)(idk_transport_t *, const idk_input_event_t *);
+    int  (*recv_input)(idk_transport_t *, idk_input_event_t *);
 } idk_tp_backend_t;
 
 static const idk_tp_backend_t tp_backends[2] = {
@@ -68,6 +71,7 @@ static const idk_tp_backend_t tp_backends[2] = {
         .recv = tp_socket_recv, .send_ack = tp_socket_send_ack,
         .send = tp_socket_send, .wait_ack = tp_socket_wait_ack,
         .send_request = tp_socket_send_request, .recv_request = tp_socket_recv_request,
+        .send_input = tp_socket_send_input, .recv_input = tp_socket_recv_input,
     },
     [IDK_TP_SHM] = {
         .init = tp_shm_init, .destroy = tp_shm_destroy,
@@ -76,6 +80,7 @@ static const idk_tp_backend_t tp_backends[2] = {
         .recv = tp_shm_recv, .send_ack = tp_shm_send_ack,
         .send = tp_shm_send, .wait_ack = tp_shm_wait_ack,
         .send_request = tp_shm_send_request, .recv_request = tp_shm_recv_request,
+        .send_input = tp_shm_send_input, .recv_input = tp_shm_recv_input,
     },
 };
 
@@ -127,4 +132,12 @@ int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
 
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
     return tp_backends[tp->backend].recv_request(tp, req, timeout_ms);
+}
+
+int idk_tp_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
+    return tp_backends[tp->backend].send_input(tp, ev);
+}
+
+int idk_tp_recv_input(idk_transport_t *tp, idk_input_event_t *ev) {
+    return tp_backends[tp->backend].recv_input(tp, ev);
 }

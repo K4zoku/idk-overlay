@@ -1,73 +1,46 @@
 #include "hook/wayland_internal.h"
 #include "core/compositor_common.h"
+#include "core/transport.h"
+
+static idk_transport_t g_input_tp;
+static pthread_t g_accept_thread;
+static pthread_mutex_t g_input_tp_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_input_inited = 0;
 
 int g_input_listen_fd = -1;
 int g_client_fd = -1;
-static pthread_t g_accept_thread;
 int g_accept_thread_started = 0;
-static pthread_mutex_t g_client_fd_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void *accept_thread_main(void *arg) {
     (void)arg;
-    int listen_fd = g_input_listen_fd;
     while (1) {
-        int fd = accept(listen_fd, NULL, NULL);
-        if (fd < 0) {
-            if (errno == EINTR) continue;
-            /* EINVAL/EBADF/ENOTSOCK on accept() typically means the
-             * listen fd was closed under us by teardown_input_socket()
-             * during shutdown (game exit). This is the expected
-             * shutdown path - don't log it as fatal (was spamming
-             * 'Invalid argument' on every game exit).
-             *
-             * Detect deliberate shutdown by checking if
-             * g_input_listen_fd was reset to -1 by teardown. */
-            if (errno == EINVAL || errno == EBADF || errno == ENOTSOCK) {
-                pthread_mutex_lock(&g_client_fd_lock);
-                int listen_state = g_input_listen_fd;
-                pthread_mutex_unlock(&g_client_fd_lock);
-                if (listen_state < 0) {
-                    /* Shutdown in progress - exit silently. */
-                    break;
-                }
-                /* fd still open but accept() returns EINVAL/EBADF -
-                 * something else closed it (rare). Log non-fatal. */
-                WLOG("accept_thread_main: listen fd closed externally - input thread exiting");
-                break;
-            }
-            /* Truly unexpected error - log with errno for diagnosis. */
-            WERR("accept_thread_main: accept() fatal error: %s - input thread exiting",
-                 strerror(errno));
+        pthread_mutex_lock(&g_input_tp_lock);
+        if (g_input_tp.ready) {
+            pthread_mutex_unlock(&g_input_tp_lock);
             break;
         }
-        pthread_mutex_lock(&g_client_fd_lock);
-        if (g_client_fd >= 0)
-            close(g_client_fd);
-        g_client_fd = fd;
-        pthread_mutex_unlock(&g_client_fd_lock);
-        WLOG("webview connected to input socket (fd=%d)", fd);
+        int rc = idk_tp_accept(&g_input_tp);
+        pthread_mutex_unlock(&g_input_tp_lock);
+
+        if (rc < 0) {
+            WLOG("accept_thread_main: idk_tp_accept fatal - input thread exiting");
+            break;
+        }
+        if (rc == 1) {
+            WLOG("webview connected to input transport");
+            break;
+        }
+        usleep(10000);
     }
     return NULL;
 }
 
 int init_input_socket(void) {
-    /* Guard against double-init. When both X11 and Wayland input hooks
-     * are installed (XWayland case), both call init_input_socket() -
-     * without this guard, the second call would bind() the same path
-     * and fail with EADDRINUSE. The socket is shared between X11 and
-     * Wayland paths (send_event_to_webview is called from both). */
-    if (g_input_listen_fd >= 0 || g_accept_thread_started) {
-        WLOG("input socket already initialized (fd=%d) - sharing",
-             g_input_listen_fd);
+    if (g_input_inited) {
+        WLOG("input transport already initialized - sharing");
         return 0;
     }
 
-    /* Use a buffer large enough for any reasonable XDG_RUNTIME_DIR +
-     * "/idk-overlay-<pid>-input" suffix. sun_path is 108 bytes on
-     * Linux, so we cap at 107 + NUL. If the path would exceed sun_path,
-     * log an error and fail rather than silently truncating to a
-     * different value than the frame socket (which uses a 512-byte
-     * buffer) → input socket mismatch, webview can't connect. */
     char path[256];
     const char *base = getenv("IDK_SOCKET");
     if (base && base[0]) {
@@ -75,90 +48,58 @@ int init_input_socket(void) {
     } else {
         idk_comp_get_default_socket_path(path, sizeof(path), 1);
     }
-    /* Validate against sun_path limit. sizeof(sun_path) is 108 on
-     * Linux. If the path is too long, the frame socket (which uses
-     * the same path minus "-input") would also be too long, so the
-     * compositor's bind would have already failed. Still, guard
-     * explicitly here for robustness. */
     if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
         WERR("input socket path too long (%zu >= %zu): %s",
              strlen(path), sizeof(((struct sockaddr_un *)0)->sun_path), path);
         return -1;
     }
 
-    unlink(path);
-
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        WERR("input socket() failed: %s", strerror(errno));
+    if (idk_tp_init(&g_input_tp, IDK_TP_CONSUMER, path) != 0) {
+        WERR("input transport init failed for %s", path);
         return -1;
     }
 
-    struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        WERR("input bind(%s) failed: %s", path, strerror(errno));
-        close(fd);
-        return -1;
-    }
-    if (listen(fd, 1) < 0) {
-        WERR("input listen() failed: %s", strerror(errno));
-        close(fd);
-        unlink(path);
-        return -1;
-    }
-
-    g_input_listen_fd = fd;
-    if (pthread_create(&g_accept_thread, NULL, accept_thread_main, NULL) != 0) {
-        WERR("pthread_create failed");
-        close(fd);
-        unlink(path);
-        g_input_listen_fd = -1;
-        return -1;
-    }
+    g_input_inited = 1;
+    g_input_listen_fd = 0;
     g_accept_thread_started = 1;
 
-    WLOG("input socket listening on %s", path);
+    if (pthread_create(&g_accept_thread, NULL, accept_thread_main, NULL) != 0) {
+        WERR("pthread_create failed");
+        idk_tp_destroy(&g_input_tp);
+        g_input_inited = 0;
+        g_input_listen_fd = -1;
+        g_accept_thread_started = 0;
+        return -1;
+    }
+
+    WLOG("input transport listening on %s (backend=%s)",
+         path, g_input_tp.backend == IDK_TP_SHM ? "shm" : "socket");
     return 0;
 }
 
 void send_event_to_webview(const idk_input_event_t *ev) {
-    pthread_mutex_lock(&g_client_fd_lock);
-    int fd = g_client_fd;
-    pthread_mutex_unlock(&g_client_fd_lock);
-    if (fd < 0) {
-        /* No webview connected - drop silently (this is the normal
-         * state before the webview connects, logging here would
-         * spam). The caller's WLOG in the hotkey path handles
-         * diagnostics. */
+    pthread_mutex_lock(&g_input_tp_lock);
+    if (!g_input_tp.ready) {
+        idk_tp_accept(&g_input_tp);
+    }
+    if (!g_input_tp.ready) {
+        pthread_mutex_unlock(&g_input_tp_lock);
         return;
     }
-    int rc = idk_ipc_send_input(fd, ev);
+    int rc = idk_tp_send_input(&g_input_tp, ev);
     if (rc != 0) {
-        /* Send failed - likely EPIPE/ECONNRESET (webview crashed or
-         * closed the connection). Close the dead fd so the next
-         * accept_thread_main iteration can accept a new connection
-         * cleanly. Without this, every subsequent event send fails
-         * and logs until the webview reconnects and accept_thread
-         * replaces g_client_fd (closing the old one). Between
-         * disconnect and reconnect, all input events are silently
-         * dropped and the log fills with "send failed" messages. */
         int save_errno = errno;
         bool dead = (save_errno == EPIPE || save_errno == ECONNRESET ||
                      save_errno == ESHUTDOWN || save_errno == ECONNABORTED ||
                      save_errno == EBADF);
         if (dead) {
-            pthread_mutex_lock(&g_client_fd_lock);
-            if (g_client_fd == fd) {
-                close(g_client_fd);
-                g_client_fd = -1;
-            }
-            pthread_mutex_unlock(&g_client_fd_lock);
-            WLOG("send_event_to_webview: webview disconnected (errno=%d), fd closed", save_errno);
-        } else {
-            WLOG("send_event_to_webview: send failed (fd=%d, rc=%d, errno=%d)", fd, rc, save_errno);
+            idk_tp_disconnect_client(&g_input_tp);
+            WLOG("send_event_to_webview: webview disconnected (errno=%d)", save_errno);
+        } else if (save_errno != EAGAIN) {
+            WLOG("send_event_to_webview: send failed (rc=%d, errno=%d)", rc, save_errno);
         }
     }
+    pthread_mutex_unlock(&g_input_tp_lock);
 }
 
 void send_overlay_state(uint8_t visible) {
@@ -190,25 +131,21 @@ void send_repeat_info(void) {
     ev.flags = IDK_INPUT_FLAG_CAPTURE;
     ev.u.repeat.rate  = (uint16_t)g_repeat_rate;
     ev.u.repeat.delay = (uint16_t)g_repeat_delay;
-    ev.u.repeat._p1 = 0;
     send_event_to_webview(&ev);
 }
 
 void teardown_input_socket(void) {
     if (g_accept_thread_started) {
-        if (g_input_listen_fd >= 0) {
-            shutdown(g_input_listen_fd, SHUT_RDWR);
-            close(g_input_listen_fd);
-            g_input_listen_fd = -1;
-        }
+        pthread_mutex_lock(&g_input_tp_lock);
+        idk_tp_disconnect_client(&g_input_tp);
+        pthread_mutex_unlock(&g_input_tp_lock);
         pthread_join(g_accept_thread, NULL);
         g_accept_thread_started = 0;
     }
 
-    pthread_mutex_lock(&g_client_fd_lock);
-    if (g_client_fd >= 0) {
-        close(g_client_fd);
-        g_client_fd = -1;
-    }
-    pthread_mutex_unlock(&g_client_fd_lock);
+    pthread_mutex_lock(&g_input_tp_lock);
+    idk_tp_destroy(&g_input_tp);
+    g_input_inited = 0;
+    g_input_listen_fd = -1;
+    pthread_mutex_unlock(&g_input_tp_lock);
 }

@@ -5,7 +5,8 @@
 #include <QString>
 #include <QTimer>
 
-#include "public/idk_ipc.h"  /* idk_input_event_t - same struct as wire protocol */
+#include "public/idk_ipc.h"
+#include "core/transport.h"
 
 class QIODevice;
 class QWebEngineView;
@@ -21,7 +22,7 @@ public:
 
     bool connectToInput();
     void disconnect();
-    bool isConnected() const { return m_fd >= 0; }
+    bool isConnected() const { return m_tp.ready; }
 
     void setWebView(QWebEngineView *view) { m_webview = view; }
 
@@ -39,14 +40,15 @@ private:
     void injectKeyboardEvent(const idk_input_event_t &ev);
     void injectMouseEvent(const idk_input_event_t &ev);
     void injectWheelEvent(const idk_input_event_t &ev);
-    QWidget *focusProxy();                  /* lazily resolved */
+    QWidget *focusProxy();
     void sendFocusIn();
     void startRepeatTimer(uint32_t keycode, uint32_t keysym, uint16_t mods,
                           const QString &text);
     void stopRepeatTimer();
 
     QString m_socketPath;
-    int m_fd = -1;
+    idk_transport_t m_tp;
+    int m_wakeFd = -1;
     QSocketNotifier *m_notifier = nullptr;
     bool m_captureState = false;
     QWebEngineView *m_webview = nullptr;
@@ -55,15 +57,12 @@ private:
     int m_mouseX = 0;
     int m_mouseY = 0;
     Qt::MouseButtons m_buttons;
-    bool m_focusSent = false;          /* Chromium focus has been pushed */
+    bool m_focusSent = false;
 
-    /* Key repeat state - Wayland key repeat is client-side. When captured,
-     * the game's SDL3 repeat timer never starts (we swallow key presses).
-     * We implement repeat here using the rate/delay from wl_keyboard.repeat_info. */
     QTimer *m_repeatTimer = nullptr;
-    int m_repeatRate = 25;             /* characters per second (default) */
-    int m_repeatDelay = 500;           /* ms before first repeat (default) */
-    bool m_repeatArmed = false;        /* true = initial delay, false = repeating */
+    int m_repeatRate = 25;
+    int m_repeatDelay = 500;
+    bool m_repeatArmed = false;
     uint32_t m_repeatKeycode = 0;
     uint32_t m_repeatKeysym = 0;
     uint16_t m_repeatMods = 0;

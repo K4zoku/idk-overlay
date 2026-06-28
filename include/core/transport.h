@@ -20,81 +20,43 @@ typedef enum {
 #define IDK_TP_SOCKET 0
 #define IDK_TP_SHM    1
 
-/* Opaque transport handle (64 bytes, stack-allocable). */
 typedef struct idk_transport {
     idk_tp_role_t role;
     uint8_t       backend;      /* 0 = socket, 1 = SHM */
     bool          ready;
 
     /* backend-internal */
-    int           _server_fd;   /* socket: listen fd, shm: shm_fd   */
-    int           _client_fd;   /* socket: connected client fd, shm: pidfd */
+    int           _server_fd;
+    int           _client_fd;
     uint8_t       _rsv[48];
 } idk_transport_t;
 
+#ifdef __cplusplus
+static_assert(sizeof(idk_transport_t) == 64,
+              "idk_transport_t must be 64 bytes");
+#else
 _Static_assert(sizeof(idk_transport_t) == 64,
                "idk_transport_t must be 64 bytes");
-
-/* Lifecycle */
+#endif
 
 int  idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name);
 void idk_tp_destroy(idk_transport_t *tp);
-
-/* Soft-disconnect: close the connected client fd (or consumer's pidfd)
- * but KEEP the server/listen fd (or consumer's SHM + shm_fd) open so a
- * new producer can reconnect on a subsequent frame.
- *
- * Use this in the compositor's recv-failure path instead of
- * idk_tp_destroy(). A full destroy closes the listening socket AND
- * unlinks the SHM name → the webview's reconnect timer can never
- * re-establish the connection, leaving the overlay permanently dead.
- *
- * For SHM consumer: closes pidfd, resets producer half of SHM header
- * (PROD_STATE=0, PROD_PID=0, SLOT=EMPTY), re-arms CONS_STATE=1.
- * Keeps SHM mapped + shm_fd open + does NOT shm_unlink. Next producer
- * re-opens the same SHM and the consumer re-arms via tp_shm_accept.
- *
- * For socket consumer: closes _client_fd, keeps _server_fd open.
- * Next accept() picks up the new connection.
- *
- * For producers (webview side): equivalent to destroy - producers
- * don't have a server fd to keep. */
 void idk_tp_disconnect_client(idk_transport_t *tp);
 
-/* Consumer API */
-
-/* Non-blocking accept. Returns 1 on success, 0 if no pending, -1 on error. */
 int  idk_tp_accept(idk_transport_t *tp);
-
-/* Non-blocking poll. Returns 1 if data ready, 0 if not, -1 on error. */
 int  idk_tp_poll(idk_transport_t *tp);
-
-/* Receive frame header + fds. Returns 1 on success, 0 if no data,
- * -1 on error/disconnect. Caller owns received fds (must close). */
 int  idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
                  int fds[4], int *nfd);
-
-/* Send ACK to producer. */
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
-
-/* Send REQUEST to producer (consumer→producer). */
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
-
-/* Receive REQUEST from consumer (non-blocking poll, or blocking with timeout).
- * Returns 0 on success, -1 on timeout/error. */
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
 
-/* Producer API */
-
-/* Send frame header + fds. nfd=0 is invalid (use nfd=1 for fd 0 → SHM
- * path where fds[0] is a memfd). nfd=1..4 for DMABUF.
- * Returns 0 on success, -1 on error. */
 int  idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
                  const int *fds, int nfd);
-
-/* Block on ACK from consumer (up to timeout_ms). Returns 0 on success
- * with ack filled, -1 on timeout/error. */
 int  idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
+
+int  idk_tp_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
+int  idk_tp_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
 
 #ifdef __cplusplus
 }
