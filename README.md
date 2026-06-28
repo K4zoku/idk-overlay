@@ -135,6 +135,7 @@ idk-inject $(pgrep osu!)  # actual osu!lazer process name
 | `IDK_DEBUG` | (unset) | Set to `1` for debug logging. |
 | `IDK_HOTKEY_CAPTURE` | `Shift+Tab` | Hotkey to toggle input capture. |
 | `IDK_HOTKEY_OVERLAY` | `F8` | Hotkey to toggle overlay visibility. |
+| `IDK_TARGET` | (unset) | Regex to filter which process gets the overlay. When set, the library only initializes if `/proc/self/comm` matches this regex. Prevents the overlay from being injected into wrapper scripts, AppImage helpers, and other child processes spawned by the launcher. If unset, the library reads `Match=` patterns from the config file and only initializes if `comm` matches at least one. |
 
 ### 🛠️ Configuration
 

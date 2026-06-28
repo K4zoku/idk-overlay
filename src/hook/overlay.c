@@ -409,8 +409,108 @@ int idk_overlay_try_install_x11_input(void) {
     return r;
 }
 
+static int should_init_overlay(void) {
+    char comm[256] = {0};
+    int fd = open("/proc/self/comm", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, comm, sizeof(comm) - 1);
+        close(fd);
+        if (n > 0) {
+            comm[n] = '\0';
+            char *nl = strchr(comm, '\n');
+            if (nl) *nl = '\0';
+        }
+    }
+    if (!comm[0]) {
+        IDK_LOG("overlay", "process-filter: can't read /proc/self/comm - skipping init\n");
+        return 0;
+    }
+
+    /* Source 1: IDK_TARGET env var (explicit user override). */
+    const char *env_target = getenv("IDK_TARGET");
+    if (env_target && env_target[0]) {
+        regex_t re;
+        if (regcomp(&re, env_target, REG_NOSUB | REG_EXTENDED) == 0) {
+            int match = (regexec(&re, comm, 0, NULL, 0) == 0);
+            regfree(&re);
+            if (!match) {
+                IDK_LOG("overlay", "process-filter: comm='%s' doesn't match IDK_TARGET='%s' - skipping\n",
+                        comm, env_target);
+                return 0;
+            }
+            IDK_LOG("overlay", "process-filter: comm='%s' matches IDK_TARGET='%s' - allowing\n",
+                    comm, env_target);
+            return 1;
+        }
+        IDK_ERR("overlay", "process-filter: IDK_TARGET='%s' invalid regex - falling through to config\n",
+                env_target);
+    }
+
+    /* Source 2: config file Match= patterns. Collect all Match= values
+     * from all sections. If ANY section has Match=, only init if comm
+     * matches at least one. If no section has Match=, init everywhere. */
+    char cpath[PATH_MAX];
+    get_config_path(cpath, sizeof(cpath));
+    FILE *f = fopen(cpath, "r");
+    if (!f) {
+        /* No config file → no Match= patterns → init everywhere. */
+        IDK_LOG("overlay", "process-filter: no config file at '%s' - skipping (comm='%s')\n",
+                cpath, comm);
+        return 0;
+    }
+
+    int has_match_sections = 0;
+    int matched = 0;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        char *e = s + strlen(s) - 1;
+        while (e > s && (*e == '\n' || *e == '\r' || *e == ' ')) *e-- = '\0';
+        if (*s == '#' || *s == ';' || !*s) continue;
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *v = eq + 1;
+        while (*v == ' ') v++;
+        if (!strcasecmp(s, "Match") && v[0]) {
+            has_match_sections = 1;
+            regex_t re;
+            if (regcomp(&re, v, REG_NOSUB | REG_EXTENDED) == 0) {
+                if (regexec(&re, comm, 0, NULL, 0) == 0) {
+                    matched = 1;
+                }
+                regfree(&re);
+            }
+        }
+    }
+    fclose(f);
+
+    if (!has_match_sections) {
+        /* No Match= in any section → init everywhere (backwards compat). */
+        IDK_LOG("overlay", "process-filter: no Match= sections in config - skipping (comm='%s')\n",
+                comm);
+        return 0;
+    }
+
+    if (!matched) {
+        IDK_LOG("overlay", "process-filter: comm='%s' doesn't match any Match= section - skipping\n", comm);
+        return 0;
+    }
+    IDK_LOG("overlay", "process-filter: comm='%s' matches a Match= section - allowing\n", comm);
+    return 1;
+}
+
 __attribute__((constructor))
 static void on_load(void) {
+    /* Process filter: only init in the target game process, not in
+     * every child spawned by wrapper scripts / AppImage. Without this,
+     * LD_PRELOAD injects the lib into bash, AppRun, etc. - each one
+     * forks a webview + opens SHM → OOM. */
+    if (!should_init_overlay()) {
+        return;
+    }
+
     const char *env_vk = getenv("IDK_VK");
     const char *env_gl = getenv("IDK_GL");
     const char *env_path = getenv("IDK_SOCKET");
