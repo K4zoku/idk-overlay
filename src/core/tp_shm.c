@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <linux/futex.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <stdatomic.h>
 
@@ -29,8 +30,9 @@
 #define SHM_O_SLOT_STATE  80
 #define SHM_O_FRAME_SEQ   84
 #define SHM_O_REQ_SEQ     88
+#define SHM_O_EVENTFD     92
 
-_Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
+_Static_assert(SHM_O_EVENTFD + 4 <= SHM_SIZE,
                "SHM layout exceeds page size");
 
 #define SHM_MAGIC_VAL 0x4D485349
@@ -40,9 +42,11 @@ _Static_assert(SHM_O_REQ_SEQ + 4 <= SHM_SIZE,
 #define SLOT_ACK     2
 #define SLOT_CONSUMED 3
 
-/* _rsv[48]: [0..7]=shm_ptr, [8..43]=shm_name, [44..47]=last_req_seq */
+/* _rsv[48]: [0..7]=shm_ptr, [8..39]=shm_name, [40..43]=eventfd, [44..47]=last_req_seq */
 #define TP_SH_SHM_PTR(rsv)      (*(void **)(rsv))
 #define TP_SH_SHM_NAME(rsv)     ((char *)((rsv) + 8))
+#define TP_SH_SHM_NAME_SIZE     32
+#define TP_SH_EVENTFD(rsv)      (*(int *)((rsv) + 40))
 #define TP_SH_LAST_REQ_SEQ(rsv) (*(int *)((rsv) + 44))
 
 void tp_shm_destroy(idk_transport_t *tp);
@@ -113,7 +117,9 @@ static void *shm_setup(const char *name, int *out_fd, int is_creator) {
 static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     char shm_name[64];
     make_shm_name(name, shm_name, sizeof(shm_name));
-    memcpy(TP_SH_SHM_NAME(tp->_rsv), shm_name, strlen(shm_name) + 1);
+    size_t namelen = strlen(shm_name);
+    if (namelen >= TP_SH_SHM_NAME_SIZE) namelen = TP_SH_SHM_NAME_SIZE - 1;
+    memcpy(TP_SH_SHM_NAME(tp->_rsv), shm_name, namelen + 1);
 
     shm_unlink(shm_name);
 
@@ -128,6 +134,7 @@ static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     *shm_i32(ptr, SHM_O_PROD_PID) = 0;
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
     atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
+    *shm_i32(ptr, SHM_O_EVENTFD) = 0;
 
     tp->_server_fd = shm_fd;
     tp->_client_fd = -1;
@@ -142,7 +149,9 @@ static int shm_init_consumer(idk_transport_t *tp, const char *name) {
 static int shm_init_producer(idk_transport_t *tp, const char *name) {
     char shm_name[64];
     make_shm_name(name, shm_name, sizeof(shm_name));
-    memcpy(TP_SH_SHM_NAME(tp->_rsv), shm_name, strlen(shm_name) + 1);
+    size_t namelen = strlen(shm_name);
+    if (namelen >= TP_SH_SHM_NAME_SIZE) namelen = TP_SH_SHM_NAME_SIZE - 1;
+    memcpy(TP_SH_SHM_NAME(tp->_rsv), shm_name, namelen + 1);
 
     int shm_fd;
     void *ptr = NULL;
@@ -167,6 +176,12 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
         return -1;
     }
 
+    int efd = (int)syscall(__NR_eventfd2, 0, EFD_SEMAPHORE | EFD_CLOEXEC | EFD_NONBLOCK);
+    if (efd < 0)
+        efd = 0;
+    *shm_i32(ptr, SHM_O_EVENTFD) = efd;
+    TP_SH_EVENTFD(tp->_rsv) = efd;
+
     *shm_i32(ptr, SHM_O_PROD_PID) = (int32_t)getpid();
     atomic_store(shm_atom(ptr, SHM_O_PROD_STATE), 1);
     futex_wake(shm_atom(ptr, SHM_O_PROD_STATE));
@@ -182,6 +197,7 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
         if (atomic_load(cons_state) == -1) {
             IDK_ERR("tp", "shm: consumer died before ready on %s\n", shm_name);
             close(shm_fd);
+            tp->_client_fd = -1;
             return -1;
         }
         int cur_state = atomic_load(cons_state);
@@ -191,6 +207,7 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
         if (waited_ms >= 30000) {
             IDK_ERR("tp", "shm: timeout waiting for consumer on %s\n", shm_name);
             close(shm_fd);
+            tp->_client_fd = -1;
             return -1;
         }
     }
@@ -212,6 +229,9 @@ void tp_shm_destroy(idk_transport_t *tp) {
     char shm_name_save[40] = {0};
     const char *sn = TP_SH_SHM_NAME(tp->_rsv);
     if (sn[0]) memcpy(shm_name_save, sn, sizeof(shm_name_save) - 1);
+
+    int efd = TP_SH_EVENTFD(tp->_rsv);
+    if (efd > 0) { close(efd); TP_SH_EVENTFD(tp->_rsv) = 0; }
 
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
     if (ptr) {
@@ -235,6 +255,9 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
 
     if (tp->role == IDK_TP_CONSUMER && ptr) {
+        int efd = TP_SH_EVENTFD(tp->_rsv);
+        if (efd > 0) { close(efd); TP_SH_EVENTFD(tp->_rsv) = 0; }
+
         atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
         *shm_i32(ptr, SHM_O_PROD_PID) = 0;
         *shm_i32(ptr, SHM_O_DMABUF_NFD) = 0;
@@ -281,6 +304,17 @@ int tp_shm_accept(idk_transport_t *tp) {
         return -1;
     }
     tp->_client_fd = pidfd;
+
+    int efd_fd = *shm_i32(ptr, SHM_O_EVENTFD);
+    if (efd_fd > 0) {
+        int dup_efd = (int)syscall(__NR_pidfd_getfd, pidfd, efd_fd, 0);
+        if (dup_efd < 0) {
+            IDK_LOG("tp", "shm: pidfd_getfd(eventfd) failed: %s\n", strerror(errno));
+            TP_SH_EVENTFD(tp->_rsv) = 0;
+        } else {
+            TP_SH_EVENTFD(tp->_rsv) = dup_efd;
+        }
+    }
 
     atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 2);
     futex_wake(shm_atom(ptr, SHM_O_CONS_STATE));
@@ -543,6 +577,12 @@ int tp_shm_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
     atomic_thread_fence(memory_order_release);
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_FRAME);
     futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
+
+    int efd = TP_SH_EVENTFD(tp->_rsv);
+    if (efd > 0) {
+        uint64_t val = 1;
+        write(efd, &val, 8);
+    }
 
     return 0;
 }

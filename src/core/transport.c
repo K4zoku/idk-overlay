@@ -87,6 +87,8 @@ static const idk_tp_backend_t tp_backends[2] = {
 int idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name) {
     tp->role = role;
     tp->ready = false;
+    tp->_client_fd = -1;
+    tp->_server_fd = -1;
     tp->backend = (uint8_t)resolve_backend();
     memset(tp->_rsv, 0, sizeof(tp->_rsv));
     return tp_backends[tp->backend].init(tp, name);

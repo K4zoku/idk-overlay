@@ -16,12 +16,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
-#include <linux/futex.h>
-#include <sys/syscall.h>
-#include <atomic>
 #include <cstring>
 #include <cerrno>
-#include <thread>
 
 #include "public/idk_ipc.h"
 #include "core/log.h"
@@ -121,44 +117,15 @@ bool InputReceiver::connectToInput()
 
     int watch_fd = m_tp._client_fd;
     if (m_tp.backend == IDK_TP_SHM) {
-        m_wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-        if (m_wakeFd < 0) {
-            IDK_LOG("input-rx", "eventfd creation failed: %s\n", strerror(errno));
+        int efd;
+        memcpy(&efd, m_tp._rsv + 40, sizeof(efd));
+        if (efd <= 0) {
+            IDK_ERR("input-rx", "SHM: no eventfd from transport\n");
             idk_tp_destroy(&m_tp);
             return false;
         }
+        m_wakeFd = efd;
         watch_fd = m_wakeFd;
-
-        struct RelayArgs {
-            idk_transport_t *tp;
-            int wakeFd;
-        };
-        auto *args = new RelayArgs{&m_tp, m_wakeFd};
-        std::thread([args]() {
-            void **shm_ptr_ptr = (void **)args->tp->_rsv;
-            void *ptr = *shm_ptr_ptr;
-            if (!ptr) { delete args; return; }
-
-            std::atomic_int *slot_state = (std::atomic_int *)((char *)ptr + 80);
-
-            while (true) {
-                eventfd_t val;
-                int err = eventfd_read(args->wakeFd, &val);
-                if (err < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-                    break;
-
-                int slot = slot_state->load();
-                if (slot == 1) {
-                    eventfd_write(args->wakeFd, 1);
-                    usleep(1000);
-                    continue;
-                }
-
-                struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000000 };
-                syscall(__NR_futex, slot_state, FUTEX_WAIT, slot, &ts, NULL, 0);
-            }
-            delete args;
-        }).detach();
     }
 
     m_notifier = new QSocketNotifier(watch_fd, QSocketNotifier::Read, this);
@@ -183,13 +150,10 @@ void InputReceiver::closeFd()
         delete m_notifier;
         m_notifier = nullptr;
     }
-    if (m_wakeFd >= 0) {
-        ::close(m_wakeFd);
-        m_wakeFd = -1;
-    }
     if (m_tp.ready || m_tp._client_fd >= 0 || m_tp._server_fd >= 0) {
         idk_tp_destroy(&m_tp);
     }
+    m_wakeFd = -1;
     memset(&m_tp, 0, sizeof(m_tp));
     if (m_captureState) {
         m_captureState = false;
