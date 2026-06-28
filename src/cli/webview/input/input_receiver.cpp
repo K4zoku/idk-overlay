@@ -208,6 +208,8 @@ void InputReceiver::onReadyRead()
             return;
         }
 
+        /* -- state tracking (inline, không block) -- */
+
         bool nowCaptured = (ev.flags & IDK_INPUT_FLAG_CAPTURE) != 0;
         if (nowCaptured != m_captureState) {
             m_captureState = nowCaptured;
@@ -218,28 +220,105 @@ void InputReceiver::onReadyRead()
             IDK_LOG("input-rx", "capture %s\n", nowCaptured ? "ENABLED" : "DISABLED");
             if (nowCaptured) sendFocusIn();
         }
-
         if (nowCaptured && !m_focusSent)
             sendFocusIn();
 
-        emit eventReceived(ev);
+        QWidget *fp = focusProxy();
+        if (!fp) continue;
+
+        quint64 t = nowMs();
+        Qt::KeyboardModifiers mods = idkModsToQt(ev.mods);
 
         switch (ev.type) {
-        case IDK_INPUT_KEY:
-            if (ev.u.key.keycode != 0)
-                injectKeyboardEvent(ev);
+        case IDK_INPUT_KEY: {
+            int qtKey = keysymToQtKey(ev.u.key.keysym);
+            if (!qtKey) break;
+            bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
+
+            QString text;
+            if (ev.u.key.keysym >= 0x20 && ev.u.key.keysym < 0x7f)
+                text = QString(QChar((uint)ev.u.key.keysym));
+            else if (ev.u.key.keysym == 0xff0d)
+                text = QStringLiteral("\r");
+
+            if (isPress) {
+                if (ev.u.key.keycode != 0 && m_captureState)
+                    startRepeatTimer(ev.u.key.keycode, ev.u.key.keysym, ev.mods, text);
+            } else {
+                if (m_repeatKeycode == ev.u.key.keycode)
+                    stopRepeatTimer();
+            }
+
+            auto *qe = new QKeyEvent(
+                isPress ? QEvent::KeyPress : QEvent::KeyRelease,
+                qtKey, mods, text, false);
+            qe->setTimestamp(t);
+            QCoreApplication::postEvent(fp, qe);
             break;
-        case IDK_INPUT_BUTTON:
-        case IDK_INPUT_MOTION:
-        case IDK_INPUT_AXIS:
-            injectMouseEvent(ev);
+        }
+
+        case IDK_INPUT_MOTION: {
+            m_mouseX = ev.u.motion.x;
+            m_mouseY = ev.u.motion.y;
+            QPointF local(m_mouseX, m_mouseY);
+            auto *me = new QMouseEvent(QEvent::MouseMove, local, local, local,
+                                       Qt::NoButton, m_buttons, Qt::NoModifier);
+            me->setTimestamp(t);
+            QCoreApplication::postEvent(fp, me);
             break;
+        }
+
+        case IDK_INPUT_BUTTON: {
+            m_mouseX = ev.u.btn.x;
+            m_mouseY = ev.u.btn.y;
+            QPointF local(m_mouseX, m_mouseY);
+            Qt::MouseButton sqBtn;
+            switch (ev.u.btn.button) {
+            case 0x110: sqBtn = Qt::LeftButton; break;
+            case 0x111: sqBtn = Qt::RightButton; break;
+            case 0x112: sqBtn = Qt::MiddleButton; break;
+            case 0x113: sqBtn = Qt::XButton1; break;
+            case 0x114: sqBtn = Qt::XButton2; break;
+            default: break;
+            }
+            bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
+            if (isPress) m_buttons |=  sqBtn;
+            else         m_buttons &= ~sqBtn;
+
+            auto *be = new QMouseEvent(
+                isPress ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease,
+                local, local, local,
+                sqBtn, m_buttons, Qt::NoModifier);
+            be->setTimestamp(t);
+            QCoreApplication::postEvent(fp, be);
+            break;
+        }
+
+        case IDK_INPUT_AXIS: {
+            const int scale = 12;
+            int ax = -ev.u.axis.dx * scale;
+            int ay = -ev.u.axis.dy * scale;
+            QPointF local(m_mouseX, m_mouseY);
+
+            auto postWheel = [&](Qt::ScrollPhase phase, int dy, int dx = 0) {
+                auto *we = new QWheelEvent(local, local, QPoint(0, 0), QPoint(dx, dy),
+                                           m_buttons, Qt::NoModifier, phase, false);
+                we->setTimestamp(t);
+                QCoreApplication::postEvent(fp, we);
+            };
+            postWheel(Qt::ScrollBegin, 0);
+            if (ax || ay) postWheel(Qt::ScrollUpdate, ay, ax);
+            postWheel(Qt::ScrollEnd, 0);
+            break;
+        }
+
         case IDK_INPUT_REPEAT:
             m_repeatRate = ev.u.repeat.rate > 0 ? ev.u.repeat.rate : 25;
             m_repeatDelay = ev.u.repeat.delay > 0 ? ev.u.repeat.delay : 500;
             IDK_LOG("input-rx", "repeat info: rate=%d cps delay=%d ms\n",
                     m_repeatRate, m_repeatDelay);
             break;
+
         case IDK_INPUT_OVERLAY: {
             bool visible = ev.u.overlay.visible != 0;
             IDK_LOG("input-rx", "overlay %s\n", visible ? "SHOW" : "HIDE");
@@ -247,43 +326,6 @@ void InputReceiver::onReadyRead()
             break;
         }
         }
-    }
-}
-
-void InputReceiver::injectKeyboardEvent(const idk_input_event_t &ev)
-{
-    if (!m_webview) return;
-    QWidget *fp = focusProxy();
-    if (!fp) return;
-
-    int qtKey = keysymToQtKey(ev.u.key.keysym);
-    if (!qtKey) return;
-
-    Qt::KeyboardModifiers mods = idkModsToQt(ev.mods);
-
-    QString text;
-    if (ev.u.key.keysym >= 0x20 && ev.u.key.keysym < 0x7f)
-        text = QString(QChar((uint)ev.u.key.keysym));
-    else if (ev.u.key.keysym == 0xff0d)
-        text = QStringLiteral("\r");
-
-    quint64 t = nowMs();
-    bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
-
-    if (isPress) {
-        QKeyEvent p(QEvent::KeyPress, qtKey, mods, text, /*autorepeat=*/false);
-        p.setTimestamp(t);
-        qApp->sendEvent(fp, &p);
-
-        if (ev.u.key.keycode != 0 && m_captureState)
-            startRepeatTimer(ev.u.key.keycode, ev.u.key.keysym, ev.mods, text);
-    } else {
-        QKeyEvent r(QEvent::KeyRelease, qtKey, mods, text, /*autorepeat=*/false);
-        r.setTimestamp(t);
-        qApp->sendEvent(fp, &r);
-
-        if (m_repeatKeycode == ev.u.key.keycode)
-            stopRepeatTimer();
     }
 }
 
@@ -346,86 +388,4 @@ void InputReceiver::onRepeatTimeout()
         m_repeatTimer->setSingleShot(false);
         m_repeatTimer->start(interval);
     }
-}
-
-void InputReceiver::injectMouseEvent(const idk_input_event_t &ev)
-{
-    if (!m_webview) return;
-    QWidget *fp = focusProxy();
-    if (!fp) return;
-
-    int x, y;
-    if (ev.type == IDK_INPUT_BUTTON) {
-        x = ev.u.btn.x;
-        y = ev.u.btn.y;
-    } else if (ev.type == IDK_INPUT_MOTION) {
-        x = ev.u.motion.x;
-        y = ev.u.motion.y;
-    } else {
-        x = m_mouseX;
-        y = m_mouseY;
-    }
-
-    m_mouseX = x;
-    m_mouseY = y;
-    quint64 t = nowMs();
-    QPointF local(x, y);
-
-    switch (ev.type) {
-    case IDK_INPUT_MOTION: {
-        QMouseEvent mv(QEvent::MouseMove, local, local, local,
-                       Qt::NoButton, m_buttons, Qt::NoModifier);
-        mv.setTimestamp(t);
-        qApp->sendEvent(fp, &mv);
-        break;
-    }
-    case IDK_INPUT_BUTTON: {
-        Qt::MouseButton sqBtn;
-        if (ev.u.btn.button == 0x110)      sqBtn = Qt::LeftButton;
-        else if (ev.u.btn.button == 0x111) sqBtn = Qt::RightButton;
-        else if (ev.u.btn.button == 0x112) sqBtn = Qt::MiddleButton;
-        else if (ev.u.btn.button == 0x113) sqBtn = Qt::XButton1;
-        else if (ev.u.btn.button == 0x114) sqBtn = Qt::XButton2;
-        else                          return;
-
-        bool isPress = (ev.flags & IDK_INPUT_FLAG_PRESS) != 0;
-        if (isPress) m_buttons |=  sqBtn;
-        else         m_buttons &= ~sqBtn;
-
-        QEvent::Type type = isPress ? QEvent::MouseButtonPress
-                                    : QEvent::MouseButtonRelease;
-        QMouseEvent be(type, local, local, local,
-                       sqBtn, m_buttons, Qt::NoModifier);
-        be.setTimestamp(t);
-        qApp->sendEvent(fp, &be);
-        break;
-    }
-    case IDK_INPUT_AXIS:
-        injectWheelEvent(ev);
-        break;
-    }
-}
-
-void InputReceiver::injectWheelEvent(const idk_input_event_t &ev)
-{
-    if (!m_webview) return;
-    QWidget *fp = focusProxy();
-    if (!fp) return;
-
-    QPointF local(m_mouseX, m_mouseY);
-
-    const int scale = 12;
-    int ax = -ev.u.axis.dx * scale;
-    int ay = -ev.u.axis.dy * scale;
-
-    auto post = [&](Qt::ScrollPhase phase, int dy, int dx = 0) {
-        QWheelEvent e(local, local, QPoint(0, 0), QPoint(dx, dy),
-                      m_buttons, Qt::NoModifier, phase, false);
-        e.setTimestamp(nowMs());
-        qApp->sendEvent(fp, &e);
-    };
-
-    post(Qt::ScrollBegin, 0);
-    if (ax || ay) post(Qt::ScrollUpdate, ay, ax);
-    post(Qt::ScrollEnd, 0);
 }

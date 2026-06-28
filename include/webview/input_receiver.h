@@ -29,7 +29,6 @@ public:
 signals:
     void inputCaptureChanged(bool captured);
     void overlayVisibleChanged(bool visible);
-    void eventReceived(const idk_input_event_t &ev);
 
 private slots:
     void onReadyRead();
@@ -37,9 +36,6 @@ private slots:
 
 private:
     void closeFd();
-    void injectKeyboardEvent(const idk_input_event_t &ev);
-    void injectMouseEvent(const idk_input_event_t &ev);
-    void injectWheelEvent(const idk_input_event_t &ev);
     QWidget *focusProxy();
     void sendFocusIn();
     void startRepeatTimer(uint32_t keycode, uint32_t keysym, uint16_t mods,
