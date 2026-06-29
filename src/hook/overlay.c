@@ -243,6 +243,29 @@ static void fork_webview(void) {
         prctl(PR_SET_PDEATHSIG, SIGTERM);
         for (int i = 3; i < 1024; i++) close(i);
 
+        /* Strip libidk-overlay.so from LD_PRELOAD so the webview child
+         * doesn't re-run the injected overlay constructor and crash. */
+        const char *preload = getenv("LD_PRELOAD");
+        if (preload) {
+            char buf[2048] = {0};
+            const char *p = preload;
+            while (*p) {
+                while (*p == ':' || *p == ' ') p++;
+                if (!*p) break;
+                const char *start = p;
+                while (*p && *p != ':') p++;
+                size_t len = (size_t)(p - start);
+                if (len > 0 && !strstr(start, "libidk-overlay.so")) {
+                    if (buf[0]) strncat(buf, ":", sizeof(buf) - strlen(buf) - 1);
+                    strncat(buf, start, len > sizeof(buf) - strlen(buf) - 1 ? sizeof(buf) - strlen(buf) - 1 : len);
+                }
+            }
+            if (buf[0])
+                setenv("LD_PRELOAD", buf, 1);
+            else
+                unsetenv("LD_PRELOAD");
+        }
+
         IDK_LOG("overlay", "forked webview child, exec %s (comm=%s socket=%s backend=%s)\n",
                 bin, comm, g_socket_path, getenv("IDK_TP_BACKEND") ?: "socket");
 
