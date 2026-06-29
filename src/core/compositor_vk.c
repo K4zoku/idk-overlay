@@ -31,33 +31,10 @@
 
 /* Frame protocol via compositor_common.h (idk_ipc.h). */
 
-/* Transport state */
-
-static char vk_sock_path[512];
-static idk_transport_t vk_tp;
-
-static int vk_sock_init(void) {
-    idk_comp_get_path(vk_sock_path, sizeof(vk_sock_path));
-    return idk_tp_init(&vk_tp, IDK_TP_CONSUMER, vk_sock_path);
-}
-
-static void vk_sock_accept(void) {
-    idk_tp_accept(&vk_tp);
-}
-
-/* ACK + resize state */
-
-static int vk_game_w = 0, vk_game_h = 0;
-static bool vk_size_pending = false;
-/* Set PER-FRAME when this frame's DMABUF import failed. The ACK for this
- * frame will carry ack=1 to tell the webview "this DMABUF didn't work".
- *
- * NOT latched - a transient failure (e.g. first frame after resize when
- * Qt RHI's texture isn't fully rebuilt yet) should NOT permanently disable
- * DMABUF. The webview tracks consecutive ack=1 count and only falls back
- * to SHM after N consecutive failures. */
+/* Per-frame DMABUF import failure flag.
+ * Set when import fails, cleared by ACK. The webview tracks consecutive
+ * ack=1 count and falls back to SHM after N failures. */
 static int vk_dmabuf_failed_this_frame = 0;
-static struct timespec vk_last_resize_ts = {0};
 
 /* Swapchain recreation storm protection.
  * When the game rapidly recreates swapchains (vkcube does this on resize),
@@ -77,19 +54,16 @@ void idk_vk_compositor_notify_swapchain_created(void) {
 }
 
 void idk_vk_compositor_notify_resize(int w, int h) {
-    idk_comp_notify_resize(&vk_game_w, &vk_game_h, &vk_size_pending,
-                           &vk_last_resize_ts, w, h, "comp-vk");
+    idk_comp_notify_resize(&g_comp.game_w, &g_comp.game_h,
+                           &g_comp.size_pending,
+                           &g_comp.last_resize_ts, w, h, "comp-vk");
 }
 
 static void vk_send_ack(int processed) {
-    uint8_t ack = (vk_dmabuf_failed_this_frame || processed < 0) ? 1 : 0;
+    uint8_t code = (vk_dmabuf_failed_this_frame || processed < 0) ? 1 : 0;
     vk_dmabuf_failed_this_frame = 0;
-    idk_ack_msg_t ack_msg;
-    idk_comp_build_ack(&ack_msg, ack,
-                       vk_game_w, vk_game_h,
-                       &vk_size_pending, &vk_last_resize_ts,
-                       IDK_COMP_RESIZE_DEBOUNCE_MS, "comp-vk");
-    idk_tp_send_ack(&vk_tp, &ack_msg);
+    /* Logged inside idk_comp_build_ack with comp-vk tag via g_comp state */
+    idk_compositor_send_ack(code);
 }
 
 /* Vulkan device state */
@@ -1037,116 +1011,54 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
 
 /* Frame receive */
 
-/* Overlay visibility - same symbol as overlay.c's g_overlay_visible.
- * When 0, drain incoming frames without ACK/REQUEST so the webview
- * stops rendering (see compositor_egl.c for full rationale). */
 extern _Atomic int g_overlay_visible;
 extern _Atomic int g_webview_dead;
 
-/* Track visibility transitions so we can wake the webview up when the
- * overlay becomes visible again. */
-static int vk_was_hidden = 0;
-
 int idk_vk_compositor_render(void) {
     if (g_webview_dead) return -1;
-    vk_sock_accept();
-    if (!vk_tp.ready) return -1;
 
-    /* When the overlay is hidden, drain any queued frames so the
-     * producer's send queue doesn't accumulate, but DO NOT send ACK
-     * or REQUEST. The webview's request-poll loop stays parked. */
-    if (!g_overlay_visible) {
-        while (1) {
-            int rc = idk_tp_drop_frame(&vk_tp);
-            if (rc <= 0) {
-                if (rc < 0) {
-                    idk_tp_disconnect_client(&vk_tp);
-                    vk_dmabuf_cache_id = 0;
-                }
-                break;
-            }
-            IDK_LOG("comp-vk", "hidden: drained frame\n");
-        }
-        vk_was_hidden = 1;
-        return -1;
-    }
+    int rc = idk_compositor_recv_frame(g_overlay_visible);
+    if (rc <= 0) return -1;
 
-    /* Visible - if we just transitioned from hidden, send a REQUEST
-     * to wake up the webview's request-poll loop. */
-    if (vk_was_hidden) {
-        vk_was_hidden = 0;
-        idk_request_msg_t wake;
-        memset(&wake, 0, sizeof(wake));
-        wake.type = IDK_REQUEST_NEXT_FRAME;
-        idk_tp_send_request(&vk_tp, &wake);
-        IDK_LOG("comp-vk", "overlay became visible - sent wake-up REQUEST\n");
-    }
-
+    idk_frame_header_t *hdr = &g_comp.hdr;
     int processed = 0;
-    while (1) {
-        idk_frame_header_t hdr;
-        int fds[4], nfd = 0;
-        int rc = idk_tp_recv(&vk_tp, &hdr, fds, &nfd);
-        if (rc <= 0) {
-            if (rc < 0) {
-                /* Soft-disconnect so a reconnecting webview can re-establish. */
-                idk_tp_disconnect_client(&vk_tp);
-                vk_dmabuf_cache_id = 0;
-            }
-            break;
+
+    if (!idk_frame_is_dmabuf(hdr)) {
+        vk_dmabuf_cache_id = 0;
+        vk_overlay_w = hdr->width;
+        vk_overlay_h = hdr->height;
+        if (vk_shm_fd >= 0) close(vk_shm_fd);
+        vk_shm_fd = g_comp.dmabuf_fd[0];
+        g_comp.dmabuf_fd[0] = -1;
+        vk_has_frame = 1;
+        if (vk_has_dmabuf_pending) {
+            if (vk_dmabuf_pending_fd >= 0) close(vk_dmabuf_pending_fd);
+            vk_has_dmabuf_pending = 0;
         }
-
-        int fd = (nfd > 0) ? fds[0] : -1;
-
-        if (processed > 0) { close(fd); continue; }
-
-        if (!idk_frame_is_dmabuf(&hdr)) {
-            vk_dmabuf_cache_id = 0;
-            /* SHM frame - will be uploaded in render_overlay via staging buffer */
-            vk_overlay_w = hdr.width;
-            vk_overlay_h = hdr.height;
-            if (vk_shm_fd >= 0) close(vk_shm_fd);
-            vk_shm_fd = fd;
-            vk_has_frame = 1;
-            if (vk_has_dmabuf_pending) {
-                if (vk_dmabuf_pending_fd >= 0) close(vk_dmabuf_pending_fd);
-                vk_has_dmabuf_pending = 0;
-            }
-            processed = 1;
-        } else {
-            /* DMABUF frame - stash for import in render_overlay.
-             * fourcc from header tells the VK compositor which VkFormat
-             * to use for VkImage creation. */
-            if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
-                close(vk_dmabuf_pending_fd);
-            }
-            vk_dmabuf_pending_fd = fd;
-            vk_dmabuf_pending_w = hdr.width;
-            vk_dmabuf_pending_h = hdr.height;
-            vk_dmabuf_pending_stride = hdr.stride;
-            vk_dmabuf_pending_fourcc = hdr.fourcc;
-            vk_dmabuf_pending_modifier = hdr.modifier;
-            vk_dmabuf_pending_buf_id = hdr.buf_id;
-            vk_has_dmabuf_pending = 1;
-            vk_has_frame = 1;
-            if (vk_shm_fd >= 0) { close(vk_shm_fd); vk_shm_fd = -1; }
-            processed = 1;
-            IDK_LOG("comp-vk", "DMABUF pending: %ux%u stride=%u mod=0x%lx\n",
-                    hdr.width, hdr.height,
-                    hdr.stride, (unsigned long)hdr.modifier);
+        processed = 1;
+    } else {
+        if (vk_has_dmabuf_pending && vk_dmabuf_pending_fd >= 0) {
+            close(vk_dmabuf_pending_fd);
         }
+        vk_dmabuf_pending_fd = g_comp.dmabuf_fd[0];
+        g_comp.dmabuf_fd[0] = -1;
+        vk_dmabuf_pending_w = hdr->width;
+        vk_dmabuf_pending_h = hdr->height;
+        vk_dmabuf_pending_stride = hdr->stride;
+        vk_dmabuf_pending_fourcc = hdr->fourcc;
+        vk_dmabuf_pending_modifier = hdr->modifier;
+        vk_dmabuf_pending_buf_id = hdr->buf_id;
+        vk_has_dmabuf_pending = 1;
+        vk_has_frame = 1;
+        if (vk_shm_fd >= 0) { close(vk_shm_fd); vk_shm_fd = -1; }
+        processed = 1;
+        IDK_LOG("comp-vk", "DMABUF pending: %ux%u stride=%u mod=0x%lx\n",
+                hdr->width, hdr->height, hdr->stride,
+                (unsigned long)hdr->modifier);
     }
 
-    if (processed) {
-        vk_send_ack(processed);
-    }
-
-    idk_request_msg_t req;
-    memset(&req, 0, sizeof(req));
-    req.type = IDK_REQUEST_NEXT_FRAME;
-    idk_tp_send_request(&vk_tp, &req);
-
-    return processed > 0 ? 0 : -1;
+    if (processed) vk_send_ack(processed);
+    return 0;
 }
 
 /* Render overlay */
@@ -1553,8 +1465,8 @@ int idk_vk_compositor_init(VkDevice device, VkPhysicalDevice physDevice,
         return -1;
     }
 
-    if (vk_sock_init() != 0) {
-        IDK_ERR("comp-vk", "Socket init failed\n");
+    if (idk_compositor_init() != 0) {
+        IDK_ERR("comp-vk", "Compositor init failed\n");
         return -1;
     }
 
@@ -1696,8 +1608,7 @@ void idk_vk_compositor_shutdown(void) {
     vk_queue = VK_NULL_HANDLE;
     vk_queue_family = 0;
 
-    idk_tp_destroy(&vk_tp);
-    if (vk_sock_path[0]) unlink(vk_sock_path);
+    idk_compositor_shutdown();
     vk_has_frame = 0;
     IDK_LOG("comp-vk", "Shut down (Vulkan objects destroyed)\n");
 }
