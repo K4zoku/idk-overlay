@@ -46,16 +46,30 @@ int init_input_socket(void) {
     }
 
     char path[256];
-    const char *base = getenv("IDK_SOCKET");
-    if (base && base[0]) {
-        snprintf(path, sizeof(path), "%s-input", base);
+    bool abstract = false;
+    const char *abstr = getenv("IDK_INPUT_ABSTRACT");
+    if (abstr && abstr[0]) {
+        /* Broker mode: abstract name without leading NUL, prepend it
+         * so tp_socket treats the address as abstract-namespace. */
+        path[0] = '\0';
+        size_t n = snprintf(path + 1, sizeof(path) - 1, "%s", abstr);
+        if (n + 1 >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+            WERR("input abstract name too long: %s", abstr);
+            return -1;
+        }
+        abstract = true;
     } else {
-        idk_comp_get_default_socket_path(path, sizeof(path), 1);
-    }
-    if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
-        WERR("input socket path too long (%zu >= %zu): %s",
-             strlen(path), sizeof(((struct sockaddr_un *)0)->sun_path), path);
-        return -1;
+        const char *base = getenv("IDK_SOCKET");
+        if (base && base[0]) {
+            snprintf(path, sizeof(path), "%s-input", base);
+        } else {
+            idk_comp_get_default_socket_path(path, sizeof(path), 1);
+        }
+        if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+            WERR("input socket path too long (%zu >= %zu): %s",
+                 strlen(path), sizeof(((struct sockaddr_un *)0)->sun_path), path);
+            return -1;
+        }
     }
 
     if (idk_tp_init(&g_input_tp, IDK_TP_CONSUMER, path) != 0) {
@@ -76,8 +90,9 @@ int init_input_socket(void) {
         return -1;
     }
 
-    WLOG("input transport listening on %s (backend=%s)",
-         path, g_input_tp.backend == IDK_TP_SHM ? "shm" : "socket");
+    WLOG("input transport listening on %s%s (backend=%s)",
+         abstract ? "\\0" : "", abstract ? path + 1 : path,
+         g_input_tp.backend == IDK_TP_SHM ? "shm" : "socket");
     return 0;
 }
 

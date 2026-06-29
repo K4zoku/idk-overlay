@@ -88,6 +88,17 @@ void idk_comp_get_default_abstract_name(char *buf, size_t bufsz, int input) {
 }
 
 void idk_comp_get_path(char *buf, size_t bufsz) {
+    /* Broker mode: IDK_TP_ABSTRACT holds the abstract socket name
+     * without a leading NUL. Prepend "\0" so that idk_tp_init →
+     * tp_socket_init treats the address as an abstract-namespace
+     * socket (sun_path[0] == '\0'). buf[0] == '\0' also disables
+     * shutdown-side unlink(), which is correct for abstract. */
+    const char *abstr = getenv("IDK_TP_ABSTRACT");
+    if (abstr && abstr[0]) {
+        buf[0] = '\0';
+        snprintf(buf + 1, bufsz - 1, "%s", abstr);
+        return;
+    }
     const char *env = getenv("IDK_SOCKET");
     if (env && env[0]) {
         snprintf(buf, bufsz, "%s", env);
