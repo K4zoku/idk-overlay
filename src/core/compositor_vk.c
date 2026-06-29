@@ -155,6 +155,7 @@ static int    vk_shm_fd = -1;
  * open for the lifetime of the imported VkImage - closing it before
  * vkDestroyImage may cause GPU memory corruption. */
 static int           vk_dmabuf_fd = -1;       /* currently-imported dmabuf fd */
+static uint16_t      vk_dmabuf_cache_id = 0;   /* buf_id of cached import (0=none) */
 static uint32_t      vk_dmabuf_w = 0;
 static uint32_t      vk_dmabuf_h = 0;
 static uint32_t      vk_dmabuf_stride = 0;
@@ -172,6 +173,7 @@ static uint32_t      vk_dmabuf_pending_h = 0;
 static uint32_t      vk_dmabuf_pending_stride = 0;
 static uint32_t      vk_dmabuf_pending_fourcc = 0;
 static uint64_t      vk_dmabuf_pending_modifier = 0;
+static uint16_t      vk_dmabuf_pending_buf_id = 0;
 static int           vk_has_dmabuf_pending = 0;
 
 /* Async submit ring: 2-slot rolling-fence ring to avoid blocking the game's
@@ -736,7 +738,7 @@ static VkFormat drm_fourcc_to_vk_format(uint32_t fourcc) {
  * we MUST keep the fd open to be safe - see vk_dmabuf_fd tracking). */
 static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
                               uint32_t fourcc, uint64_t modifier,
-                              VkCommandBuffer cmd) {
+                              uint16_t buf_id, VkCommandBuffer cmd) {
     VkResult r;
     VK_LOAD(vkCreateImage);
     VK_LOAD(vkAllocateMemory);
@@ -768,28 +770,21 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
         }
     }
 
-    /* If we already have an import for this exact frame identity, skip.
-     * NOTE: Qt reuses the same dmabuf fd across frames only sometimes -
-     * more often it creates a new fd per frame. So this cache rarely hits,
-     * but when it does, we save a full vkCreateImage+AllocateMemory cycle. */
     if (vk_dmabuf_img != VK_NULL_HANDLE &&
         vk_dmabuf_w == w && vk_dmabuf_h == h &&
         vk_dmabuf_stride == stride && vk_dmabuf_fourcc == fourcc &&
         vk_dmabuf_modifier == modifier &&
-        vk_dmabuf_fd == fd) {
-        /* Same fd reused by Qt → image still valid, just transition layout. */
+        buf_id != 0 && vk_dmabuf_cache_id == buf_id) {
+        close(fd);
         vk_overlay_img = vk_dmabuf_img;
         vk_overlay_view = vk_dmabuf_view;
         /* Fall through to layout transition below. */
     } else {
-        /* Tear down old import.
-         * NOTE: vkFreeMemory closes the imported fd (ICD took ownership
-         * via VkImportMemoryFdInfoKHR on successful vkAllocateMemory).
-         * Do NOT close(vk_dmabuf_fd) - that would double-close. */
         if (vk_dmabuf_view) { vkDestroyImageView(vk_dev, vk_dmabuf_view, NULL); vk_dmabuf_view = VK_NULL_HANDLE; }
         if (vk_dmabuf_img)  { vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);  vk_dmabuf_img  = VK_NULL_HANDLE; }
         if (vk_dmabuf_img_mem) { vkFreeMemory(vk_dev, vk_dmabuf_img_mem, NULL); vk_dmabuf_img_mem = VK_NULL_HANDLE; }
-        vk_dmabuf_fd = -1;  /* ICD already closed it via vkFreeMemory */
+        vk_dmabuf_fd = -1;
+        vk_dmabuf_cache_id = 0;
 
         VkFormat vk_fmt = drm_fourcc_to_vk_format(fourcc);
 
@@ -990,7 +985,8 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
         vk_dmabuf_stride = stride;
         vk_dmabuf_fourcc = fourcc;
         vk_dmabuf_modifier = modifier;
-        vk_dmabuf_fd = fd;  /* track for cache hit detection */
+        vk_dmabuf_fd = fd;
+        vk_dmabuf_cache_id = buf_id;
         IDK_LOG("comp-vk", "dmabuf: imported %ux%u fourcc=0x%x mod=0x%lx stride=%u\n",
                 w, h, fourcc, (unsigned long)modifier, stride);
     }
@@ -1064,6 +1060,7 @@ int idk_vk_compositor_render(void) {
                 if (rc < 0) {
                     /* Soft-disconnect: keep listen fd / SHM open for reconnect. */
                     idk_tp_disconnect_client(&vk_tp);
+                    vk_dmabuf_cache_id = 0;
                 }
                 break;
             }
@@ -1094,6 +1091,7 @@ int idk_vk_compositor_render(void) {
             if (rc < 0) {
                 /* Soft-disconnect so a reconnecting webview can re-establish. */
                 idk_tp_disconnect_client(&vk_tp);
+                vk_dmabuf_cache_id = 0;
             }
             break;
         }
@@ -1103,6 +1101,7 @@ int idk_vk_compositor_render(void) {
         if (processed > 0) { close(fd); continue; }
 
         if (!idk_frame_is_dmabuf(&hdr)) {
+            vk_dmabuf_cache_id = 0;
             /* SHM frame - will be uploaded in render_overlay via staging buffer */
             vk_overlay_w = hdr.width;
             vk_overlay_h = hdr.height;
@@ -1127,6 +1126,7 @@ int idk_vk_compositor_render(void) {
             vk_dmabuf_pending_stride = hdr.stride;
             vk_dmabuf_pending_fourcc = hdr.fourcc;
             vk_dmabuf_pending_modifier = hdr.modifier;
+            vk_dmabuf_pending_buf_id = hdr.buf_id;
             vk_has_dmabuf_pending = 1;
             vk_has_frame = 1;
             if (vk_shm_fd >= 0) { close(vk_shm_fd); vk_shm_fd = -1; }
@@ -1255,6 +1255,7 @@ void idk_vk_compositor_render_overlay(VkCommandBuffer cmd, VkImage swapchainImag
                               vk_dmabuf_pending_stride,
                               vk_dmabuf_pending_fourcc,
                               vk_dmabuf_pending_modifier,
+                              vk_dmabuf_pending_buf_id,
                               recording_cmd) != 0) {
             IDK_ERR("comp-vk", "render_overlay: dmabuf import failed (fd=%d)\n",
                     pending_fd);
@@ -1688,6 +1689,7 @@ void idk_vk_compositor_shutdown(void) {
     vk_shm_img_h = 0;
     vk_dmabuf_w = 0;
     vk_dmabuf_h = 0;
+    vk_dmabuf_cache_id = 0;
 
     vk_dev = VK_NULL_HANDLE;
     vk_phys = VK_NULL_HANDLE;
