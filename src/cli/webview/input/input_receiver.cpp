@@ -88,7 +88,7 @@ static Qt::KeyboardModifiers idkModsToQt(quint32 mods)
 static quint64 nowMs() { return (quint64)QDateTime::currentMSecsSinceEpoch(); }
 
 InputReceiver::InputReceiver(const QString &frameSocketPath, QObject *parent)
-    : QObject(parent)
+    : QObject(parent), m_tp{}
 {
     m_socketPath = frameSocketPath + QStringLiteral("-input");
 }

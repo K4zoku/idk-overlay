@@ -220,6 +220,21 @@ static int find_webview_bin(char *buf, size_t bufsz) {
     return -1;
 }
 
+static void *webview_monitor(void *arg) {
+    pid_t pid = (pid_t)(intptr_t)arg;
+    int status;
+    if (waitpid(pid, &status, 0) > 0) {
+        if (WIFEXITED(status))
+            IDK_ERR("overlay", "webview (pid=%d) exited with status %d\n",
+                    pid, WEXITSTATUS(status));
+        else if (WIFSIGNALED(status))
+            IDK_ERR("overlay", "webview (pid=%d) killed by signal %d%s\n",
+                    pid, WTERMSIG(status),
+                    WCOREDUMP(status) ? " (core dumped)" : "");
+    }
+    return NULL;
+}
+
 /* Fork+exec the webview process as a child of the game.
  * The child inherits IDK_SOCKET, IDK_TP_BACKEND (default "shm"), and
  * any IDK_* env vars. Game name is passed via --match so the webview
@@ -244,26 +259,33 @@ static void fork_webview(void) {
         for (int i = 3; i < 1024; i++) close(i);
 
         /* Strip libidk-overlay.so from LD_PRELOAD so the webview child
-         * doesn't re-run the injected overlay constructor and crash. */
-        const char *preload = getenv("LD_PRELOAD");
-        if (preload) {
-            char buf[2048] = {0};
-            const char *p = preload;
-            while (*p) {
-                while (*p == ':' || *p == ' ') p++;
-                if (!*p) break;
-                const char *start = p;
-                while (*p && *p != ':') p++;
-                size_t len = (size_t)(p - start);
-                if (len > 0 && !strstr(start, "libidk-overlay.so")) {
-                    if (buf[0]) strncat(buf, ":", sizeof(buf) - strlen(buf) - 1);
-                    strncat(buf, start, len > sizeof(buf) - strlen(buf) - 1 ? sizeof(buf) - strlen(buf) - 1 : len);
+         * doesn't re-run the injected overlay constructor and crash.
+         * Direct environ manipulation avoids async-signal-unsafe setenv. */
+        extern char **environ;
+        for (int ei = 0; environ[ei]; ei++) {
+            if (strncmp(environ[ei], "LD_PRELOAD=", 11) == 0) {
+                char *val = environ[ei] + 11;
+                if (!*val) break;
+                char *newval = val, *w = val;
+                while (*newval) {
+                    while (*newval == ':' || *newval == ' ') newval++;
+                    if (!*newval) break;
+                    char *start = newval;
+                    while (*newval && *newval != ':') newval++;
+                    if ((size_t)(newval - start) > 0 && !strstr(start, "libidk-overlay.so")) {
+                        if (w > val) *w++ = ':';
+                        size_t slen = (size_t)(newval - start);
+                        memmove(w, start, slen);
+                        w += slen;
+                    }
                 }
+                *w = '\0';
+                if (w == val) {
+                    for (int ej = ei; environ[ej]; ej++)
+                        environ[ej] = environ[ej + 1];
+                }
+                break;
             }
-            if (buf[0])
-                setenv("LD_PRELOAD", buf, 1);
-            else
-                unsetenv("LD_PRELOAD");
         }
 
         IDK_LOG("overlay", "forked webview child, exec %s (comm=%s socket=%s backend=%s)\n",
@@ -286,6 +308,10 @@ static void fork_webview(void) {
     }
 
     IDK_LOG("overlay", "webview forked (pid=%d, bin=%s)\n", (int)g_webview_pid, bin);
+
+    pthread_t mt;
+    if (pthread_create(&mt, NULL, webview_monitor, (void *)(intptr_t)g_webview_pid) == 0)
+        pthread_detach(mt);
 }
 
 static void get_config_path(char *buf, size_t bufsz) {
@@ -447,6 +473,7 @@ void idk_overlay_shutdown(void) {
             waitpid(g_webview_pid, &status, 0);
         }
         g_webview_pid = -1;
+        /* errno ECHILD là OK — monitor thread đã reap rồi */
     }
 }
 
