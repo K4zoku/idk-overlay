@@ -8,6 +8,7 @@ static idk_transport_t g_input_tp;
 static pthread_t g_accept_thread;
 static pthread_mutex_t g_input_tp_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_input_inited = 0;
+static _Atomic int g_accept_stop = 0;
 
 int g_input_listen_fd = -1;
 int g_client_fd = -1;
@@ -15,7 +16,7 @@ int g_accept_thread_started = 0;
 
 static void *accept_thread_main(void *arg) {
     (void)arg;
-    while (1) {
+    while (!atomic_load(&g_accept_stop)) {
         pthread_mutex_lock(&g_input_tp_lock);
         if (g_input_tp.ready) {
             pthread_mutex_unlock(&g_input_tp_lock);
@@ -32,7 +33,8 @@ static void *accept_thread_main(void *arg) {
             WLOG("webview connected to input transport");
             break;
         }
-        usleep(10000);
+        for (int i = 0; i < 100 && !atomic_load(&g_accept_stop); i++)
+            usleep(100);
     }
     return NULL;
 }
@@ -139,11 +141,13 @@ void send_repeat_info(void) {
 
 void teardown_input_socket(void) {
     if (g_accept_thread_started) {
+        atomic_store(&g_accept_stop, 1);
         pthread_mutex_lock(&g_input_tp_lock);
         idk_tp_disconnect_client(&g_input_tp);
         pthread_mutex_unlock(&g_input_tp_lock);
         pthread_join(g_accept_thread, NULL);
         g_accept_thread_started = 0;
+        atomic_store(&g_accept_stop, 0);
     }
 
     pthread_mutex_lock(&g_input_tp_lock);

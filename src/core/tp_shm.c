@@ -94,7 +94,15 @@ static void *shm_health_loop(void *arg) {
             break;
         }
         if (stop) break;
-        sleep(2);
+        for (int i = 0; i < 20 && !stop; i++) {
+            usleep(100000);
+            for (int j = 0; j < MAX_SHM_TP; j++) {
+                if (g_shm_health[j].tp != tp) continue;
+                stop = atomic_load(&g_shm_health[j].stop);
+                break;
+            }
+        }
+        if (stop) break;
         void *ptr = TP_SH_SHM_PTR(tp->_rsv);
         if (ptr) tp_shm_health_check(ptr);
     }
