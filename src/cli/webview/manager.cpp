@@ -57,95 +57,68 @@ Manager::Manager(const QString &confFile,
         if (envSocket && *envSocket) {
             m_socketPath = QString::fromUtf8(envSocket);
         } else {
-            /* Fallback for manual launch without env - use the same
-             * default the injected lib uses ($XDG_RUNTIME_DIR/idk-overlay-<pid>,
-             * /tmp/idk-overlay-<pid> fallback). The webview's PID is used
-             * because the forked-webview path inherits IDK_SOCKET from the
-             * parent game process, so this branch is only hit when the user
-             * launches idk-webview manually. */
-            const char *xdg = getenv("XDG_RUNTIME_DIR");
-            QString dir = (xdg && *xdg)
-                ? QString::fromUtf8(xdg)
-                : QStringLiteral("/tmp");
-            /* Strip trailing slash so the final path is canonical. */
-            while (dir.size() > 1 && dir.endsWith(QLatin1Char('/')))
-                dir.chop(1);
-            m_socketPath = dir + QStringLiteral("/idk-overlay-")
-                          + QString::number(getpid());
+            qCritical("idk-webview must be launched by the game (fork+exec).");
+            qCritical("Run your game with LD_PRELOAD=libidk-overlay.so instead.");
+            QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+            return;
         }
     }
 
-    /* Connection: use idk_fs as sole connection */
-    const char *reuse_fd = getenv("IDK_SOCKET_FD");
-    int fd = reuse_fd ? atoi(reuse_fd) : -1;
     m_was_connected = false;
 
-    if (fd >= 0) {
-        /* Reusing existing fd - idk_fs_init stores it, no connect() */
-        if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
-            m_was_connected = true;
-            emit socketConnected();
-            startInputReceiver();
-        }
+    if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
+        m_was_connected = true;
+        IDK_LOG("webview", "idk_fs connected to %s\n",
+                m_socketPath.toUtf8().data());
+        emit socketConnected();
+        startInputReceiver();
     } else {
-        /* Try blocking connect (retry timer handles failure) */
-        if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
-            m_was_connected = true;
-            IDK_LOG("webview", "idk_fs connected to %s\n",
-                    m_socketPath.toUtf8().data());
+        IDK_LOG("webview", "idk_fs connect failed, will retry\n");
+    }
+
+    connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
+        bool connected_now = idk_fs_is_connected();
+
+        if (connected_now && !m_was_connected) {
+            m_disconnect_count = 0;
+            IDK_LOG("webview", "idk_fs connected\n");
             emit socketConnected();
             startInputReceiver();
-        } else {
-            IDK_LOG("webview", "idk_fs connect failed, will retry\n");
-        }
-
-        /* Poll idk_fs_is_connected() every 1s to detect state transitions. */
-        connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
-            bool connected_now = idk_fs_is_connected();
-
-            if (connected_now && !m_was_connected) {
-                m_disconnect_count = 0;
-                IDK_LOG("webview", "idk_fs connected\n");
+        } else if (!connected_now && m_was_connected) {
+            IDK_LOG("webview", "idk_fs disconnected - attempting reconnect\n");
+            emit socketDisconnected();
+            stopInputReceiver();
+            if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
+                IDK_LOG("webview", "idk_fs reconnected\n");
                 emit socketConnected();
                 startInputReceiver();
-            } else if (!connected_now && m_was_connected) {
-                /* connected → disconnected: try reconnect once */
-                IDK_LOG("webview", "idk_fs disconnected - attempting reconnect\n");
-                emit socketDisconnected();
-                stopInputReceiver();
-                if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
-                    IDK_LOG("webview", "idk_fs reconnected\n");
-                    emit socketConnected();
-                    startInputReceiver();
-                    connected_now = true;
-                    m_disconnect_count = 0;
-                } else {
-                    m_disconnect_count = 1;
-                }
-            } else if (!connected_now && !m_was_connected) {
-                /* Still not connected - retry (logged sparsely at 1,5,30,60..) */
-                m_disconnect_count++;
-                bool should_log = (m_disconnect_count == 1 ||
-                                   m_disconnect_count == 5 ||
-                                   m_disconnect_count == 30 ||
-                                   (m_disconnect_count > 30 && m_disconnect_count % 60 == 0));
-                if (should_log) {
-                    IDK_LOG("webview", "idk_fs waiting for compositor (attempt %d)\n",
-                            m_disconnect_count);
-                }
-                if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
-                    IDK_LOG("webview", "idk_fs connected after %d attempts\n",
-                            m_disconnect_count);
-                    m_disconnect_count = 0;
-                    emit socketConnected();
-                    startInputReceiver();
-                    connected_now = true;
-                }
+                connected_now = true;
+                m_disconnect_count = 0;
+            } else {
+                m_disconnect_count = 1;
             }
-            m_was_connected = connected_now;
-        });
-        m_reconnectTimer->start(1000);
-    }
+        } else if (!connected_now && !m_was_connected) {
+            m_disconnect_count++;
+            bool should_log = (m_disconnect_count == 1 ||
+                               m_disconnect_count == 5 ||
+                               m_disconnect_count == 30 ||
+                               (m_disconnect_count > 30 && m_disconnect_count % 60 == 0));
+            if (should_log) {
+                IDK_LOG("webview", "idk_fs waiting for compositor (attempt %d)\n",
+                        m_disconnect_count);
+            }
+            if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
+                IDK_LOG("webview", "idk_fs connected after %d attempts\n",
+                        m_disconnect_count);
+                m_disconnect_count = 0;
+                emit socketConnected();
+                startInputReceiver();
+                connected_now = true;
+            }
+        }
+        m_was_connected = connected_now;
+    });
+    m_reconnectTimer->start(1000);
 
     QWebEngineProfile::defaultProfile()->setHttpCacheType(QWebEngineProfile::MemoryHttpCache);
 
