@@ -3,6 +3,9 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDebug>
+#include <QSocketNotifier>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 int main(int argc, char *argv[])
 {
@@ -59,5 +62,13 @@ int main(int argc, char *argv[])
 
     Manager manager(configPath, socketPath, noDmaBuf,
                     url, width, height, match);
+
+    int pidfd = (int)syscall(SYS_pidfd_open, getppid(), 0);
+    if (pidfd >= 0) {
+        auto *notifier = new QSocketNotifier(pidfd, QSocketNotifier::Read, &app);
+        QObject::connect(notifier, &QSocketNotifier::activated,
+                         &app, &QCoreApplication::quit);
+    }
+
     return app.exec();
 }

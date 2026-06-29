@@ -301,7 +301,6 @@ static void fork_webview(void) {
     }
 
     if (g_webview_pid == 0) {
-        prctl(PR_SET_PDEATHSIG, SIGTERM);
         for (int i = 3; i < 1024; i++) {
             if (i == g_input_eventfd) continue;
             close(i);
