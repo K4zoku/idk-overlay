@@ -47,10 +47,16 @@ Manager::Manager(const QString &confFile,
     , m_container(new QWidget())
     , m_statusLabel(new QLabel())
 {
-    /* Socket path priority: CLI > IDK_SOCKET env > default.
-     * Socket is no longer in config - it's always dynamic (set by the
-     * injected lib's fork+exec, or by the user via --socket/IDK_SOCKET). */
-    if (!cliSocketPath.isEmpty()) {
+    /* Socket path priority:
+     *   1. IDK_TP_ABSTRACT env (broker-mode: abstract AF_UNIX name, no \0)
+     *   2. CLI --socket
+     *   3. IDK_SOCKET env / fail
+     * Socket is no longer in config - it's always dynamic. */
+    const char *envTpAbstract = getenv("IDK_TP_ABSTRACT");
+    if (envTpAbstract && *envTpAbstract) {
+        m_socketPath = QString::fromUtf8(envTpAbstract);
+        m_socketAbstract = true;
+    } else if (!cliSocketPath.isEmpty()) {
         m_socketPath = cliSocketPath;
     } else {
         const char *envSocket = getenv("IDK_SOCKET");
@@ -66,9 +72,13 @@ Manager::Manager(const QString &confFile,
 
     m_was_connected = false;
 
-    if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
+    QByteArray sockName = m_socketAbstract
+        ? (QByteArray(1, '\0') + m_socketPath.toUtf8())
+        : m_socketPath.toUtf8();
+    if (idk_fs_init(sockName.constData()) == 0) {
         m_was_connected = true;
-        IDK_LOG("webview", "idk_fs connected to %s\n",
+        IDK_LOG("webview", "idk_fs connected to %s%s\n",
+                m_socketAbstract ? "\\0" : "",
                 m_socketPath.toUtf8().data());
         emit socketConnected();
         startInputReceiver();
@@ -88,7 +98,10 @@ Manager::Manager(const QString &confFile,
             IDK_LOG("webview", "idk_fs disconnected - attempting reconnect\n");
             emit socketDisconnected();
             stopInputReceiver();
-            if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
+            QByteArray sockName = m_socketAbstract
+                ? (QByteArray(1, '\0') + m_socketPath.toUtf8())
+                : m_socketPath.toUtf8();
+            if (idk_fs_init(sockName.constData()) == 0) {
                 IDK_LOG("webview", "idk_fs reconnected\n");
                 emit socketConnected();
                 startInputReceiver();
@@ -107,7 +120,10 @@ Manager::Manager(const QString &confFile,
                 IDK_LOG("webview", "idk_fs waiting for compositor (attempt %d)\n",
                         m_disconnect_count);
             }
-            if (idk_fs_init(m_socketPath.toUtf8().data()) == 0) {
+            QByteArray sockName = m_socketAbstract
+                ? (QByteArray(1, '\0') + m_socketPath.toUtf8())
+                : m_socketPath.toUtf8();
+            if (idk_fs_init(sockName.constData()) == 0) {
                 IDK_LOG("webview", "idk_fs connected after %d attempts\n",
                         m_disconnect_count);
                 m_disconnect_count = 0;

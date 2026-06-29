@@ -43,6 +43,7 @@ private:
     void stopRepeatTimer();
 
     QString m_socketPath;
+    bool m_socketAbstract = false;  /* IDK_INPUT_ABSTRACT env set (broker mode) */
     idk_transport_t m_tp;
     int m_wakeFd = -1;
     QSocketNotifier *m_notifier = nullptr;

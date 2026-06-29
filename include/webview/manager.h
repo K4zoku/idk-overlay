@@ -62,6 +62,7 @@ private:
     // State
     QSettings *m_settings;
     QString m_socketPath;
+    bool m_socketAbstract = false;  /* IDK_TP_ABSTRACT env set (broker mode) */
     QTimer *m_reconnectTimer;
     int m_disconnect_count = 0;  // throttle disconnect log spam
     bool m_was_connected = false; // track idk_fs fd state transitions
