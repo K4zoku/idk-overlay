@@ -77,6 +77,7 @@ idk_overlay_so = library(
         'src/hook/x11/x11_input.c',
         'src/hook/x11/x11_kb.c',
         'src/hook/x11/x11_ptr.c',
+        'src/core/log.c',
         'src/core/compositor_egl.c',
         'src/core/compositor_common.c',
         'src/core/compositor_vk.c',

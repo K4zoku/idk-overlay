@@ -10,6 +10,7 @@ test_c_args = [
 # (no GPU dependencies - just stdlib + syscalls)
 test_comp_common_lib = static_library('test_comp_common',
     '../src/core/compositor_common.c',
+    '../src/core/log.c',
     c_args: test_c_args,
     include_directories: inc,
 )
@@ -53,6 +54,7 @@ endforeach
 # Static library for ipc.c - validation tests
 test_ipc_lib = static_library('test_ipc',
     '../src/ipc/ipc.c',
+    '../src/core/log.c',
     c_args: test_c_args,
     include_directories: inc,
 )

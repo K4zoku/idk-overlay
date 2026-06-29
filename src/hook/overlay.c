@@ -15,6 +15,8 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <stdarg.h>
 
 #include "hook/overlay.h"
 #include "hook/hook_plugin.h"
@@ -218,16 +220,6 @@ static int find_webview_bin(char *buf, size_t bufsz) {
     return -1;
 }
 
-static void get_process_name(char *buf, size_t bufsz) {
-    buf[0] = '\0';
-    int fd = open("/proc/self/comm", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, buf, bufsz - 1);
-        if (n > 0) { buf[n] = '\0'; char *nl = strchr(buf, '\n'); if (nl) *nl = '\0'; }
-        close(fd);
-    }
-}
-
 /* Fork+exec the webview process as a child of the game.
  * The child inherits IDK_SOCKET, IDK_TP_BACKEND (default "shm"), and
  * any IDK_* env vars. Game name is passed via --match so the webview
@@ -239,8 +231,7 @@ static void fork_webview(void) {
         return;
     }
 
-    char comm[64] = {0};
-    get_process_name(comm, sizeof(comm));
+    const char *comm = idk_process_name();
 
     g_webview_pid = fork();
     if (g_webview_pid < 0) {
@@ -262,7 +253,7 @@ static void fork_webview(void) {
         argv[ai++] = g_socket_path;
         if (comm[0]) {
             argv[ai++] = "--match";
-            argv[ai++] = comm;
+            argv[ai++] = (char *)comm;
         }
         argv[ai] = NULL;
 
@@ -314,7 +305,7 @@ static void load_hotkey_config(void) {
     const char *env_ovl = getenv("IDK_HOTKEY_OVERLAY"); if (!env_ovl||!env_ovl[0]) env_ovl = "F8";
     parse_hotkey_str(env_cap, &g_hotkey_keysym, &g_hotkey_mods);
     parse_hotkey_str(env_ovl, &g_hotkey_overlay_keysym, &g_hotkey_overlay_mods);
-    char proc[64]; get_process_name(proc, sizeof(proc));
+    const char *proc = idk_process_name();
     char cpath[PATH_MAX]; get_config_path(cpath, sizeof(cpath));
     FILE *f = fopen(cpath, "r");
     if (!f) { IDK_LOG("overlay", "hotkey: using defaults (cap=%s ovl=%s)\n", env_cap, env_ovl); return; }
@@ -332,8 +323,72 @@ static void load_hotkey_config(void) {
     if(found_ovl[0]){parse_hotkey_str(found_ovl,&g_hotkey_overlay_keysym,&g_hotkey_overlay_mods); IDK_LOG("overlay","hotkey: overlay='%s' from config matching '%s'\n",found_ovl,proc);}
 }
 
+/* Intercept prctl(PR_SET_NAME) to refresh the cached process ident
+ * when a game renames itself (used by Wine/Proton, Steam child procs). */
+int prctl(int option, ...) {
+    va_list ap;
+    va_start(ap, option);
+    unsigned long a2 = va_arg(ap, unsigned long);
+    unsigned long a3 = va_arg(ap, unsigned long);
+    unsigned long a4 = va_arg(ap, unsigned long);
+    unsigned long a5 = va_arg(ap, unsigned long);
+    va_end(ap);
+
+    int ret = syscall(SYS_prctl, option, a2, a3, a4, a5);
+    if (option == PR_SET_NAME && ret == 0)
+        idk_process_ident_invalidate();
+    return ret;
+}
+
+/* Skip overlay init in known non-game child processes (awk, shell
+ * interpreters, updaters, etc.) that inherit LD_PRELOAD from the
+ * parent. These short-lived tools crash or misbehave when the overlay
+ * constructor creates threads and calls dlopen. The overlay must keep
+ * LD_PRELOAD set so the real game binary (often exec'd after AppImage
+ * extraction / Flatpak launch) still receives the injection. */
+static int idk_is_target_process(void) {
+    /* Check /proc/self/exe for AppImage-internal binaries. The FUSE
+     * mount path always starts with /tmp/.mount_<name>.<random>/. */
+    char exe[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (len > 0) {
+        exe[len] = '\0';
+        if (strstr(exe, "/.mount_"))
+            return 1;
+    }
+
+    /* Fallback: check comm against known system-tool names that are
+     * never the target game. */
+    char comm[64] = {0};
+    int _fd = open("/proc/self/comm", O_RDONLY);
+    if (_fd < 0) return 1; /* can't check, allow */
+    ssize_t _n = read(_fd, comm, sizeof(comm) - 1);
+    close(_fd);
+    if (_n <= 0) return 1;
+    comm[_n] = '\0';
+    if (_n > 0 && comm[_n - 1] == '\n') comm[_n - 1] = '\0';
+
+    static const char *blacklist[] = {
+        "awk", "gawk", "mawk",
+        "sh", "bash", "dash",
+        "UpdateNix",
+        "mktemp", "cp", "mv", "rm", "chmod",
+        "readlink", "dirname", "basename",
+        "head", "tail", "cut", "grep", "sed",
+        "true", "false",
+        NULL
+    };
+    for (int i = 0; blacklist[i]; i++) {
+        if (strcmp(comm, blacklist[i]) == 0)
+            return 0;
+    }
+    return 1;
+}
+
 int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     if (g_initialized) return 0;
+    if (!idk_is_target_process()) return 0;
+
     g_initialized = 1;
     g_enable_vk = enable_vk;
     g_enable_gl = enable_gl;

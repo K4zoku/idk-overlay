@@ -492,6 +492,7 @@ int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
     atomic_thread_fence(memory_order_release);
 
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_FRAME);
+    futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
 
     return 0;
 }

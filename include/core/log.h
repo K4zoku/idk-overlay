@@ -17,7 +17,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* Check IDK_DEBUG once at startup, cache the result */
 static inline int idk_debug_enabled(void) {
@@ -38,13 +41,31 @@ static inline void idk_timestamp(char *buf, size_t len) {
              tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(ts.tv_nsec / 1000000));
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Get cached "[PID:procname]" ident string for log prefix */
+const char *idk_process_ident(void);
+
+/* Return just the process name (reuses cached ident) */
+const char *idk_process_name(void);
+
+/* Invalidate cached ident so next call re-reads /proc/self/comm.
+ * Call this after prctl(PR_SET_NAME, ...) to reflect new process name. */
+void idk_process_ident_invalidate(void);
+
+#ifdef __cplusplus
+}
+#endif
+
 /* Info/debug log - only prints if IDK_DEBUG is set.
  * Includes millisecond timestamp for easier debugging of timing issues. */
 #define IDK_LOG(tag, fmt, ...) do { \
     if (idk_debug_enabled()) { \
         char _ts[16]; \
         idk_timestamp(_ts, sizeof(_ts)); \
-        fprintf(stderr, "[%s][idk:%s] " fmt, _ts, tag, ##__VA_ARGS__); \
+        fprintf(stderr, "[%s][%s][idk:%s] " fmt, _ts, idk_process_ident(), tag, ##__VA_ARGS__); \
     } \
 } while(0)
 
@@ -53,7 +74,7 @@ static inline void idk_timestamp(char *buf, size_t len) {
     do { \
         char _ts[16]; \
         idk_timestamp(_ts, sizeof(_ts)); \
-        fprintf(stderr, "[%s][idk:%s] " fmt, _ts, tag, ##__VA_ARGS__); \
+        fprintf(stderr, "[%s][%s][idk:%s] " fmt, _ts, idk_process_ident(), tag, ##__VA_ARGS__); \
     } while(0)
 
 #endif /* IDK_LOG_H */

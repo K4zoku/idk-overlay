@@ -743,15 +743,23 @@ int idk_compositor_egl_render(void) {
                            &g_size_pending, &g_last_resize_ts,
                             IDK_COMP_RESIZE_DEBOUNCE_MS, "comp");
         idk_tp_send_ack(&g_tp, &ack_msg);
-
-        idk_request_msg_t req;
-        memset(&req, 0, sizeof(req));
-        req.type = IDK_REQUEST_NEXT_FRAME;
-        idk_tp_send_request(&g_tp, &req);
-
-        return 0;
     }
-    return -1;
+
+    /* Always send REQUEST when connected and visible, even without a new
+     * frame. Without this, the webview can deadlock: it sends its first
+     * frame before the compositor is ready → ACK timeout → polls REQUEST
+     * → nothing arrives (compositor's render() sees no frame → returns
+     * -1 without REQUEST) → webview stops painting forever.
+     *
+     * The REQUEST tells the webview "I'm alive, send me a frame". The
+     * webview's onRequestReceived() triggers a new paint, which re-enters
+     * doRenderAndSend() and re-sends the frame. */
+    idk_request_msg_t req;
+    memset(&req, 0, sizeof(req));
+    req.type = IDK_REQUEST_NEXT_FRAME;
+    idk_tp_send_request(&g_tp, &req);
+
+    return processed ? 0 : -1;
 }
 
 GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
