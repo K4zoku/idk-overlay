@@ -12,7 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 static socklen_t abstract_addrlen(const char *name) {
     return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + strlen(name + 1));

@@ -16,7 +16,7 @@
 #include "gl/gl_loader.h"        /* GL types + function pointer redirects */
 #include "gl/shader_loader.h"    /* shader compile + SPIR-V fallback */
 #include "core/compositor_egl.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 #include "core/transport.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"

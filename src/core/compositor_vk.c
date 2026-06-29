@@ -19,7 +19,7 @@
 #include <vulkan/vulkan.h>
 
 #include "core/compositor_vk.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 #include "core/transport.h"
 #include "core/log.h"
 #include "shaders/vk_shaders.h"

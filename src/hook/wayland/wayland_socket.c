@@ -1,5 +1,5 @@
 #include "hook/wayland_internal.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 #include "core/transport.h"
 
 extern _Atomic int g_webview_dead;

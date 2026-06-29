@@ -1,31 +1,26 @@
-/*
- * compositor_common.c - shared code between GL and Vulkan compositors.
- *
- * See include/core/compositor_common.h for API docs.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>  /* PATH_MAX */
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <time.h>
 
-/* PATH_MAX is not guaranteed by POSIX (e.g. GNU/Hurd leaves it
- * undefined). Fall back to 4096 (Linux's value) so the build doesn't
- * break on systems without it. */
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
 
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 #include "core/log.h"
 
-/* Resize debounce */
+/* ===== idk_compositor_t singleton ===== */
+
+idk_compositor_t g_comp = {0};
+
+/* ===== Resize debounce ===== */
 
 bool idk_comp_notify_resize(int *game_w, int *game_h, bool *size_pending,
                             struct timespec *last_resize_ts,
@@ -52,19 +47,12 @@ bool idk_comp_resize_stable(const struct timespec *last_resize_ts, int debounce_
     return delta_ms >= debounce_ms;
 }
 
-/* Path helpers */
+/* ===== Path helpers ===== */
 
 void idk_comp_get_runtime_dir(char *buf, size_t bufsz) {
-    /* XDG_RUNTIME_DIR is the correct per-user runtime location:
-     *   - 0700-per-user tmpfs (no token auth needed)
-     *   - cleaned up automatically on logout (systemd `tmpfiles.d`)
-     *   - backed by tmpfs, so socket/SHM I/O is RAM-speed
-     * Fall back to /tmp if unset (e.g. minimal containers, non-systemd
-     * init, ssh sessions without PAM setting XDG_RUNTIME_DIR). */
     const char *xdg = getenv("XDG_RUNTIME_DIR");
     if (xdg && xdg[0]) {
         snprintf(buf, bufsz, "%s", xdg);
-        /* Strip a trailing slash so callers can append "/foo" cleanly. */
         size_t n = strlen(buf);
         while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
         return;
@@ -88,11 +76,6 @@ void idk_comp_get_default_abstract_name(char *buf, size_t bufsz, int input) {
 }
 
 void idk_comp_get_path(char *buf, size_t bufsz) {
-    /* Broker mode: IDK_TP_ABSTRACT holds the abstract socket name
-     * without a leading NUL. Prepend "\0" so that idk_tp_init →
-     * tp_socket_init treats the address as an abstract-namespace
-     * socket (sun_path[0] == '\0'). buf[0] == '\0' also disables
-     * shutdown-side unlink(), which is correct for abstract. */
     const char *abstr = getenv("IDK_TP_ABSTRACT");
     if (abstr && abstr[0]) {
         buf[0] = '\0';
@@ -107,7 +90,7 @@ void idk_comp_get_path(char *buf, size_t bufsz) {
     }
 }
 
-/* ACK builder */
+/* ===== ACK builder ===== */
 
 void idk_comp_build_ack(idk_ack_msg_t *msg, uint8_t ack,
                          int game_w, int game_h,
@@ -127,7 +110,7 @@ void idk_comp_build_ack(idk_ack_msg_t *msg, uint8_t ack,
     }
 }
 
-/* SHM mmap cache */
+/* ===== SHM mmap cache ===== */
 
 void *idk_shm_cache_map(idk_shm_cache_t *c, int fd) {
     if (fd < 0) return NULL;
@@ -154,13 +137,128 @@ void idk_shm_cache_cleanup(idk_shm_cache_t *c) {
     c->size = 0; c->ino = 0; c->dev = 0;
 }
 
-/* Cross-GPU dmabuf vendor detection */
+/* ===== Cross-GPU dmabuf vendor detection ===== */
 
 uint32_t idk_vk_vendor_to_drm(uint32_t vk_vendor) {
     switch (vk_vendor) {
-        case 0x10DE: return 0x03;  /* NVIDIA */
-        case 0x8086: return 0x01;  /* Intel */
-        case 0x1002: return 0x02;  /* AMD */
-        default: return 0;         /* unknown */
+        case 0x10DE: return 0x03;
+        case 0x8086: return 0x01;
+        case 0x1002: return 0x02;
+        default:     return 0;
+    }
+}
+
+/* ===== Shared compositor API ===== */
+
+int idk_compositor_init(void) {
+    if (g_comp.inited) return 0;
+
+    char path[512];
+    idk_comp_get_path(path, sizeof(path));
+    if (idk_tp_init(&g_comp.tp, IDK_TP_CONSUMER, path) != 0) return -1;
+    idk_tp_accept(&g_comp.tp);
+    g_comp.inited = true;
+    return 0;
+}
+
+int idk_compositor_recv_frame(bool visible) {
+    if (!g_comp.inited && idk_compositor_init() != 0) return -1;
+    idk_tp_accept(&g_comp.tp);
+    if (!g_comp.tp.ready) return 0;
+
+    if (!visible) {
+        while (1) {
+            int rc = idk_tp_drop_frame(&g_comp.tp);
+            if (rc <= 0) {
+                if (rc < 0) {
+                    g_comp.dmabuf_cache_id = 0;
+                    idk_tp_disconnect_client(&g_comp.tp);
+                }
+                break;
+            }
+        }
+        g_comp.was_hidden = true;
+        return 0;
+    }
+
+    if (g_comp.was_hidden) {
+        g_comp.was_hidden = false;
+        idk_request_msg_t wake = {0};
+        wake.type = IDK_REQUEST_NEXT_FRAME;
+        idk_tp_send_request(&g_comp.tp, &wake);
+    }
+
+    int processed = 0;
+    while (1) {
+        idk_frame_header_t hdr;
+        int fds[4], nfd = 0;
+        int rc = idk_tp_recv(&g_comp.tp, &hdr, fds, &nfd);
+        if (rc <= 0) {
+            if (rc < 0) {
+                idk_tp_disconnect_client(&g_comp.tp);
+                g_comp.dmabuf_cache_id = 0;
+            }
+            break;
+        }
+
+        int dmabuf_fd = (nfd > 0) ? fds[0] : -1;
+
+        if (processed > 0) {
+            if (dmabuf_fd >= 0) close(dmabuf_fd);
+            continue;
+        }
+
+        if (g_comp.dmabuf_fd[0] >= 0) {
+            close(g_comp.dmabuf_fd[0]);
+            g_comp.dmabuf_fd[0] = -1;
+        }
+
+        g_comp.hdr = hdr;
+        g_comp.dmabuf_fd[0] = dmabuf_fd;
+        g_comp.nfd = nfd;
+        g_comp.frame_w = hdr.width;
+        g_comp.frame_h = hdr.height;
+        g_comp.has_frame = true;
+        processed = 1;
+        clock_gettime(CLOCK_MONOTONIC, &g_comp.last_frame_ts);
+    }
+
+    idk_request_msg_t req = {0};
+    req.type = IDK_REQUEST_NEXT_FRAME;
+    idk_tp_send_request(&g_comp.tp, &req);
+
+    return processed ? 1 : 0;
+}
+
+void idk_compositor_send_ack(uint8_t code) {
+    if (!g_comp.tp.ready) return;
+    idk_ack_msg_t msg;
+    idk_comp_build_ack(&msg, code,
+                       g_comp.game_w, g_comp.game_h,
+                       &g_comp.size_pending, &g_comp.last_resize_ts,
+                       IDK_COMP_RESIZE_DEBOUNCE_MS, "comp");
+    idk_tp_send_ack(&g_comp.tp, &msg);
+}
+
+void idk_compositor_send_request(void) {
+    if (!g_comp.tp.ready) return;
+    idk_request_msg_t req = {0};
+    req.type = IDK_REQUEST_NEXT_FRAME;
+    idk_tp_send_request(&g_comp.tp, &req);
+}
+
+void idk_compositor_notify_resize(int w, int h) {
+    idk_comp_notify_resize(&g_comp.game_w, &g_comp.game_h, &g_comp.size_pending,
+                          &g_comp.last_resize_ts, w, h, "comp");
+}
+
+int idk_compositor_has_frame(void) {
+    return g_comp.has_frame ? 1 : 0;
+}
+
+void idk_compositor_shutdown(void) {
+    if (g_comp.inited) {
+        idk_tp_destroy(&g_comp.tp);
+        g_comp.inited = false;
     }
 }

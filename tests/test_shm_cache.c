@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include "test_runner.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 TEST(init_zeros) {
     idk_shm_cache_t c;

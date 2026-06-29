@@ -27,7 +27,7 @@
 #include "hook/x11_input.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 typedef unsigned long KeySym;
 

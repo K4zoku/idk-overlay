@@ -1,6 +1,6 @@
 #include "test_runner.h"
 #include "public/idk_ipc.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 TEST(frame_header_size) {
     ASSERT_SIZEOF(idk_frame_header_t, 28);

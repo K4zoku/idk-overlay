@@ -1,5 +1,5 @@
 #include "test_runner.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 TEST(notify_resize_detects_change) {
     int game_w = 500, game_h = 500;

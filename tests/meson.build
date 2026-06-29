@@ -6,17 +6,19 @@ test_c_args = [
     '-Wno-pedantic',
 ]
 
-# Static library of pure-logic functions from compositor_common.c
-# (no GPU dependencies - just stdlib + syscalls)
-test_comp_common_lib = static_library('test_comp_common',
-    '../src/core/compositor_common.c',
+# Static library of compositor functions + transport (no GPU deps)
+test_comp_lib = static_library('test_comp',
+    '../src/core/compositor.c',
     '../src/core/log.c',
+    '../src/core/transport.c',
+    '../src/core/tp_socket.c',
+    '../src/core/tp_shm.c',
     c_args: test_c_args,
     include_directories: inc,
 )
 
-test_comp_common_dep = declare_dependency(
-    link_with: test_comp_common_lib,
+test_comp_dep = declare_dependency(
+    link_with: test_comp_lib,
     include_directories: inc,
 )
 
@@ -30,12 +32,12 @@ foreach src : ['test_wire_protocol.c', 'test_input.c', 'test_ack.c']
     test(name, test_exe)
 endforeach
 
-# Tests needing compositor_common symbols
+# Tests needing compositor/transport symbols
 foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c', 'test_abstract_socket.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,
-        dependencies: test_comp_common_dep,
+        dependencies: test_comp_dep,
     )
     test(name, test_exe)
 endforeach

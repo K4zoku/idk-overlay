@@ -1,5 +1,5 @@
 #include "test_runner.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 TEST(nvidia_vendor) {
     ASSERT_EQ(idk_vk_vendor_to_drm(0x10DE), 0x03);

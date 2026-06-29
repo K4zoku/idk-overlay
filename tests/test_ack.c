@@ -1,5 +1,5 @@
 #include "test_runner.h"
-#include "core/compositor_common.h"
+#include "core/compositor.h"
 
 TEST(ack_msg_size) {
     ASSERT_SIZEOF(struct idk_ack_msg, 16);
