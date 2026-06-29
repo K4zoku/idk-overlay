@@ -13,19 +13,50 @@
 #include "core/log.h"
 
 /* _rsv[56] layout: [0]=state, [4]=connect_retries, [8..47]=path */
-#define TP_S_STATE(rsv)          (*(int *)(rsv))
+#define TP_S_STATE(rsv)           (*(int *)(rsv))
 #define TP_S_CONNECT_RETRIES(rsv) (*(int *)((rsv) + 4))
+#define TP_S_ABSTRACT(rsv)        ((rsv)[7])
 #define TP_STATE_INIT    0
 #define TP_STATE_LISTEN  1
 #define TP_STATE_BOUND   2
 #define TP_STATE_READY   3
+#define TP_S_PATH_CAP 40
 
 static int set_nonblock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     return (fl < 0) ? -1 : fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+static bool is_abstract(const char *name) { return name && name[0] == '\0'; }
+
+static socklen_t abstract_addrlen(const char *name) {
+    return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + strlen(name + 1));
+}
+
 static int consumer_init(idk_transport_t *tp, const char *path) {
+    if (is_abstract(path)) {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
+        set_nonblock(fd);
+
+        struct sockaddr_un addr = { .sun_family = AF_UNIX };
+        memcpy(addr.sun_path, path, 1 + strlen(path + 1));
+        socklen_t addrlen = abstract_addrlen(path);
+
+        if (bind(fd, (struct sockaddr *)&addr, addrlen) < 0) {
+            close(fd);
+            return -1;
+        }
+        listen(fd, 4);
+
+        tp->_server_fd = fd;
+        tp->_client_fd = -1;
+        TP_S_STATE(tp->_rsv) = TP_STATE_LISTEN;
+        tp->ready = false;
+        IDK_LOG("tp", "socket: listening on abstract \\0%s\n", path + 1);
+        return 0;
+    }
+
     struct stat st;
     if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode)) {
         int test = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -68,11 +99,22 @@ static int producer_init(idk_transport_t *tp, const char *path) {
     if (fd < 0) return -1;
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    size_t len = strlen(path);
-    if (len >= sizeof(addr.sun_path)) { close(fd); return -1; }
-    memcpy(addr.sun_path, path, len + 1);
-
-    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    int rc;
+    bool abstr = is_abstract(path);
+    size_t name_len;
+    socklen_t addrlen;
+    if (abstr) {
+        name_len = 1 + strlen(path + 1);
+        if (name_len >= sizeof(addr.sun_path)) { close(fd); return -1; }
+        memcpy(addr.sun_path, path, name_len);
+        addrlen = abstract_addrlen(path);
+    } else {
+        name_len = strlen(path);
+        if (name_len >= sizeof(addr.sun_path)) { close(fd); return -1; }
+        memcpy(addr.sun_path, path, name_len + 1);
+        addrlen = sizeof(addr);
+    }
+    rc = connect(fd, (struct sockaddr *)&addr, addrlen);
     if (rc < 0) {
         if (errno == ECONNREFUSED || errno == ENOENT) {
             close(fd);
@@ -80,11 +122,14 @@ static int producer_init(idk_transport_t *tp, const char *path) {
             tp->_client_fd = -1;
             TP_S_STATE(tp->_rsv) = TP_STATE_INIT;
             TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
-            size_t cplen = len < 40 ? len : 39;
+            TP_S_ABSTRACT(tp->_rsv) = abstr ? 1 : 0;
+            size_t cap = TP_S_PATH_CAP - (abstr ? 0 : 1);
+            size_t cplen = name_len < cap ? name_len : cap;
             memcpy(tp->_rsv + 8, path, cplen);
-            tp->_rsv[8 + cplen] = '\0';
+            if (!abstr) tp->_rsv[8 + cplen] = '\0';
             tp->ready = false;
-            IDK_LOG("tp", "socket: producer defer connect to %s\n", path);
+            IDK_LOG("tp", "socket: producer defer connect to %s%s\n",
+                    abstr ? "\\0" : "", abstr ? path + 1 : path);
             return 0;
         }
         close(fd);
@@ -146,16 +191,26 @@ int tp_socket_poll(idk_transport_t *tp) {
             int *retries = &TP_S_CONNECT_RETRIES(tp->_rsv);
             if (*retries <= 0) return 0;
             (*retries)--;
+            bool abstr = TP_S_ABSTRACT(tp->_rsv) != 0;
             const char *path = (const char *)(tp->_rsv + 8);
-            if (path[0] == '\0') return 0;
+            if (!abstr && path[0] == '\0') return 0;
             int fd = socket(AF_UNIX, SOCK_STREAM, 0);
             if (fd < 0) return 0;
             struct sockaddr_un addr = { .sun_family = AF_UNIX };
-            memcpy(addr.sun_path, path, strlen(path) + 1);
-            if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            socklen_t addrlen;
+            if (abstr) {
+                size_t len = 1 + strlen(path + 1);
+                memcpy(addr.sun_path, path, len);
+                addrlen = abstract_addrlen(path);
+            } else {
+                memcpy(addr.sun_path, path, strlen(path) + 1);
+                addrlen = sizeof(addr);
+            }
+            if (connect(fd, (struct sockaddr *)&addr, addrlen) == 0) {
                 tp->_client_fd = fd;
                 tp->ready = true;
-                IDK_LOG("tp", "socket: connected to %s (fd=%d)\n", path, fd);
+                IDK_LOG("tp", "socket: connected to %s%s (fd=%d)\n",
+                        abstr ? "\\0" : "", abstr ? path + 1 : path, fd);
                 return 0;
             }
             close(fd);

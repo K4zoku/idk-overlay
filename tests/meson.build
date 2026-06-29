@@ -31,7 +31,7 @@ foreach src : ['test_wire_protocol.c', 'test_input.c', 'test_ack.c']
 endforeach
 
 # Tests needing compositor_common symbols
-foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c']
+foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c', 'test_abstract_socket.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,

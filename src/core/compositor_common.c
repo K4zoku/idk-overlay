@@ -73,7 +73,7 @@ void idk_comp_get_runtime_dir(char *buf, size_t bufsz) {
 }
 
 void idk_comp_get_default_socket_path(char *buf, size_t bufsz,
-                                      int with_input_suffix) {
+                                       int with_input_suffix) {
     char dir[PATH_MAX];
     idk_comp_get_runtime_dir(dir, sizeof(dir));
     if (with_input_suffix) {
@@ -81,6 +81,10 @@ void idk_comp_get_default_socket_path(char *buf, size_t bufsz,
     } else {
         snprintf(buf, bufsz, "%s/idk-overlay-%d", dir, (int)getpid());
     }
+}
+
+void idk_comp_get_default_abstract_name(char *buf, size_t bufsz, int input) {
+    snprintf(buf, bufsz, "idk_%s_%d", input ? "input" : "tp", (int)getpid());
 }
 
 void idk_comp_get_path(char *buf, size_t bufsz) {

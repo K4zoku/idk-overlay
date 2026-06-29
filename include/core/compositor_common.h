@@ -58,7 +58,14 @@ void idk_comp_get_runtime_dir(char *buf, size_t bufsz);
  * socket, when with_input_suffix != 0). bufsz must be at least
  * sizeof(sun_path)+1 to be safely usable as a sockaddr_un.sun_path. */
 void idk_comp_get_default_socket_path(char *buf, size_t bufsz,
-                                      int with_input_suffix);
+                                       int with_input_suffix);
+
+/* Build the abstract socket name "idk_tp_<pid>" (frame socket,
+ * when input == 0) or "idk_input_<pid>" (input socket, input != 0)
+ * WITHOUT a leading NUL — callers prepend the NUL when feeding
+ * sockaddr_un.sun_path so that the kernel treats it as abstract-
+ * namespace. bufsz must be at least sizeof(sun_path). */
+void idk_comp_get_default_abstract_name(char *buf, size_t bufsz, int input);
 
 /* ACK builder */
 
