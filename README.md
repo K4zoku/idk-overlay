@@ -12,6 +12,7 @@ This project started as a workaround for a simple problem: [tosu](https://github
   - [x] `LD_PRELOAD` - easiest, works with most games.
   - [x] `ptrace` injection - attach to a game that's already running.
   - [x] .NET diagnostic IPC - for .NET games (e.g. osu!lazer) where anti-debug blocks ptrace.
+  - [x] Wine / Proton games - via the host-namespace `idk-broker` daemon (broker mode).
 - [x] Display any webpage you want.
 - [x] Input capture support:
   - [x] Works on Wayland.
@@ -93,6 +94,39 @@ sudo meson install -C build
 
 You don't need to launch the webview yourself. As soon as the library is injected into the game, it automatically forks a child process for the webview and calls `prctl(PR_SET_PDEATHSIG, SIGTERM)` on it, so the webview always shuts down together with the game rather than being left running on its own.
 
+### Wine / Proton games (broker mode)
+
+When the game runs under Wine or Proton (`unshare(CLONE_NEWNS)`), the
+injected library inside the Wine mount namespace can't `fork/exec` the
+Qt6 webview directly — QtWebEngine needs the real `/usr/...` filesystem
+for `.pak`, icu, V8 snapshots and the sandbox helper. To work around
+that, run the `idk-broker` daemon **in the host mount namespace** — it
+accepts the overlay's connect on an abstract Unix socket, execs
+`idk-webview` on the host side, then gets out of the way of the hot
+path:
+
+```sh
+idk-broker &
+IDK_BROKER=1 wine osu!.exe
+```
+
+The overlay detects Wine automatically (`.exe` process name, or
+`libwine` / `ntdll` loaded from `/proc/self/maps`); when `IDK_BROKER=1`
+is set it is forced. If Wine is auto-detected but no broker is
+reachable, the overlay falls back to direct `fork_webview()` (Mode 1).
+
+Per-user isolation: the broker binds the abstract socket
+`\0idk_broker_<uid>`, so multiple users on a machine get separate
+brokers. Authentication on the broker accept is `SO_PEERCRED` same-uid.
+Transport is socket-only in broker mode (the SHM backend falls back to
+path-based Mode 1).
+
+All data-plane traffic (frames via `SCM_RIGHTS`, input events) goes
+directly between webview and overlay over abstract Unix sockets — the
+broker is only involved at startup and teardown. When the game exits,
+the overlay's control socket sees EOF and the broker kills the webview
+child.
+
 ### How process filtering works
 
 When using `LD_PRELOAD`, the library is injected into **every** process spawned by the launcher — wrapper scripts, AppImage helpers, Wine processes (`wineserver`, `wineboot`), etc. Without filtering, each one would fork a webview + open SHM → OOM.
@@ -140,7 +174,10 @@ idk-inject $(pgrep osu!)  # actual osu!lazer process name
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `IDK_SOCKET` | `$XDG_RUNTIME_DIR/idk-overlay-<pid>` (falls back to `/tmp/idk-overlay-<pid>`) | Unix socket path used to talk to the injected game. |
+| `IDK_SOCKET` | `$XDG_RUNTIME_DIR/idk-overlay-<pid>` (falls back to `/tmp/idk-overlay-<pid>`) | Unix socket path used to talk to the injected game. Ignored in broker mode. |
+| `IDK_BROKER` | (unset) | Force broker mode. Set to `1` (or any non-empty value) to require the host-namespace `idk-broker`. Note that Wine/Proton is auto-detected, so you rarely need to set this manually. |
+| `IDK_TP_ABSTRACT` | (unset) | Abstract AF_UNIX socket name (without leading NUL) for the frame transport. Set by `idk-broker` for the webview — normally not set manually. |
+| `IDK_INPUT_ABSTRACT` | (unset) | Abstract AF_UNIX socket name (without leading NUL) for input events. Set by `idk-broker` for the webview — normally not set manually. |
 | `IDK_VK` | `1` | Enable Vulkan hooks. |
 | `IDK_GL` | `1` | Enable OpenGL/EGL hooks. |
 | `IDK_DEBUG` | (unset) | Set to `1` for debug logging. |
@@ -237,12 +274,15 @@ window.addEventListener("overlaycapturechanged", (event) => {
 
 ### 🧪 Tested on
 
-| Target | LD_PRELOAD | ptrace | .NET IPC | Vulkan Layer
-|--------|------------|--------|----------|------------|
-| glmark2-egl | ✅ | ✅ | N/A | N/A |
-| osu! lazer (.NET) | ⚠️* | ❌ (anti-debug) | ✅ | N/A |
-| eglgears_wayland | ✅ | ✅ | N/A | N/A |
-| vkcube | N/A | N/A | N/A | ✅ |
+| Target | LD_PRELOAD | ptrace | .NET IPC | Vulkan Layer | Broker |
+|--------|------------|--------|----------|--------------|--------|
+| glmark2-egl | ✅ | ✅ | N/A | N/A | N/A |
+| osu! lazer (.NET) | ⚠️* | ❌ (anti-debug) | ✅ | N/A | N/A |
+| eglgears_wayland | ✅ | ✅ | N/A | N/A | N/A |
+| vkcube | N/A | N/A | N/A | ✅ | N/A |
+| osu! (Wine/Proton) | ❌ (ns) | ❌ (ns) | N/A | TBD | ✅ |
+
+_(ns) = blocked by the Wine mount namespace — use broker mode instead._
 
 \* For osu!lazer: `LD_PRELOAD` works when launching the osu!lazer binary directly. It does **not** work through osu!lazer's wrapper script or AppImage - when going through those, the hook does get installed, but it also gets applied to every child process spawned within, causing a cascade of issues (not yet fixed; likely requires a process-whitelist feature). Until then, injecting into the running process (Option 2 above) is the recommended approach for osu!lazer.
 
@@ -279,6 +319,8 @@ The overlay is rendered out-of-process by the webview client and shared with the
 | `idk-webview` | Qt6 WebEngine webview client |
 | `idk-inject` | CLI - injects libidk-overlay.so into running process |
 | `bin/idk-overlay` | Wrapper script - launches game with overlay (WIP, not used in the usage examples above yet) |
+
+> `idk-broker` — Host-namespace webview spawner for Wine/Proton (broker mode). It is only involved at startup/teardown; the frame and input paths run directly between the game and webview.
 
 ### Injection path detection
 
@@ -328,6 +370,7 @@ src/
 ├── shaders/            GLSL + Vulkan SPIR-V shaders
 └── cli/
     ├── inject/         idk-inject CLI tool (wraps syringe_inject)
+    ├── broker/         idk-broker daemon (host-ns webview spawner for Wine/Proton)
     └── webview/        Qt6 WebEngine client
         ├── main.cpp, manager.cpp
         ├── view/       webview.cpp, rhi_texture_extractor.cpp
