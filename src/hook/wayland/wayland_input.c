@@ -19,23 +19,9 @@ uint32_t g_mods = 0;
 static int g_hook_installed = 0;
 
 /* Resolved wayland function pointers */
-wl_proxy_add_listener_fn    real_wl_proxy_add_listener    = NULL;
-wl_proxy_add_dispatcher_fn  real_wl_proxy_add_dispatcher  = NULL;
-wl_proxy_get_class_fn       real_wl_proxy_get_class       = NULL;
-wl_proxy_get_listener_fn    real_wl_proxy_get_listener    = NULL;
-
-wl_display_create_queue_fn          real_wl_display_create_queue = NULL;
-wl_proxy_create_wrapper_fn          real_wl_proxy_create_wrapper = NULL;
-wl_proxy_wrapper_destroy_fn         real_wl_proxy_wrapper_destroy = NULL;
-wl_proxy_set_queue_fn               real_wl_proxy_set_queue = NULL;
-wl_display_roundtrip_queue_fn       real_wl_display_roundtrip_queue = NULL;
-wl_display_dispatch_queue_pending_fn real_wl_display_dispatch_queue_pending = NULL;
-wl_event_queue_destroy_fn           real_wl_event_queue_destroy = NULL;
-wl_proxy_get_version_fn             real_wl_proxy_get_version = NULL;
-wl_proxy_destroy_fn                 real_wl_proxy_destroy = NULL;
-wl_proxy_marshal_constructor_versioned_fn real_wl_proxy_marshal_constructor_versioned = NULL;
-wl_proxy_marshal_flags_fn           real_wl_proxy_marshal_flags = NULL;
-wl_proxy_marshal_array_flags_fn     real_wl_proxy_marshal_array_flags = NULL;
+#define WL_DEFINE(ret, name, params) name##_fn real_##name = NULL;
+WL_FOREACH(WL_DEFINE)
+#undef WL_DEFINE
 
 const struct wl_interface *g_wl_seat_interface = NULL;
 const struct wl_interface *g_wl_keyboard_interface = NULL;
@@ -56,14 +42,10 @@ static int resolve_wayland_symbols(void) {
         return -1;
     }
 
-    real_wl_proxy_add_listener   = (wl_proxy_add_listener_fn)
-        dlsym(g_wl_handle, "wl_proxy_add_listener");
-    real_wl_proxy_add_dispatcher = (wl_proxy_add_dispatcher_fn)
-        dlsym(g_wl_handle, "wl_proxy_add_dispatcher");
-    real_wl_proxy_get_class      = (wl_proxy_get_class_fn)
-        dlsym(g_wl_handle, "wl_proxy_get_class");
-    real_wl_proxy_get_listener   = (wl_proxy_get_listener_fn)
-        dlsym(g_wl_handle, "wl_proxy_get_listener");
+#define WL_RESOLVE(ret, name, params) \
+    real_##name = (name##_fn)dlsym(g_wl_handle, #name);
+    WL_FOREACH(WL_RESOLVE)
+#undef WL_RESOLVE
 
     if (!real_wl_proxy_add_listener || !real_wl_proxy_get_class) {
         WERR("failed to resolve core wayland symbols");
@@ -71,31 +53,6 @@ static int resolve_wayland_symbols(void) {
         g_wl_handle = NULL;
         return -1;
     }
-
-    real_wl_display_create_queue = (wl_display_create_queue_fn)
-        dlsym(g_wl_handle, "wl_display_create_queue");
-    real_wl_proxy_create_wrapper = (wl_proxy_create_wrapper_fn)
-        dlsym(g_wl_handle, "wl_proxy_create_wrapper");
-    real_wl_proxy_wrapper_destroy = (wl_proxy_wrapper_destroy_fn)
-        dlsym(g_wl_handle, "wl_proxy_wrapper_destroy");
-    real_wl_proxy_set_queue = (wl_proxy_set_queue_fn)
-        dlsym(g_wl_handle, "wl_proxy_set_queue");
-    real_wl_display_roundtrip_queue = (wl_display_roundtrip_queue_fn)
-        dlsym(g_wl_handle, "wl_display_roundtrip_queue");
-    real_wl_display_dispatch_queue_pending = (wl_display_dispatch_queue_pending_fn)
-        dlsym(g_wl_handle, "wl_display_dispatch_queue_pending");
-    real_wl_event_queue_destroy = (wl_event_queue_destroy_fn)
-        dlsym(g_wl_handle, "wl_event_queue_destroy");
-    real_wl_proxy_get_version = (wl_proxy_get_version_fn)
-        dlsym(g_wl_handle, "wl_proxy_get_version");
-    real_wl_proxy_destroy = (wl_proxy_destroy_fn)
-        dlsym(g_wl_handle, "wl_proxy_destroy");
-    real_wl_proxy_marshal_constructor_versioned = (wl_proxy_marshal_constructor_versioned_fn)
-        dlsym(g_wl_handle, "wl_proxy_marshal_constructor_versioned");
-    real_wl_proxy_marshal_flags = (wl_proxy_marshal_flags_fn)
-        dlsym(g_wl_handle, "wl_proxy_marshal_flags");
-    real_wl_proxy_marshal_array_flags = (wl_proxy_marshal_array_flags_fn)
-        dlsym(g_wl_handle, "wl_proxy_marshal_array_flags");
 
     g_wl_seat_interface = (const struct wl_interface *)
         dlsym(g_wl_handle, "wl_seat_interface");
@@ -124,20 +81,9 @@ static int resolve_xkbcommon_symbols(void) {
         return -1;
     }
 
-    fn_xkb_context_new             = (xkb_context_new_fn)            dlsym(g_xkb_handle, "xkb_context_new");
-    fn_xkb_context_unref           = (xkb_context_unref_fn)          dlsym(g_xkb_handle, "xkb_context_unref");
-    fn_xkb_keymap_new_from_string  = (xkb_keymap_new_from_string_fn) dlsym(g_xkb_handle, "xkb_keymap_new_from_string");
-    fn_xkb_keymap_unref            = (xkb_keymap_unref_fn)           dlsym(g_xkb_handle, "xkb_keymap_unref");
-    fn_xkb_state_new               = (xkb_state_new_fn)              dlsym(g_xkb_handle, "xkb_state_new");
-    fn_xkb_state_unref             = (xkb_state_unref_fn)            dlsym(g_xkb_handle, "xkb_state_unref");
-    fn_xkb_state_update_key        = (xkb_state_update_key_fn)       dlsym(g_xkb_handle, "xkb_state_update_key");
-    fn_xkb_state_key_get_one_sym   = (xkb_state_key_get_one_sym_fn)  dlsym(g_xkb_handle, "xkb_state_key_get_one_sym");
-    fn_xkb_state_update_mask       = (xkb_state_update_mask_fn)      dlsym(g_xkb_handle, "xkb_state_update_mask");
-    fn_xkb_state_serialize_mods    = (xkb_state_serialize_mods_fn)   dlsym(g_xkb_handle, "xkb_state_serialize_mods");
-    fn_xkb_state_mod_index_is_active = (xkb_state_mod_index_is_active_fn)
-                                       dlsym(g_xkb_handle, "xkb_state_mod_index_is_active");
-    fn_xkb_keymap_mod_get_index    = (xkb_keymap_mod_get_index_fn)   dlsym(g_xkb_handle, "xkb_keymap_mod_get_index");
-    fn_xkb_keysym_from_name        = (xkb_keysym_from_name_fn)       dlsym(g_xkb_handle, "xkb_keysym_from_name");
+#define XKB_RESOLVE(ret, name, params) fn_##name = (name##_fn)dlsym(g_xkb_handle, #name);
+    XKB_FOREACH(XKB_RESOLVE)
+#undef XKB_RESOLVE
 
     if (!fn_xkb_context_new || !fn_xkb_keymap_new_from_string ||
         !fn_xkb_state_new || !fn_xkb_state_key_get_one_sym) {

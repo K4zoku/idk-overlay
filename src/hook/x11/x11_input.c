@@ -30,29 +30,12 @@ Cursor  g_blank_cursor = 0;
 Cursor  g_saved_cursor = 0;
 int     g_cursor_grabbed = 0;
 
-XNextEvent_fn               orig_XNextEvent = NULL;
-XPeekEvent_fn               orig_XPeekEvent = NULL;
-XCheckWindowEvent_fn        orig_XCheckWindowEvent = NULL;
-XMaskEvent_fn               orig_XMaskEvent = NULL;
-XCheckMaskEvent_fn          orig_XCheckMaskEvent = NULL;
-XCheckTypedEvent_fn         orig_XCheckTypedEvent = NULL;
-XCheckTypedWindowEvent_fn   orig_XCheckTypedWindowEvent = NULL;
-XWindowEvent_fn             orig_XWindowEvent = NULL;
-XPending_fn                 orig_XPending = NULL;
-XEventsQueued_fn            orig_XEventsQueued = NULL;
-XSelectInput_fn             orig_XSelectInput = NULL;
-XGetWindowAttributes_fn     fn_XGetWindowAttributes = NULL;
-
-XCreatePixmapCursor_fn  fn_XCreatePixmapCursor = NULL;
-XFreePixmap_fn          fn_XFreePixmap = NULL;
-XDefineCursor_fn        fn_XDefineCursor = NULL;
-XFreeCursor_fn          fn_XFreeCursor = NULL;
-XGrabPointer_fn         fn_XGrabPointer = NULL;
-XUngrabPointer_fn       fn_XUngrabPointer = NULL;
-XKeycodeToKeysym_fn     fn_XKeycodeToKeysym = NULL;
-XStringToKeysym_fn      fn_XStringToKeysym = NULL;
-XFlush_fn               fn_XFlush = NULL;
-XSync_fn                fn_XSync = NULL;
+#define X11_DEFINE_ORIG(ret, name, params) name##_fn orig_##name = NULL;
+#define X11_DEFINE_FN(ret, name, params)   name##_fn fn_##name = NULL;
+X11_EVENT_FOREACH(X11_DEFINE_ORIG)
+X11_CURSOR_FOREACH(X11_DEFINE_FN)
+#undef X11_DEFINE_ORIG
+#undef X11_DEFINE_FN
 
 /* Symbol resolution */
 
@@ -68,17 +51,9 @@ static int resolve_x11_symbols(void) {
     }
     g_x11_handle = h;
 
-    fn_XCreatePixmapCursor = (XCreatePixmapCursor_fn)dlsym(h, "XCreatePixmapCursor");
-    fn_XFreePixmap         = (XFreePixmap_fn)dlsym(h, "XFreePixmap");
-    fn_XDefineCursor       = (XDefineCursor_fn)dlsym(h, "XDefineCursor");
-    fn_XFreeCursor         = (XFreeCursor_fn)dlsym(h, "XFreeCursor");
-    fn_XGrabPointer        = (XGrabPointer_fn)dlsym(h, "XGrabPointer");
-    fn_XUngrabPointer      = (XUngrabPointer_fn)dlsym(h, "XUngrabPointer");
-    fn_XKeycodeToKeysym    = (XKeycodeToKeysym_fn)dlsym(h, "XKeycodeToKeysym");
-    fn_XStringToKeysym     = (XStringToKeysym_fn)dlsym(h, "XStringToKeysym");
-    fn_XFlush              = (XFlush_fn)dlsym(h, "XFlush");
-    fn_XSync               = (XSync_fn)dlsym(h, "XSync");
-    fn_XGetWindowAttributes = (XGetWindowAttributes_fn)dlsym(h, "XGetWindowAttributes");
+#define X11_RESOLVE(ret, name, params) fn_##name = (name##_fn)dlsym(h, #name);
+    X11_CURSOR_FOREACH(X11_RESOLVE)
+#undef X11_RESOLVE
 
     if (!fn_XStringToKeysym) {
         XERR("XStringToKeysym not resolved\n");

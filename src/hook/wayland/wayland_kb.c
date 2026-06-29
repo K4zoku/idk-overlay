@@ -6,19 +6,9 @@ struct xkb_context *g_xkb_ctx = NULL;
 struct xkb_keymap *g_xkb_keymap = NULL;
 struct xkb_state  *g_xkb_state  = NULL;
 
-xkb_context_new_fn             fn_xkb_context_new             = NULL;
-xkb_context_unref_fn           fn_xkb_context_unref           = NULL;
-xkb_keymap_new_from_string_fn  fn_xkb_keymap_new_from_string  = NULL;
-xkb_keymap_unref_fn            fn_xkb_keymap_unref            = NULL;
-xkb_state_new_fn               fn_xkb_state_new               = NULL;
-xkb_state_unref_fn             fn_xkb_state_unref             = NULL;
-xkb_state_update_key_fn        fn_xkb_state_update_key        = NULL;
-xkb_state_key_get_one_sym_fn   fn_xkb_state_key_get_one_sym   = NULL;
-xkb_state_update_mask_fn       fn_xkb_state_update_mask       = NULL;
-xkb_state_serialize_mods_fn    fn_xkb_state_serialize_mods    = NULL;
-xkb_state_mod_index_is_active_fn fn_xkb_state_mod_index_is_active = NULL;
-xkb_keymap_mod_get_index_fn    fn_xkb_keymap_mod_get_index    = NULL;
-xkb_keysym_from_name_fn        fn_xkb_keysym_from_name        = NULL;
+#define XKB_DEFINE(ret, name, params) name##_fn fn_##name = NULL;
+XKB_FOREACH(XKB_DEFINE)
+#undef XKB_DEFINE
 
 uint32_t g_mod_idx_ctrl  = UINT32_MAX;
 uint32_t g_mod_idx_shift = UINT32_MAX;

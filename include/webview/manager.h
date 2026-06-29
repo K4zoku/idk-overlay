@@ -81,7 +81,6 @@ private:
     QTabBar *m_tabBar;
     QWidget *m_container;
     QLabel *m_statusLabel;
-    QSystemTrayIcon *m_tray;
 
     // Overlays
     QList<WebView*> m_views;

@@ -46,7 +46,6 @@ Manager::Manager(const QString &confFile,
     , m_tabBar(new QTabBar())
     , m_container(new QWidget())
     , m_statusLabel(new QLabel())
-    , m_tray(new QSystemTrayIcon(this))
 {
     /* Socket path priority: CLI > IDK_SOCKET env > default.
      * Socket is no longer in config - it's always dynamic (set by the
@@ -164,14 +163,6 @@ Manager::Manager(const QString &confFile,
     m_window->setAttribute(Qt::WA_DontShowOnScreen, true);
     m_window->show();
 
-    m_tray->setIcon(QIcon::fromTheme("image-x-generic"));
-    m_tray->setToolTip("idk-webview");
-    m_tray->show();
-
-    QMenu *menu = new QMenu();
-    menu->addAction("Exit", qApp, &QApplication::quit);
-    m_tray->setContextMenu(menu);
-
     initWebViews();
     /* startInputReceiver() may have been called before initWebViews()
      * (during socket connect in the constructor) - if so, m_webview
@@ -186,12 +177,6 @@ Manager::~Manager()
     stopInputReceiver();
     qDeleteAll(m_views);
 
-    /* Delete top-level Qt widgets that have no parent. m_container is
-     * reparented to m_window by the layout, so deleting m_window also
-     * deletes m_container. m_tabBar and m_statusLabel were never added
-     * to any layout and have no parent - they must be deleted explicitly
-     * or they leak (along with any child widgets). m_tray is parented
-     * to `this` and is auto-deleted by Qt. */
     delete m_window;
     delete m_tabBar;
     delete m_statusLabel;

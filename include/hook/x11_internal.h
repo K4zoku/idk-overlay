@@ -16,6 +16,8 @@
 #include <sys/un.h>
 
 #include "hook/x11_input.h"
+#include "hook/hook_util.h"
+#include "hook/keycodes.h"
 #include "public/idk_ipc.h"
 #include "core/log.h"
 
@@ -43,23 +45,6 @@ typedef unsigned long Cursor;
 #ifndef Bool
 typedef int Bool;
 #endif
-
-/* Linux input-event-codes.h scancode fallback (shared with wayland_internal.h) */
-#define IDK_KEY_TAB  15
-#define IDK_KEY_F1   59
-#define IDK_KEY_F2   60
-#define IDK_KEY_F3   61
-#define IDK_KEY_F4   62
-#define IDK_KEY_F5   63
-#define IDK_KEY_F6   64
-#define IDK_KEY_F7   65
-#define IDK_KEY_F8   66
-#define IDK_KEY_F9   67
-#define IDK_KEY_F10  68
-#define IDK_KEY_F11  87
-#define IDK_KEY_F12  88
-#define IDK_KEY_SCROLLLOCK 70
-#define IDK_KEY_PAUSE      119
 
 /* XEvent generic header - first 5 fields are common to all X event types */
 typedef struct {
@@ -165,33 +150,45 @@ typedef union {
 #define ColormapChangeMask       (1L<<23)
 #define OwnerGrabButtonMask      (1L<<24)
 
-/* Function pointer types for X11 functions we hook */
-typedef int  (*XNextEvent_fn)(Display *, XEventStorage *);
-typedef int  (*XPeekEvent_fn)(Display *, XEventStorage *);
-typedef int  (*XCheckWindowEvent_fn)(Display *, Window, long, XEventStorage *);
-typedef int  (*XMaskEvent_fn)(Display *, long, XEventStorage *);
-typedef int  (*XCheckMaskEvent_fn)(Display *, long, XEventStorage *);
-typedef int  (*XCheckTypedEvent_fn)(Display *, int, XEventStorage *);
-typedef int  (*XCheckTypedWindowEvent_fn)(Display *, Window, int, XEventStorage *);
-typedef int  (*XWindowEvent_fn)(Display *, Window, long, XEventStorage *);
-typedef int  (*XPending_fn)(Display *);
-typedef int  (*XEventsQueued_fn)(Display *, int);
-typedef int  (*XSelectInput_fn)(Display *, Window, long);
-typedef int  (*XGetWindowAttributes_fn)(Display *, Window, void *);
+/* X11 function pointers — X-macro pattern */
 
-/* For cursor manipulation */
-typedef Cursor (*XCreatePixmapCursor_fn)(Display *, void *, void *,
-                                          void *, void *, unsigned int, unsigned int);
-typedef int    (*XFreePixmap_fn)(Display *, void *);
-typedef void   (*XDefineCursor_fn)(Display *, Window, Cursor);
-typedef int    (*XFreeCursor_fn)(Display *, Cursor);
-typedef int    (*XGrabPointer_fn)(Display *, Window, Bool, unsigned int,
-                                   int, int, Window, Cursor, Time);
-typedef int    (*XUngrabPointer_fn)(Display *, Time);
-typedef KeySym (*XKeycodeToKeysym_fn)(Display *, KeyCode, int);
-typedef KeySym (*XStringToKeysym_fn)(const char *);
-typedef int    (*XFlush_fn)(Display *);
-typedef int    (*XSync_fn)(Display *, Bool);
+#define X11_EVENT_FOREACH(F) \
+    F(int, XNextEvent,               (Display *, XEventStorage *)) \
+    F(int, XPeekEvent,               (Display *, XEventStorage *)) \
+    F(int, XCheckWindowEvent,        (Display *, Window, long, XEventStorage *)) \
+    F(int, XMaskEvent,               (Display *, long, XEventStorage *)) \
+    F(int, XCheckMaskEvent,          (Display *, long, XEventStorage *)) \
+    F(int, XCheckTypedEvent,         (Display *, int, XEventStorage *)) \
+    F(int, XCheckTypedWindowEvent,   (Display *, Window, int, XEventStorage *)) \
+    F(int, XWindowEvent,             (Display *, Window, long, XEventStorage *)) \
+    F(int, XPending,                 (Display *)) \
+    F(int, XEventsQueued,            (Display *, int)) \
+    F(int, XSelectInput,             (Display *, Window, long))
+
+#define X11_CURSOR_FOREACH(F) \
+    F(int,   XGetWindowAttributes,   (Display *, Window, void *)) \
+    F(Cursor, XCreatePixmapCursor,   (Display *, void *, void *, void *, void *, unsigned int, unsigned int)) \
+    F(int,   XFreePixmap,            (Display *, void *)) \
+    F(void,  XDefineCursor,          (Display *, Window, Cursor)) \
+    F(int,   XFreeCursor,            (Display *, Cursor)) \
+    F(int,   XGrabPointer,           (Display *, Window, Bool, unsigned int, int, int, Window, Cursor, Time)) \
+    F(int,   XUngrabPointer,         (Display *, Time)) \
+    F(KeySym, XKeycodeToKeysym,      (Display *, KeyCode, int)) \
+    F(KeySym, XStringToKeysym,       (const char *)) \
+    F(int,   XFlush,                 (Display *)) \
+    F(int,   XSync,                  (Display *, Bool))
+
+#define X11_TYPEDEF(ret, name, params)    typedef ret (*name##_fn) params;
+X11_EVENT_FOREACH(X11_TYPEDEF)
+X11_CURSOR_FOREACH(X11_TYPEDEF)
+#undef X11_TYPEDEF
+
+#define X11_EXTERN_ORIG(ret, name, params) extern name##_fn orig_##name;
+#define X11_EXTERN_FN(ret, name, params)   extern name##_fn fn_##name;
+X11_EVENT_FOREACH(X11_EXTERN_ORIG)
+X11_CURSOR_FOREACH(X11_EXTERN_FN)
+#undef X11_EXTERN_ORIG
+#undef X11_EXTERN_FN
 
 /* Shared globals (mirror wayland_internal.h names where applicable) */
 extern _Atomic int g_captured;
@@ -217,31 +214,6 @@ extern Window  g_game_window;       /* cached window from first X event */
 extern Cursor  g_blank_cursor;      /* 1x1 transparent cursor for capture */
 extern Cursor  g_saved_cursor;      /* cursor to restore on release */
 extern int     g_cursor_grabbed;    /* XGrabPointer active */
-
-/* Resolved X11 function pointers */
-extern XNextEvent_fn               orig_XNextEvent;
-extern XPeekEvent_fn               orig_XPeekEvent;
-extern XCheckWindowEvent_fn        orig_XCheckWindowEvent;
-extern XMaskEvent_fn               orig_XMaskEvent;
-extern XCheckMaskEvent_fn          orig_XCheckMaskEvent;
-extern XCheckTypedEvent_fn         orig_XCheckTypedEvent;
-extern XCheckTypedWindowEvent_fn   orig_XCheckTypedWindowEvent;
-extern XWindowEvent_fn             orig_XWindowEvent;
-extern XPending_fn                 orig_XPending;
-extern XEventsQueued_fn            orig_XEventsQueued;
-extern XSelectInput_fn             orig_XSelectInput;
-extern XGetWindowAttributes_fn     fn_XGetWindowAttributes;
-
-extern XCreatePixmapCursor_fn  fn_XCreatePixmapCursor;
-extern XFreePixmap_fn          fn_XFreePixmap;
-extern XDefineCursor_fn        fn_XDefineCursor;
-extern XFreeCursor_fn          fn_XFreeCursor;
-extern XGrabPointer_fn         fn_XGrabPointer;
-extern XUngrabPointer_fn       fn_XUngrabPointer;
-extern XKeycodeToKeysym_fn     fn_XKeycodeToKeysym;
-extern XStringToKeysym_fn      fn_XStringToKeysym;
-extern XFlush_fn               fn_XFlush;
-extern XSync_fn                fn_XSync;
 
 /* Input socket (shared with wayland_socket.c structure) */
 extern int g_input_listen_fd;

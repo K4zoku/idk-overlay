@@ -87,137 +87,79 @@ typedef void GLvoid;
 #define GL_VERSION              0x1F02
 #define GL_RENDERER             0x1F01
 
-/* Function pointer typedefs */
+/* GL function pointers — X-macro pattern */
 
-typedef void (*PFN_idk_glGetIntegerv)(GLenum, GLint*);
-typedef void (*PFN_idk_glEnable)(GLenum);
-typedef void (*PFN_idk_glDisable)(GLenum);
-typedef void (*PFN_idk_glBlendFunc)(GLenum, GLenum);
-typedef GLuint (*PFN_idk_glCreateShader)(GLenum);
-typedef void (*PFN_idk_glShaderSource)(GLuint, GLsizei, const GLchar* const*, const GLint*);
-typedef void (*PFN_idk_glCompileShader)(GLuint);
-typedef void (*PFN_idk_glGetShaderiv)(GLuint, GLenum, GLint*);
-typedef void (*PFN_idk_glGetShaderInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*);
-typedef void (*PFN_idk_glDeleteShader)(GLuint);
-typedef GLuint (*PFN_idk_glCreateProgram)(void);
-typedef void (*PFN_idk_glAttachShader)(GLuint, GLuint);
-typedef void (*PFN_idk_glLinkProgram)(GLuint);
-typedef void (*PFN_idk_glGetProgramiv)(GLuint, GLenum, GLint*);
-typedef void (*PFN_idk_glGetProgramInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*);
-typedef void (*PFN_idk_glDeleteProgram)(GLuint);
-typedef void (*PFN_idk_glUseProgram)(GLuint);
-typedef void (*PFN_idk_glGenTextures)(GLsizei, GLuint*);
-typedef void (*PFN_idk_glBindTexture)(GLenum, GLuint);
-typedef void (*PFN_idk_glTexParameteri)(GLenum, GLenum, GLint);
-typedef void (*PFN_idk_glDeleteTextures)(GLsizei, const GLuint*);
-typedef GLint (*PFN_idk_glGetUniformLocation)(GLuint, const GLchar*);
-typedef void (*PFN_idk_glUniform1i)(GLint, GLint);
-typedef void (*PFN_idk_glActiveTexture)(GLenum);
-typedef void (*PFN_idk_glGenBuffers)(GLsizei, GLuint*);
-typedef void (*PFN_idk_glBindBuffer)(GLenum, GLuint);
-typedef void (*PFN_idk_glBufferData)(GLenum, GLsizei, const GLvoid*, GLenum);
-typedef void (*PFN_idk_glBufferSubData)(GLenum, GLintptr, GLsizei, const GLvoid*);
-typedef void (*PFN_idk_glDeleteBuffers)(GLsizei, const GLuint*);
-typedef void (*PFN_idk_glDrawArrays)(GLenum, GLint, GLsizei);
-typedef void (*PFN_idk_glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const GLvoid*);
-typedef void (*PFN_idk_glTexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const GLvoid*);
-typedef void (*PFN_idk_glPixelStorei)(GLenum, GLint);
-typedef void (*PFN_idk_glEnableVertexAttribArray)(GLuint);
-typedef void (*PFN_idk_glDisableVertexAttribArray)(GLuint);
-typedef void (*PFN_idk_glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const GLvoid*);
-typedef GLint (*PFN_idk_glGetAttribLocation)(GLuint, const GLchar*);
-typedef GLboolean (*PFN_idk_glIsEnabled)(GLenum);
-typedef GLboolean (*PFN_idk_glIsTexture)(GLuint);
-typedef GLboolean (*PFN_idk_glIsProgram)(GLuint);
-typedef GLenum (*PFN_idk_glGetError)(void);
-typedef void (*PFN_idk_glFinish)(void);
-typedef void (*PFN_idk_glClear)(GLbitfield);
-typedef void (*PFN_idk_glClearColor)(GLfloat, GLfloat, GLfloat, GLfloat);
-typedef void (*PFN_idk_glDrawBuffer)(GLenum);
-typedef void (*PFN_idk_glBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
-typedef void (*PFN_idk_glBlendEquation)(GLenum);
-typedef void (*PFN_idk_glBlendEquationSeparate)(GLenum, GLenum);
-typedef void (*PFN_idk_glScissor)(GLint, GLint, GLsizei, GLsizei);
-typedef void (*PFN_idk_glViewport)(GLint, GLint, GLsizei, GLsizei);
-typedef const GLubyte* (*PFN_idk_glGetString)(GLenum);
-typedef void (*PFN_idk_glDepthMask)(GLboolean);
-typedef void (*PFN_idk_glColorMask)(GLboolean, GLboolean, GLboolean, GLboolean);
-typedef void (*PFN_idk_glGetVertexAttribiv)(GLuint, GLenum, GLint*);
-typedef void (*PFN_idk_glGenVertexArrays)(GLsizei, GLuint*);
-typedef void (*PFN_idk_glBindVertexArray)(GLuint);
-typedef void (*PFN_idk_glDeleteVertexArrays)(GLsizei, const GLuint*);
-typedef void (*PFN_idk_glBindSampler)(GLuint, GLuint);
-typedef void (*PFN_idk_glPolygonMode)(GLenum, GLenum);
-typedef void (*PFN_idk_glBindFramebuffer)(GLenum, GLuint);
+#define GL_FOREACH(F) \
+    F(void,            glGetIntegerv,          (GLenum, GLint*)) \
+    F(void,            glEnable,               (GLenum)) \
+    F(void,            glDisable,              (GLenum)) \
+    F(void,            glBlendFunc,            (GLenum, GLenum)) \
+    F(GLuint,          glCreateShader,         (GLenum)) \
+    F(void,            glShaderSource,         (GLuint, GLsizei, const GLchar* const*, const GLint*)) \
+    F(void,            glCompileShader,        (GLuint)) \
+    F(void,            glGetShaderiv,          (GLuint, GLenum, GLint*)) \
+    F(void,            glGetShaderInfoLog,     (GLuint, GLsizei, GLsizei*, GLchar*)) \
+    F(void,            glDeleteShader,         (GLuint)) \
+    F(GLuint,          glCreateProgram,        (void)) \
+    F(void,            glAttachShader,         (GLuint, GLuint)) \
+    F(void,            glLinkProgram,          (GLuint)) \
+    F(void,            glGetProgramiv,         (GLuint, GLenum, GLint*)) \
+    F(void,            glGetProgramInfoLog,    (GLuint, GLsizei, GLsizei*, GLchar*)) \
+    F(void,            glDeleteProgram,        (GLuint)) \
+    F(void,            glUseProgram,           (GLuint)) \
+    F(void,            glGenTextures,          (GLsizei, GLuint*)) \
+    F(void,            glBindTexture,          (GLenum, GLuint)) \
+    F(void,            glTexParameteri,        (GLenum, GLenum, GLint)) \
+    F(void,            glDeleteTextures,       (GLsizei, const GLuint*)) \
+    F(GLint,           glGetUniformLocation,   (GLuint, const GLchar*)) \
+    F(void,            glUniform1i,            (GLint, GLint)) \
+    F(void,            glActiveTexture,        (GLenum)) \
+    F(void,            glGenBuffers,           (GLsizei, GLuint*)) \
+    F(void,            glBindBuffer,           (GLenum, GLuint)) \
+    F(void,            glBufferData,           (GLenum, GLsizei, const GLvoid*, GLenum)) \
+    F(void,            glBufferSubData,        (GLenum, GLintptr, GLsizei, const GLvoid*)) \
+    F(void,            glDeleteBuffers,        (GLsizei, const GLuint*)) \
+    F(void,            glDrawArrays,           (GLenum, GLint, GLsizei)) \
+    F(void,            glTexImage2D,           (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const GLvoid*)) \
+    F(void,            glTexSubImage2D,        (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const GLvoid*)) \
+    F(void,            glPixelStorei,          (GLenum, GLint)) \
+    F(void,            glEnableVertexAttribArray, (GLuint)) \
+    F(void,            glDisableVertexAttribArray, (GLuint)) \
+    F(void,            glVertexAttribPointer,  (GLuint, GLint, GLenum, GLboolean, GLsizei, const GLvoid*)) \
+    F(GLint,           glGetAttribLocation,    (GLuint, const GLchar*)) \
+    F(GLboolean,       glIsEnabled,            (GLenum)) \
+    F(GLboolean,       glIsTexture,            (GLuint)) \
+    F(GLboolean,       glIsProgram,            (GLuint)) \
+    F(GLenum,          glGetError,             (void)) \
+    F(void,            glFinish,               (void)) \
+    F(void,            glClear,                (GLbitfield)) \
+    F(void,            glClearColor,           (GLfloat, GLfloat, GLfloat, GLfloat)) \
+    F(void,            glDrawBuffer,           (GLenum)) \
+    F(void,            glBlendFuncSeparate,    (GLenum, GLenum, GLenum, GLenum)) \
+    F(void,            glBlendEquation,        (GLenum)) \
+    F(void,            glBlendEquationSeparate,(GLenum, GLenum)) \
+    F(void,            glScissor,              (GLint, GLint, GLsizei, GLsizei)) \
+    F(void,            glViewport,             (GLint, GLint, GLsizei, GLsizei)) \
+    F(const GLubyte*,  glGetString,            (GLenum)) \
+    F(void,            glDepthMask,            (GLboolean)) \
+    F(void,            glColorMask,            (GLboolean, GLboolean, GLboolean, GLboolean)) \
+    F(void,            glGetVertexAttribiv,    (GLuint, GLenum, GLint*)) \
+    F(void,            glGenVertexArrays,      (GLsizei, GLuint*)) \
+    F(void,            glBindVertexArray,      (GLuint)) \
+    F(void,            glDeleteVertexArrays,   (GLsizei, const GLuint*)) \
+    F(void,            glBindSampler,          (GLuint, GLuint)) \
+    F(void,            glPolygonMode,          (GLenum, GLenum)) \
+    F(void,            glBindFramebuffer,      (GLenum, GLuint)) \
+    F(void,            glShaderBinary,         (GLsizei, const GLuint*, GLenum, const GLvoid*, GLsizei)) \
+    F(void,            glSpecializeShader,     (GLuint, const GLchar*, GLuint, const GLuint*, const GLuint*))
 
-/* SPIR-V function pointer typedefs */
-typedef void (*PFN_idk_glShaderBinary)(GLsizei, const GLuint*, GLenum, const GLvoid*, GLsizei);
-typedef void (*PFN_idk_glSpecializeShader)(GLuint, const GLchar*, GLuint, const GLuint*, const GLuint*);
+#define GL_TYPEDEF(ret, name, params) typedef ret (*PFN_idk_##name) params;
+GL_FOREACH(GL_TYPEDEF)
+#undef GL_TYPEDEF
 
-/* Global function pointers (resolved by idk_gl_loader_init) */
-
-extern PFN_idk_glGetIntegerv          idk_fn_glGetIntegerv;
-extern PFN_idk_glEnable               idk_fn_glEnable;
-extern PFN_idk_glDisable              idk_fn_glDisable;
-extern PFN_idk_glBlendFunc            idk_fn_glBlendFunc;
-extern PFN_idk_glCreateShader         idk_fn_glCreateShader;
-extern PFN_idk_glShaderSource         idk_fn_glShaderSource;
-extern PFN_idk_glCompileShader        idk_fn_glCompileShader;
-extern PFN_idk_glGetShaderiv          idk_fn_glGetShaderiv;
-extern PFN_idk_glGetShaderInfoLog     idk_fn_glGetShaderInfoLog;
-extern PFN_idk_glDeleteShader         idk_fn_glDeleteShader;
-extern PFN_idk_glCreateProgram        idk_fn_glCreateProgram;
-extern PFN_idk_glAttachShader         idk_fn_glAttachShader;
-extern PFN_idk_glLinkProgram          idk_fn_glLinkProgram;
-extern PFN_idk_glGetProgramiv         idk_fn_glGetProgramiv;
-extern PFN_idk_glGetProgramInfoLog    idk_fn_glGetProgramInfoLog;
-extern PFN_idk_glDeleteProgram        idk_fn_glDeleteProgram;
-extern PFN_idk_glUseProgram           idk_fn_glUseProgram;
-extern PFN_idk_glGenTextures          idk_fn_glGenTextures;
-extern PFN_idk_glBindTexture          idk_fn_glBindTexture;
-extern PFN_idk_glTexParameteri        idk_fn_glTexParameteri;
-extern PFN_idk_glDeleteTextures       idk_fn_glDeleteTextures;
-extern PFN_idk_glGetUniformLocation   idk_fn_glGetUniformLocation;
-extern PFN_idk_glUniform1i            idk_fn_glUniform1i;
-extern PFN_idk_glActiveTexture        idk_fn_glActiveTexture;
-extern PFN_idk_glGenBuffers           idk_fn_glGenBuffers;
-extern PFN_idk_glBindBuffer           idk_fn_glBindBuffer;
-extern PFN_idk_glBufferData           idk_fn_glBufferData;
-extern PFN_idk_glBufferSubData        idk_fn_glBufferSubData;
-extern PFN_idk_glDeleteBuffers        idk_fn_glDeleteBuffers;
-extern PFN_idk_glDrawArrays           idk_fn_glDrawArrays;
-extern PFN_idk_glTexImage2D           idk_fn_glTexImage2D;
-extern PFN_idk_glTexSubImage2D        idk_fn_glTexSubImage2D;
-extern PFN_idk_glPixelStorei          idk_fn_glPixelStorei;
-extern PFN_idk_glEnableVertexAttribArray idk_fn_glEnableVertexAttribArray;
-extern PFN_idk_glDisableVertexAttribArray idk_fn_glDisableVertexAttribArray;
-extern PFN_idk_glVertexAttribPointer  idk_fn_glVertexAttribPointer;
-extern PFN_idk_glGetAttribLocation    idk_fn_glGetAttribLocation;
-extern PFN_idk_glIsEnabled            idk_fn_glIsEnabled;
-extern PFN_idk_glIsTexture            idk_fn_glIsTexture;
-extern PFN_idk_glIsProgram            idk_fn_glIsProgram;
-extern PFN_idk_glGetError            idk_fn_glGetError;
-extern PFN_idk_glFinish             idk_fn_glFinish;
-extern PFN_idk_glClear              idk_fn_glClear;
-extern PFN_idk_glClearColor         idk_fn_glClearColor;
-extern PFN_idk_glDrawBuffer         idk_fn_glDrawBuffer;
-extern PFN_idk_glBlendFuncSeparate    idk_fn_glBlendFuncSeparate;
-extern PFN_idk_glBlendEquation        idk_fn_glBlendEquation;
-extern PFN_idk_glBlendEquationSeparate idk_fn_glBlendEquationSeparate;
-extern PFN_idk_glScissor              idk_fn_glScissor;
-extern PFN_idk_glViewport             idk_fn_glViewport;
-extern PFN_idk_glGetString            idk_fn_glGetString;
-extern PFN_idk_glDepthMask            idk_fn_glDepthMask;
-extern PFN_idk_glColorMask            idk_fn_glColorMask;
-extern PFN_idk_glGetVertexAttribiv    idk_fn_glGetVertexAttribiv;
-extern PFN_idk_glGenVertexArrays      idk_fn_glGenVertexArrays;
-extern PFN_idk_glBindVertexArray      idk_fn_glBindVertexArray;
-extern PFN_idk_glDeleteVertexArrays   idk_fn_glDeleteVertexArrays;
-extern PFN_idk_glBindSampler          idk_fn_glBindSampler;
-extern PFN_idk_glPolygonMode          idk_fn_glPolygonMode;
-extern PFN_idk_glBindFramebuffer      idk_fn_glBindFramebuffer;
-extern PFN_idk_glShaderBinary         idk_fn_glShaderBinary;
-extern PFN_idk_glSpecializeShader     idk_fn_glSpecializeShader;
+#define GL_EXTERN(ret, name, params) extern PFN_idk_##name idk_fn_##name;
+GL_FOREACH(GL_EXTERN)
+#undef GL_EXTERN
 
 /* Macro redirect: glGetIntegerv → (*idk_fn_glGetIntegerv)
  *
