@@ -28,15 +28,15 @@ typedef struct idk_transport {
     /* backend-internal */
     int           _server_fd;
     int           _client_fd;
-    uint8_t       _rsv[48];
+    uint8_t       _rsv[56];
 } idk_transport_t;
 
 #ifdef __cplusplus
-static_assert(sizeof(idk_transport_t) == 64,
-              "idk_transport_t must be 64 bytes");
+static_assert(sizeof(idk_transport_t) == 72,
+              "idk_transport_t must be 72 bytes");
 #else
-_Static_assert(sizeof(idk_transport_t) == 64,
-               "idk_transport_t must be 64 bytes");
+_Static_assert(sizeof(idk_transport_t) == 72,
+               "idk_transport_t must be 72 bytes");
 #endif
 
 int  idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name);

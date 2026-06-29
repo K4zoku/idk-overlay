@@ -12,7 +12,7 @@
 #include "core/transport.h"
 #include "core/log.h"
 
-/* _rsv[48] layout: [0]=state, [4]=connect_retries, [8..47]=path */
+/* _rsv[56] layout: [0]=state, [4]=connect_retries, [8..47]=path */
 #define TP_S_STATE(rsv)          (*(int *)(rsv))
 #define TP_S_CONNECT_RETRIES(rsv) (*(int *)((rsv) + 4))
 #define TP_STATE_INIT    0

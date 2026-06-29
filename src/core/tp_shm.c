@@ -43,12 +43,15 @@ _Static_assert(SHM_O_EVENTFD + 4 <= SHM_SIZE,
 #define SLOT_ACK     2
 #define SLOT_CONSUMED 3
 
-/* _rsv[48]: [0..7]=shm_ptr, [8..39]=shm_name, [40..43]=eventfd, [44..47]=last_req_seq */
+/* _rsv[56]: [0..7]=shm_ptr, [8..39]=shm_name, [40..43]=eventfd, [44..47]=last_req_seq,
+ *           [48..51]=cached_master_fd, [52..55]=cached_wv_fd */
 #define TP_SH_SHM_PTR(rsv)      (*(void **)(rsv))
 #define TP_SH_SHM_NAME(rsv)     ((char *)((rsv) + 8))
 #define TP_SH_SHM_NAME_SIZE     32
 #define TP_SH_EVENTFD(rsv)      (*(int *)((rsv) + 40))
 #define TP_SH_LAST_REQ_SEQ(rsv) (*(int *)((rsv) + 44))
+#define TP_SH_CACHED_FD(rsv)    (*(int *)((rsv) + 48))
+#define TP_SH_CACHED_WV_FD(rsv) (*(int *)((rsv) + 52))
 
 void tp_shm_destroy(idk_transport_t *tp);
 
@@ -303,6 +306,7 @@ void tp_shm_destroy(idk_transport_t *tp) {
     }
     if (tp->_server_fd >= 0) { close(tp->_server_fd); tp->_server_fd = -1; }
     if (tp->_client_fd >= 0) { close(tp->_client_fd); tp->_client_fd = -1; }
+    if (TP_SH_CACHED_FD(tp->_rsv) >= 0) { close(TP_SH_CACHED_FD(tp->_rsv)); TP_SH_CACHED_FD(tp->_rsv) = -1; }
     tp->ready = false;
 
     memset(tp->_rsv, 0, sizeof(tp->_rsv));
@@ -322,6 +326,8 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
         atomic_store(shm_atom(ptr, SHM_O_REQ_SEQ), 0);
 
         if (tp->_client_fd >= 0) { close(tp->_client_fd); tp->_client_fd = -1; }
+        if (TP_SH_CACHED_FD(tp->_rsv) >= 0) { close(TP_SH_CACHED_FD(tp->_rsv)); TP_SH_CACHED_FD(tp->_rsv) = -1; }
+        TP_SH_CACHED_WV_FD(tp->_rsv) = 0;
 
         atomic_store(shm_atom(ptr, SHM_O_PROD_STATE), 0);
         atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 1);
@@ -407,16 +413,34 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
     if (*nfd > 4) *nfd = 4;
     for (int i = 0; i < *nfd; i++) {
         int target_fd = shm_i32(ptr, SHM_O_DMABUF_FDS)[i];
-        int stolen = (int)syscall(__NR_pidfd_getfd, tp->_client_fd,
-                                  target_fd, 0);
-        if (stolen < 0) {
-            IDK_ERR("tp", "shm: pidfd_getfd(%d) failed: %s\n",
-                    target_fd, strerror(errno));
+        if (i == 0 && target_fd == TP_SH_CACHED_WV_FD(tp->_rsv) &&
+            TP_SH_CACHED_FD(tp->_rsv) >= 0) {
+            fds[i] = dup(TP_SH_CACHED_FD(tp->_rsv));
+        } else {
+            int stolen = (int)syscall(__NR_pidfd_getfd, tp->_client_fd,
+                                      target_fd, 0);
+            if (stolen < 0) {
+                IDK_ERR("tp", "shm: pidfd_getfd(%d) failed: %s\n",
+                        target_fd, strerror(errno));
+                for (int j = 0; j < i; j++) close(fds[j]);
+                *nfd = 0;
+                return -1;
+            }
+            if (i == 0) {
+                if (TP_SH_CACHED_FD(tp->_rsv) >= 0)
+                    close(TP_SH_CACHED_FD(tp->_rsv));
+                TP_SH_CACHED_FD(tp->_rsv) = stolen;
+                TP_SH_CACHED_WV_FD(tp->_rsv) = target_fd;
+                fds[i] = dup(stolen);
+            } else {
+                fds[i] = stolen;
+            }
+        }
+        if (fds[i] < 0) {
             for (int j = 0; j < i; j++) close(fds[j]);
             *nfd = 0;
             return -1;
         }
-        fds[i] = stolen;
     }
 
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_CONSUMED);
