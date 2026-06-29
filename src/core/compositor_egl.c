@@ -564,6 +564,7 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
  * stops rendering (it polls REQUEST non-blocking and gets nothing →
  * m_requestTimer stays armed but never fires doRenderAndSend). */
 extern _Atomic int g_overlay_visible;
+extern _Atomic int g_webview_dead;
 
 /* Track visibility transitions so we can wake the webview up when the
  * overlay becomes visible again (send a one-shot REQUEST_NEXT_FRAME
@@ -571,6 +572,7 @@ extern _Atomic int g_overlay_visible;
 static bool g_was_hidden = false;
 
 int idk_compositor_egl_render(void) {
+    if (g_webview_dead) return -1;
     accept_client();
     if (!g_tp.ready) return -1;
 

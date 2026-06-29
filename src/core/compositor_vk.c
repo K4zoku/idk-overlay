@@ -1039,12 +1039,14 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
  * When 0, drain incoming frames without ACK/REQUEST so the webview
  * stops rendering (see compositor_egl.c for full rationale). */
 extern _Atomic int g_overlay_visible;
+extern _Atomic int g_webview_dead;
 
 /* Track visibility transitions so we can wake the webview up when the
  * overlay becomes visible again. */
 static int vk_was_hidden = 0;
 
 int idk_vk_compositor_render(void) {
+    if (g_webview_dead) return -1;
     vk_sock_accept();
     if (!vk_tp.ready) return -1;
 

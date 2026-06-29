@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #include <sys/eventfd.h>
 #include <stdarg.h>
+#include <time.h>
 
 #include "hook/overlay.h"
 #include "hook/hook_plugin.h"
@@ -45,6 +46,12 @@ static int g_hooks_installed = 0;
 static int g_egl_hook_installed = 0;
 static pid_t g_webview_pid = -1;
 int g_input_eventfd = -1;
+
+extern _Atomic int g_captured;
+
+_Atomic int g_webview_dead = 0;
+static int g_webview_crash_count = 0;
+static time_t g_webview_last_fork_time = 0;
 
 /* Overlay visibility - controlled by hotkey, checked by compositor render.
  * _Atomic (not volatile) so cross-thread reads/writes are well-defined
@@ -222,18 +229,45 @@ static int find_webview_bin(char *buf, size_t bufsz) {
     return -1;
 }
 
+static void webview_disable(void) {
+    g_webview_dead = 1;
+    g_overlay_visible = 0;
+    g_captured = 0;
+}
+
 static void *webview_monitor(void *arg) {
     pid_t pid = (pid_t)(intptr_t)arg;
     int status;
-    if (waitpid(pid, &status, 0) > 0) {
-        if (WIFEXITED(status))
-            IDK_ERR("overlay", "webview (pid=%d) exited with status %d\n",
-                    pid, WEXITSTATUS(status));
-        else if (WIFSIGNALED(status))
-            IDK_ERR("overlay", "webview (pid=%d) killed by signal %d%s\n",
-                    pid, WTERMSIG(status),
-                    WCOREDUMP(status) ? " (core dumped)" : "");
+    if (waitpid(pid, &status, 0) <= 0)
+        return NULL;
+
+    if (g_webview_dead)
+        return NULL;
+
+    if (WIFEXITED(status) ||
+        (WIFSIGNALED(status) &&
+         (WTERMSIG(status) == SIGTERM || WTERMSIG(status) == SIGKILL))) {
+        IDK_LOG("overlay", "webview (pid=%d) closed by user - overlay disabled\n", pid);
+        webview_disable();
+        return NULL;
     }
+
+    time_t now = time(NULL);
+    if (g_webview_last_fork_time > 0 && now - g_webview_last_fork_time > 30)
+        g_webview_crash_count = 0;
+
+    g_webview_crash_count++;
+    g_webview_pid = -1;
+
+    if (g_webview_crash_count > 3) {
+        IDK_ERR("overlay", "webview crashed %d times - giving up, disabling overlay\n",
+                g_webview_crash_count);
+        webview_disable();
+        return NULL;
+    }
+
+    IDK_LOG("overlay", "webview crashed (count=%d) - reforking\n", g_webview_crash_count);
+    fork_webview();
     return NULL;
 }
 
@@ -259,6 +293,7 @@ static void fork_webview(void) {
         }
     }
 
+    g_webview_last_fork_time = time(NULL);
     g_webview_pid = fork();
     if (g_webview_pid < 0) {
         IDK_ERR("overlay", "fork() failed: %s\n", strerror(errno));

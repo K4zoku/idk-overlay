@@ -2,6 +2,8 @@
 #include "core/compositor_common.h"
 #include "core/transport.h"
 
+extern _Atomic int g_webview_dead;
+
 static idk_transport_t g_input_tp;
 static pthread_t g_accept_thread;
 static pthread_mutex_t g_input_tp_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -78,6 +80,7 @@ int init_input_socket(void) {
 }
 
 void send_event_to_webview(const idk_input_event_t *ev) {
+    if (g_webview_dead) return;
     pthread_mutex_lock(&g_input_tp_lock);
     if (!g_input_tp.ready) {
         idk_tp_accept(&g_input_tp);

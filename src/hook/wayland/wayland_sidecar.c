@@ -1,5 +1,7 @@
 #include "hook/wayland_internal.h"
 
+extern _Atomic int g_webview_dead;
+
 /* Sidecar globals */
 struct wl_display *g_sidecar_display = NULL;
 struct wl_event_queue *g_sidecar_queue = NULL;
@@ -216,6 +218,7 @@ static void sidecar_kb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
     int cap_match = is_capture_hotkey(key, keysym);
     int ovl_match = !same_key && is_overlay_hotkey(key, keysym);
 
+    if (!g_webview_dead) {
     if (cap_match) {
         if (pressed && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
@@ -238,6 +241,7 @@ static void sidecar_kb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
         } else if (!pressed) {
             g_hotkey_pressed = 0;
         }
+    }
     }
 }
 

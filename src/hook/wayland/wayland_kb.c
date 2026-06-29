@@ -1,5 +1,7 @@
 #include "hook/wayland_internal.h"
 
+extern _Atomic int g_webview_dead;
+
 /* xkb globals */
 void *g_xkb_handle = NULL;
 struct xkb_context *g_xkb_ctx = NULL;
@@ -159,6 +161,7 @@ static void wkb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
     /* Check overlay hotkey (only if different) */
     int ovl_match = !same_key && is_overlay_hotkey(key, keysym);
 
+    if (!g_webview_dead) {
     if (cap_match) {
         if (pressed && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
@@ -185,6 +188,7 @@ static void wkb_key(void *d, struct wl_keyboard *kb, uint32_t serial,
             g_hotkey_pressed = 0;
         }
         return;
+    }
     }
 
     if (g_captured) {

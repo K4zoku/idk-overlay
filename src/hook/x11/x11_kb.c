@@ -7,6 +7,8 @@
  */
 #include "hook/x11_internal.h"
 
+extern _Atomic int g_webview_dead;
+
 typedef struct {
     int type; unsigned long serial; Bool send_event; Display *display;
     Window window, root, subwindow; Time time; int x, y, x_root, y_root;
@@ -62,6 +64,7 @@ int x11_handle_key_event(XEventStorage *ev) {
         if (m && (!g_hotkey_overlay_mods || (g_mods & g_hotkey_overlay_mods) == g_hotkey_overlay_mods)) ovl_match = 1;
     }
 
+    if (!g_webview_dead) {
     if (cap_match) {
         if (pressed && !g_hotkey_pressed) {
             g_hotkey_pressed = 1;
@@ -84,6 +87,7 @@ int x11_handle_key_event(XEventStorage *ev) {
             XLOG("overlay %s", g_overlay_visible ? "SHOW" : "HIDE");
         } else if (!pressed) g_hotkey_pressed = 0;
         return 1;
+    }
     }
 
     if (g_captured && pressed) g_hotkey_pressed = 0;
