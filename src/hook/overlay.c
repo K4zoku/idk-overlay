@@ -50,6 +50,11 @@ int g_input_eventfd = -1;
 static int g_use_broker = 0;
 static int g_broker_fd = -1;
 
+/* Broker state defined in compositor.c (needed by test static lib) */
+extern _Atomic int      g_broker_state;
+extern pthread_mutex_t  g_broker_lock;
+extern pthread_cond_t   g_broker_cond;
+
 extern _Atomic int g_captured;
 
 _Atomic int g_webview_dead = 0;
@@ -214,6 +219,40 @@ static int connect_via_broker(void) {
     return 0;
 }
 
+static void *broker_connect_thread(void *arg) {
+    (void)arg;
+    detect_wine();
+    bool want_broker = (g_wine_detected == 1);
+    const char *broker_env = getenv("IDK_BROKER");
+    bool broker_forced = broker_env && broker_env[0];
+    if (broker_forced) want_broker = true;
+
+    if (want_broker && connect_via_broker() == 0) {
+        g_use_broker = 1;
+        pthread_mutex_lock(&g_broker_lock);
+        atomic_store(&g_broker_state, 1);
+        pthread_cond_signal(&g_broker_cond);
+        pthread_mutex_unlock(&g_broker_lock);
+        IDK_LOG("overlay", "broker mode active — fork_webview skipped\n");
+    } else if (want_broker && broker_forced) {
+        pthread_mutex_lock(&g_broker_lock);
+        atomic_store(&g_broker_state, 3);
+        pthread_cond_signal(&g_broker_cond);
+        pthread_mutex_unlock(&g_broker_lock);
+        IDK_ERR("overlay", "IDK_BROKER forced but broker unreachable — overlay disabled\n");
+        webview_disable();
+        close(g_broker_fd); g_broker_fd = -1;
+    } else {
+        if (want_broker)
+            IDK_LOG("overlay", "wine detected, broker unavailable — fallback fork_webview\n");
+        pthread_mutex_lock(&g_broker_lock);
+        atomic_store(&g_broker_state, 2);
+        pthread_cond_signal(&g_broker_cond);
+        pthread_mutex_unlock(&g_broker_lock);
+    }
+    return NULL;
+}
+
 static void *hook_install_thread(void *arg) {
     (void)arg;
 
@@ -246,23 +285,17 @@ static void *hook_install_thread(void *arg) {
 
     IDK_LOG("overlay", "graphics library detected — initializing overlay\n");
 
-    /* ── Phase 2: connect broker or fork webview ────────────────────── */
-    bool want_broker = detect_wine();
-    const char *broker_env = getenv("IDK_BROKER");
-    bool broker_forced = broker_env && broker_env[0];
-    if (broker_forced) want_broker = true;
+    /* ── Phase 2: wait for broker decision (from broker_connect_thread) ─ */
+    for (int i = 0; i < 100 && atomic_load(&g_broker_state) == 0; i++)
+        usleep(50000);
 
-    if (want_broker && connect_via_broker() == 0) {
-        g_use_broker = 1;
+    int state = atomic_load(&g_broker_state);
+    if (state == 1) {
         IDK_LOG("overlay", "broker mode active — fork_webview skipped\n");
-    } else if (want_broker && broker_forced) {
+    } else if (state == 3) {
         IDK_ERR("overlay", "IDK_BROKER forced but broker unreachable — overlay disabled\n");
-        webview_disable();
-        close(g_broker_fd); g_broker_fd = -1;
         return NULL;
     } else {
-        if (want_broker)
-            IDK_LOG("overlay", "wine detected, broker unavailable — fallback fork_webview\n");
         fork_webview();
     }
 
@@ -625,6 +658,18 @@ static int idk_is_target_process(void) {
         "head", "tail", "cut", "grep", "sed",
         "true", "false",
         "explorer.exe",
+        "services.exe",
+        "wineboot.exe",
+        "wineserver",
+        "msiexec.exe",
+        "rundll32.exe",
+        "cmd.exe",
+        "reg.exe",
+        "schtasks.exe",
+        "wineboot",
+        "wine",
+        "wine64-preloader",
+        "wine-preloader",
         NULL
     };
     for (int i = 0; blacklist[i]; i++) {
@@ -636,9 +681,9 @@ static int idk_is_target_process(void) {
 
 int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
     if (g_initialized) return 0;
-    if (!idk_is_target_process()) return 0;
 
     g_initialized = 1;
+    atomic_store(&g_broker_state, 2);
     g_enable_vk = enable_vk;
     g_enable_gl = enable_gl;
 
@@ -649,6 +694,7 @@ int idk_overlay_init(const char *socket_path, int enable_vk, int enable_gl) {
 
     load_hotkey_config();
 
+    /* External caller (syringe/inject): no broker, hook_install_thread forks */
     pthread_t t;
     if (pthread_create(&t, NULL, hook_install_thread, NULL) == 0)
         pthread_detach(t);
@@ -695,12 +741,31 @@ int idk_overlay_try_install_x11_input(void) {
 
 __attribute__((constructor))
 static void on_load(void) {
+    if (!idk_is_target_process())
+        return;
+
+    g_initialized = 1;
+    atomic_store(&g_broker_state, 0);
+
     const char *env_vk = getenv("IDK_VK");
     const char *env_gl = getenv("IDK_GL");
     const char *env_path = getenv("IDK_SOCKET");
-    idk_overlay_init(env_path ? env_path : NULL,
-                     env_vk ? atoi(env_vk) : 0,
-                     env_gl ? atoi(env_gl) : 1);
+    g_enable_vk = env_vk ? atoi(env_vk) : 0;
+    g_enable_gl = env_gl ? atoi(env_gl) : 1;
+    if (env_path)
+        snprintf(g_socket_path, sizeof(g_socket_path), "%s", env_path);
+    else
+        idk_comp_get_default_socket_path(g_socket_path, sizeof(g_socket_path), 0);
+
+    load_hotkey_config();
+
+    pthread_t broker_t;
+    if (pthread_create(&broker_t, NULL, broker_connect_thread, NULL) == 0)
+        pthread_detach(broker_t);
+
+    pthread_t t;
+    if (pthread_create(&t, NULL, hook_install_thread, NULL) == 0)
+        pthread_detach(t);
 }
 
 __attribute__((destructor))

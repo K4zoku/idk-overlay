@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdatomic.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -15,6 +17,13 @@
 
 #include "core/compositor.h"
 #include "core/log.h"
+
+/* Broker decision state — shared with overlay.c via extern.
+ *   0=pending, 1=done-broker, 2=done-no-broker, 3=failed
+ * Init to 2 so any code path without a broker thread sees "no broker". */
+_Atomic int      g_broker_state = 2;
+pthread_mutex_t  g_broker_lock  = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t   g_broker_cond  = PTHREAD_COND_INITIALIZER;
 
 /* ===== idk_compositor_t singleton ===== */
 
@@ -152,6 +161,18 @@ uint32_t idk_vk_vendor_to_drm(uint32_t vk_vendor) {
 
 int idk_compositor_init(void) {
     if (g_comp.inited) return 0;
+
+    /* Wait for broker decision (up to 5 s) — broker_connect_thread in
+     * overlay.c will signal via g_broker_cond when state != 0. */
+    pthread_mutex_lock(&g_broker_lock);
+    while (atomic_load(&g_broker_state) == 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 5;
+        int rc = pthread_cond_timedwait(&g_broker_cond, &g_broker_lock, &ts);
+        if (rc == ETIMEDOUT) break;
+    }
+    pthread_mutex_unlock(&g_broker_lock);
 
     char path[512];
     idk_comp_get_path(path, sizeof(path));
