@@ -12,7 +12,7 @@
  *   | fourcc    uint32     |  offset 20 - DRM fourcc (DMABUF), 0=SHM
  *   | flags     uint8      |  offset 24 - bit0=visible, bit1=dmabuf
  *   | nfd      uint8      |  offset 25 - fd count (1–4), ignored on recv
- *   | _pad     uint8[2]    |  offset 26 - reserved
+ *   | buf_id   uint16     |  offset 26 - dmabuf pool generation (0=uncached)
  *   +----------------------+  total 28 bytes
  *
  * Input event (20 bytes, no fd passing):
@@ -56,7 +56,7 @@ typedef struct idk_frame_header {
     uint32_t fourcc;    /* offset 20 - DRM fourcc (DMABUF), 0=SHM             */
     uint8_t  flags;     /* offset 24 - IDK_FRAME_FLAG_*                       */
     uint8_t  nfd;       /* offset 25 - fd count (1–4 for send, 0 on recv)     */
-    uint8_t  _pad[2];   /* offset 26 - reserved, must be 0                    */
+    uint16_t buf_id;    /* offset 26 - dmabuf pool generation (0=uncached)     */
 } idk_frame_header_t;   /* total 28 bytes                                     */
 #pragma pack(pop)
 
