@@ -360,6 +360,7 @@ static int    g_tex_h[2] = {0, 0};
 static EGLImageKHR g_tex_img[2] = {0, 0};   /* EGLImage backing g_tex[i], or 0 */
 static int    g_tex_dmabuf_fd[2] = {-1, -1}; /* fd backing g_tex[i], or -1 */
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
+static uint16_t g_dmabuf_cache_id = 0;  /* buf_id of cached dmabuf import (0=none) */
 static bool g_has_frame = false;
 static bool g_frame_premultiplied = false;  /* current frame's alpha mode */
 
@@ -599,6 +600,7 @@ int idk_compositor_egl_render(void) {
                      * frame. Full idk_tp_destroy would close the listen
                      * socket + unlink the SHM → permanent dead overlay. */
                     idk_tp_disconnect_client(&g_tp);
+                    g_dmabuf_cache_id = 0;
                 }
                 break;
             }
@@ -632,6 +634,7 @@ int idk_compositor_egl_render(void) {
                 IDK_LOG("comp", "client disconnected, soft-disconnecting\n");
                 /* Soft-disconnect so a reconnecting webview can re-establish. */
                 idk_tp_disconnect_client(&g_tp);
+                g_dmabuf_cache_id = 0;
             }
             break;
         }
@@ -654,83 +657,72 @@ int idk_compositor_egl_render(void) {
             tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
                                  pixel_size, 0, 1);
             if (tex == 0) break;
+            g_dmabuf_cache_id = 0;
             g_frame_w = hdr.width;
             g_frame_h = hdr.height;
             processed = 1;
             clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
         } else {
-            /* DMABUF frame - try two import paths:
-             *   1. EGL (eglCreateImageKHR + glEGLImageTargetTexStorageEXT)
-             *      for EGL apps (host has current EGL display).
-             *   2. GL_EXT_memory_object (MangoHud-style, OPAQUE_FD trick)
-             *      for GLX apps (no current EGL display). Works on Mesa.
-             * If both fail, reject with ACK=1 → webview falls back to SHM. */
-
-            /* Ensure EGL functions are resolved. */
-            if (!fn_eglGetCurrentDisplay) {
-                resolve_egl_functions();
-            }
-
-            GLuint tex = 0;
-            EGLImageKHR img = 0;
-            int fd_consumed = 0;  /* set if GL driver took fd ownership */
-
-            /* Try EGL path first (works for EGL apps via current display) */
-            tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                         hdr.stride, hdr.fourcc,
-                                         hdr.modifier, &img);
-
-            if (tex == 0) {
-                /* EGL path failed - try GL_EXT_memory_object MangoHud-style
-                 * fallback. This works on Mesa even for EGL apps when the
-                 * EGL driver doesn't support the specific modifier. */
-                IDK_LOG("comp", "EGL dmabuf import failed, trying GL_EXT_memory_object (MangoHud) path\n");
-                tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                            hdr.stride, hdr.fourcc);
-                if (tex) {
-                    IDK_LOG("comp", "GL_EXT_memory_object dmabuf import OK\n");
-                    /* GL_EXT_memory_object dup'd the fd internally (driver
-                     * owns the dup'd fd). Original dmabuf_fd is no longer
-                     * needed - close it now. */
-                    close(dmabuf_fd);
-                    fd_consumed = 0;  /* fd already closed, don't track */
-                } else {
-                    IDK_ERR("comp", "GL_EXT_memory_object dmabuf import also failed\n");
-                }
-            } else {
-                /* EGL path: eglCreateImageKHR kept fd alive via EGLImage,
-                 * so original dmabuf_fd must be kept open (tracked for cleanup). */
-                fd_consumed = 1;
-            }
-
-            if (tex == 0) {
-                /* Both paths failed - reject, force SHM */
-                IDK_LOG("comp", "DMABUF import failed (EGL + GL_EXT_memory_object) - rejecting, forcing SHM\n");
+            if (hdr.buf_id != 0 && hdr.buf_id == g_dmabuf_cache_id) {
                 close(dmabuf_fd);
-                processed = -1;  /* ACK=1 → webview falls back to SHM */
-            } else {
-                int back = 1 - g_tex_idx;
-                /* Replacing previous slot: delete its texture AND any
-                 * DMABUF backing (EGLImage + fd) so we don't leak. */
-                if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
-                release_dmabuf_backing(back);
-                /* Install new texture + keep its backing alive. */
-                g_tex[back] = tex;
-                g_tex_img[back] = img;
-                /* For EGL path: keep fd open (EGLImage references it).
-                 * For GL_EXT_memory_object path: close fd (driver dup'd it). */
-                g_tex_dmabuf_fd[back] = fd_consumed ? dmabuf_fd : -1;
-                g_tex_w[back] = (GLsizei)hdr.width;
-                g_tex_h[back] = (GLsizei)hdr.height;
-                g_tex_idx = back;
                 g_has_frame = true;
-                /* DMABUF from Qt RHI is always premultiplied alpha */
                 g_frame_premultiplied = true;
-                g_draw_err_count = 0;
                 g_frame_w = hdr.width;
                 g_frame_h = hdr.height;
+                g_draw_err_count = 0;
                 processed = 1;
                 clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
+            } else {
+                if (!fn_eglGetCurrentDisplay) {
+                    resolve_egl_functions();
+                }
+
+                GLuint tex = 0;
+                EGLImageKHR img = 0;
+                int fd_consumed = 0;
+
+                tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                             hdr.stride, hdr.fourcc,
+                                             hdr.modifier, &img);
+
+                if (tex == 0) {
+                    IDK_LOG("comp", "EGL dmabuf import failed, trying GL_EXT_memory_object (MangoHud) path\n");
+                    tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
+                                                hdr.stride, hdr.fourcc);
+                    if (tex) {
+                        IDK_LOG("comp", "GL_EXT_memory_object dmabuf import OK\n");
+                        close(dmabuf_fd);
+                        fd_consumed = 0;
+                    } else {
+                        IDK_ERR("comp", "GL_EXT_memory_object dmabuf import also failed\n");
+                    }
+                } else {
+                    fd_consumed = 1;
+                }
+
+                if (tex == 0) {
+                    IDK_LOG("comp", "DMABUF import failed (EGL + GL_EXT_memory_object) - rejecting, forcing SHM\n");
+                    close(dmabuf_fd);
+                    processed = -1;
+                } else {
+                    int back = 1 - g_tex_idx;
+                    if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
+                    release_dmabuf_backing(back);
+                    g_tex[back] = tex;
+                    g_tex_img[back] = img;
+                    g_tex_dmabuf_fd[back] = fd_consumed ? dmabuf_fd : -1;
+                    g_tex_w[back] = (GLsizei)hdr.width;
+                    g_tex_h[back] = (GLsizei)hdr.height;
+                    g_tex_idx = back;
+                    g_dmabuf_cache_id = hdr.buf_id;
+                    g_has_frame = true;
+                    g_frame_premultiplied = true;
+                    g_draw_err_count = 0;
+                    g_frame_w = hdr.width;
+                    g_frame_h = hdr.height;
+                    processed = 1;
+                    clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
+                }
             }
         }
     }
@@ -1220,7 +1212,7 @@ void idk_compositor_egl_shutdown(void) {
     /* GL cleanup skipped - OS reclaims on exit */
     g_program = 0;
     g_tex[0] = g_tex[1] = 0;
-    /* Release DMABUF backing (EGLImage + fd) for both slots */
+    g_dmabuf_cache_id = 0;
     release_dmabuf_backing(0);
     release_dmabuf_backing(1);
     g_has_frame = false;
