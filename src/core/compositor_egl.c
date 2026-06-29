@@ -361,8 +361,6 @@ static EGLImageKHR g_tex_img[2] = {0, 0};   /* EGLImage backing g_tex[i], or 0 *
 static int    g_tex_dmabuf_fd[2] = {-1, -1}; /* fd backing g_tex[i], or -1 */
 static int g_tex_idx = 0;   /* index of current display texture (0 or 1) */
 static uint16_t g_dmabuf_cache_id = 0;  /* buf_id of cached dmabuf import (0=none) */
-static bool g_has_frame = false;
-static bool g_frame_premultiplied = false;  /* current frame's alpha mode */
 
 /* Free the DMABUF backing (EGLImage + fd) for slot i, if any.
  * Safe to call when slot i has a SHM texture (no-op). */
@@ -387,34 +385,13 @@ static int g_draw_err_count = 0;
 static bool g_is_gles = false;
 static int g_gl_version = 0;  /* major*100 + minor*10, e.g. 330 for GL 3.3 */
 
-static int g_dmabuf_fd = -1;
-static uint32_t g_frame_w = 0;
-static uint32_t g_frame_h = 0;
-
-/* Game surface size, updated by wl_egl/vk createSwapchain hooks */
-static int g_game_w = 0;
-static int g_game_h = 0;
-static bool g_size_pending = false;
-static struct timespec g_last_resize_ts = {0};
-static struct timespec g_last_frame_ts = {0};
+/* Game surface size (shared in g_comp) */
 
 void idk_compositor_egl_notify_resize(int w, int h) {
-    bool changed = idk_comp_notify_resize(&g_game_w, &g_game_h, &g_size_pending,
-                                          &g_last_resize_ts, w, h, "comp");
+    bool changed = idk_comp_notify_resize(&g_comp.game_w, &g_comp.game_h,
+                                          &g_comp.size_pending,
+                                          &g_comp.last_resize_ts, w, h, "comp");
     if (changed) {
-        /* Game viewport changed - keep the current texture alive so the
-         * overlay keeps rendering during the 1-2 frame window before the
-         * webview sends a frame at the new size. Previously we deleted
-         * both texture slots here, which produced a black frame; the
-         * normal frame-replacement path (release_dmabuf_backing() +
-         * glDeleteTextures() in idk_compositor_egl_render()) already
-         * releases the old backing when a new frame arrives.
-         *
-         * The old texture is sampled with UV 0..1 over a fullscreen
-         * quad sized to the current viewport, so dimension mismatch
-         * just stretches the stale content rather than producing
-         * garbage. Once the webview's new frame arrives, the slot is
-         * replaced as part of the normal double-buffer swap. */
         IDK_LOG("comp", "resize: keeping stale texture %dx%d for display until next frame\n",
                 g_tex_w[g_tex_idx], g_tex_h[g_tex_idx]);
     }
@@ -435,35 +412,7 @@ static GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
                                     uint64_t modifier,
                                     EGLImageKHR *out_img);
 
-static char g_sock_path[512];
-static idk_transport_t g_tp;
-
-/* Init compositor - init transport, accept client */
-int idk_compositor_egl_init(void) {
-    /* g_inited is set to 1 ONLY after successful init. Previously it
-     * was set before idk_tp_init ran, so a transient init failure
-     * (bind() fails because another process owns the socket, socket()
-     * fails due to fd exhaustion, etc.) left g_inited=1 and all
-     * subsequent calls returned 0 (success) without retrying - the
-     * compositor was permanently dead. */
-    static int g_inited = 0;
-    if (g_inited) return 0;
-
-    idk_comp_get_path(g_sock_path, sizeof(g_sock_path));
-    if (idk_tp_init(&g_tp, IDK_TP_CONSUMER, g_sock_path) != 0) {
-        return -1;  /* leave g_inited=0 so caller can retry */
-    }
-    /* Try a non-blocking accept in case the webview is already waiting */
-    idk_tp_accept(&g_tp);
-    g_has_frame = false;
-    g_inited = 1;
-    return 0;
-}
-
-/* Non-blocking accept */
-static int accept_client(void) {
-    return idk_tp_accept(&g_tp);
-}
+/* Shared transport in g_comp — see compositor.h */
 
 /* SHM → GL texture upload via glTex(Sub)Image2D */
 static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
@@ -548,13 +497,13 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
     glBindTexture(GL_TEXTURE_2D, 0);
 
     g_tex_idx = back;
-    g_has_frame = true;
-    g_frame_premultiplied = (premultiplied != 0);
-    g_draw_err_count = 0;  /* fresh texture - reset draw error counter */
+    g_comp.has_frame = true;
+    g_comp.frame_premultiplied = (premultiplied != 0);
+    g_draw_err_count = 0;
 
     IDK_LOG("comp", "SHM frame uploaded: %ux%u tex[%d]=%u premul=%d buf_idx=%u\n",
             (unsigned)w, (unsigned)h, back, g_tex[back],
-            (int)g_frame_premultiplied, (unsigned)buffer_idx);
+            (int)g_comp.frame_premultiplied, (unsigned)buffer_idx);
 
     return g_tex[g_tex_idx];
 }
@@ -566,188 +515,72 @@ static GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h,
 extern _Atomic int g_overlay_visible;
 extern _Atomic int g_webview_dead;
 
-/* Track visibility transitions so we can wake the webview up when the
- * overlay becomes visible again (send a one-shot REQUEST_NEXT_FRAME
- * even if no frame was just processed). */
-static bool g_was_hidden = false;
-
 int idk_compositor_egl_render(void) {
     if (g_webview_dead) return -1;
-    accept_client();
-    if (!g_tp.ready) return -1;
 
-    /* When the overlay is hidden, drain any queued frames so the
-     * producer's send queue doesn't accumulate, but DO NOT send ACK
-     * or REQUEST. Without ACK, the producer's pollAck() eventually
-     * times out (100ms) and clears m_pending; without REQUEST, the
-     * producer's onRequestReceived() polls forever without triggering
-     * a new paint. Net effect: webview generates 0 frames while the
-     * overlay is hidden.
-     *
-     * On transition hidden→visible, send a single REQUEST to wake
-     * the webview up (otherwise it would stay parked in its 16ms
-     * request-poll loop forever, never noticing the overlay is
-     * visible again). */
-    if (!g_overlay_visible) {
-        while (1) {
-            int rc = idk_tp_drop_frame(&g_tp);
-            if (rc <= 0) {
-                if (rc < 0) {
-                    IDK_LOG("comp", "client disconnected while hidden, soft-disconnecting\n");
-                    idk_tp_disconnect_client(&g_tp);
-                    g_dmabuf_cache_id = 0;
-                }
-                break;
-            }
-            IDK_LOG("comp", "hidden: drained frame\n");
-        }
-        g_was_hidden = true;
-        return -1;
-    }
+    int rc = idk_compositor_recv_frame(g_overlay_visible);
+    if (rc <= 0) return -1;
 
-    /* Visible - if we just transitioned from hidden, send a REQUEST
-     * to wake up the webview's request-poll loop. */
-    if (g_was_hidden) {
-        g_was_hidden = false;
-        idk_request_msg_t wake;
-        memset(&wake, 0, sizeof(wake));
-        wake.type = IDK_REQUEST_NEXT_FRAME;
-        idk_tp_send_request(&g_tp, &wake);
-        IDK_LOG("comp", "overlay became visible - sent wake-up REQUEST\n");
-    }
+    idk_frame_header_t *hdr = &g_comp.hdr;
+    int fd = g_comp.dmabuf_fd[0];
+    uint8_t ack = 0;
 
-    /* Poll for new frame - keep newest only */
-    int processed = 0;
-
-    while (1) {
-        idk_frame_header_t hdr;
-        int fds[4], nfd = 0;
-        int rc = idk_tp_recv(&g_tp, &hdr, fds, &nfd);
-        if (rc <= 0) {
-            if (rc < 0) {
-                IDK_LOG("comp", "client disconnected, soft-disconnecting\n");
-                /* Soft-disconnect so a reconnecting webview can re-establish. */
-                idk_tp_disconnect_client(&g_tp);
-                g_dmabuf_cache_id = 0;
-            }
-            break;
-        }
-
-        int dmabuf_fd = (nfd > 0) ? fds[0] : -1;
-
-        if (processed > 0) {
-            close(dmabuf_fd);
-            continue;
-        }
-
+    if (!idk_frame_is_dmabuf(hdr)) {
+        uint32_t pixel_size = hdr->width * hdr->height * 4;
+        GLuint tex = shm_to_texture(fd, hdr->width, hdr->height,
+                                     pixel_size, 0, 1);
+        if (tex == 0) { ack = 1; goto done; }
+        g_dmabuf_cache_id = 0;
+    } else if (hdr->buf_id != 0 && hdr->buf_id == g_dmabuf_cache_id) {
+        if (fd >= 0) { close(fd); g_comp.dmabuf_fd[0] = -1; }
+        g_comp.has_frame = true;
+        g_comp.frame_premultiplied = true;
+        g_draw_err_count = 0;
+    } else {
+        if (!fn_eglGetCurrentDisplay) resolve_egl_functions();
         GLuint tex = 0;
+        EGLImageKHR img = 0;
+        int fd_consumed = 0;
 
-        if (!idk_frame_is_dmabuf(&hdr)) {
-            /* SHM frame - compute pixel size from dimensions (4 bytes/pixel) */
-            uint32_t pixel_size = hdr.width * hdr.height * 4;
-            /* buf_idx is no longer in the header; use 0 (single buffer).
-             * Premultiplied flag is not in the new header - assume
-             * premultiplied for SHM (Qt RHI always premultiplies). */
-            tex = shm_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                 pixel_size, 0, 1);
-            if (tex == 0) break;
-            g_dmabuf_cache_id = 0;
-            g_frame_w = hdr.width;
-            g_frame_h = hdr.height;
-            processed = 1;
-            clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
-        } else {
-            if (hdr.buf_id != 0 && hdr.buf_id == g_dmabuf_cache_id) {
-                close(dmabuf_fd);
-                g_has_frame = true;
-                g_frame_premultiplied = true;
-                g_frame_w = hdr.width;
-                g_frame_h = hdr.height;
-                g_draw_err_count = 0;
-                processed = 1;
-                clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
-            } else {
-                IDK_LOG("comp", "dmabuf cache miss: buf_id=%u cached=%u %ux%u fd=%d\n",
-                        hdr.buf_id, g_dmabuf_cache_id, hdr.width, hdr.height, dmabuf_fd);
-                if (!fn_eglGetCurrentDisplay) {
-                    resolve_egl_functions();
-                }
-
-                GLuint tex = 0;
-                EGLImageKHR img = 0;
-                int fd_consumed = 0;
-
-                tex = egl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                             hdr.stride, hdr.fourcc,
-                                             hdr.modifier, &img);
-
-                if (tex == 0) {
-                    IDK_LOG("comp", "EGL dmabuf import failed, trying GL_EXT_memory_object (MangoHud) path\n");
-                    tex = gl_dmabuf_to_texture(dmabuf_fd, hdr.width, hdr.height,
-                                                hdr.stride, hdr.fourcc);
-                    if (tex) {
-                        IDK_LOG("comp", "GL_EXT_memory_object dmabuf import OK\n");
-                        close(dmabuf_fd);
-                        fd_consumed = 0;
-                    } else {
-                        IDK_ERR("comp", "GL_EXT_memory_object dmabuf import also failed\n");
-                    }
-                } else {
-                    fd_consumed = 1;
-                }
-
-                if (tex == 0) {
-                    IDK_LOG("comp", "DMABUF import failed (EGL + GL_EXT_memory_object) - rejecting, forcing SHM\n");
-                    close(dmabuf_fd);
-                    processed = -1;
-                } else {
-                    int back = 1 - g_tex_idx;
-                    if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
-                    release_dmabuf_backing(back);
-                    g_tex[back] = tex;
-                    g_tex_img[back] = img;
-                    g_tex_dmabuf_fd[back] = fd_consumed ? dmabuf_fd : -1;
-                    g_tex_w[back] = (GLsizei)hdr.width;
-                    g_tex_h[back] = (GLsizei)hdr.height;
-                    g_tex_idx = back;
-                    g_dmabuf_cache_id = hdr.buf_id;
-                    g_has_frame = true;
-                    g_frame_premultiplied = true;
-                    g_draw_err_count = 0;
-                    g_frame_w = hdr.width;
-                    g_frame_h = hdr.height;
-                    processed = 1;
-                    clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
-                }
+        tex = egl_dmabuf_to_texture(fd, hdr->width, hdr->height,
+                                     hdr->stride, hdr->fourcc,
+                                     hdr->modifier, &img);
+        if (tex == 0) {
+            tex = gl_dmabuf_to_texture(fd, hdr->width, hdr->height,
+                                        hdr->stride, hdr->fourcc);
+            if (tex) {
+                close(fd);
+                fd_consumed = 0;
             }
+        } else {
+            fd_consumed = 1;
         }
+
+        if (tex == 0) {
+            if (fd >= 0) close(fd);
+            ack = 1;
+            goto done;
+        }
+
+        int back = 1 - g_tex_idx;
+        if (g_tex[back]) glDeleteTextures(1, &g_tex[back]);
+        release_dmabuf_backing(back);
+        g_tex[back] = tex;
+        g_tex_img[back] = img;
+        g_tex_dmabuf_fd[back] = fd_consumed ? fd : -1;
+        g_tex_w[back] = (GLsizei)hdr->width;
+        g_tex_h[back] = (GLsizei)hdr->height;
+        g_tex_idx = back;
+        g_dmabuf_cache_id = hdr->buf_id;
+        g_comp.has_frame = true;
+        g_comp.frame_premultiplied = true;
+        g_draw_err_count = 0;
     }
+    g_comp.dmabuf_fd[0] = -1;
 
-    if (processed) {
-        uint8_t ack = (processed < 0) ? 1 : 0;
-        idk_ack_msg_t ack_msg;
-        idk_comp_build_ack(&ack_msg, ack,
-                           g_game_w, g_game_h,
-                           &g_size_pending, &g_last_resize_ts,
-                            IDK_COMP_RESIZE_DEBOUNCE_MS, "comp");
-        idk_tp_send_ack(&g_tp, &ack_msg);
-    }
-
-    /* Always send REQUEST when connected and visible, even without a new
-     * frame. Without this, the webview can deadlock: it sends its first
-     * frame before the compositor is ready → ACK timeout → polls REQUEST
-     * → nothing arrives (compositor's render() sees no frame → returns
-     * -1 without REQUEST) → webview stops painting forever.
-     *
-     * The REQUEST tells the webview "I'm alive, send me a frame". The
-     * webview's onRequestReceived() triggers a new paint, which re-enters
-     * doRenderAndSend() and re-sends the frame. */
-    idk_request_msg_t req;
-    memset(&req, 0, sizeof(req));
-    req.type = IDK_REQUEST_NEXT_FRAME;
-    idk_tp_send_request(&g_tp, &req);
-
-    return processed ? 0 : -1;
+done:
+    idk_compositor_send_ack(ack);
+    return ack ? -1 : 0;
 }
 
 GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
@@ -969,20 +802,18 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         }
     }
 
-    /* Global stale frame timeout - clear overlay if no frame for 1s
-       (handles webview crash, driver crash, resize hang, etc.) */
-    if (g_has_frame) {
+    if (g_comp.has_frame) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsed = (now.tv_sec - g_last_frame_ts.tv_sec)
-                       + (now.tv_nsec - g_last_frame_ts.tv_nsec) / 1e9;
+        double elapsed = (now.tv_sec - g_comp.last_frame_ts.tv_sec)
+                       + (now.tv_nsec - g_comp.last_frame_ts.tv_nsec) / 1e9;
         if (elapsed > 1.0) {
             IDK_LOG("comp", "stale frame cleared (%.0fms since last frame)\n", elapsed * 1000);
-            g_has_frame = false;
+            g_comp.has_frame = false;
         }
     }
 
-    if (!g_has_frame || g_tex[g_tex_idx] == 0) {
+    if (!g_comp.has_frame || g_tex[g_tex_idx] == 0) {
         return;
     }
 
@@ -1059,7 +890,7 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
     /* Blend mode depends on frame format:
      * - Straight alpha: src=GL_SRC_ALPHA, dst=GL_ONE_MINUS_SRC_ALPHA
      * - Premultiplied:  src=GL_ONE, dst=GL_ONE_MINUS_SRC_ALPHA (faster, no multiply in shader) */
-    if (g_frame_premultiplied) {
+    if (g_comp.frame_premultiplied) {
         glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     } else {
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -1103,7 +934,7 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
         glGetProgramiv(g_program, GL_LINK_STATUS, &prog_link);
         IDK_LOG("comp", "pre-draw diag: tex[%d]=%u valid=%d prog=%u link=%d frame=%ux%u fb=%dx%d\n",
                 g_tex_idx, cur_tex, (int)tex_valid, g_program, (int)prog_link,
-                g_frame_w, g_frame_h, fb_w, fb_h);
+                g_comp.frame_w, g_comp.frame_h, fb_w, fb_h);
     }
 
     glUseProgram(g_program);           GLCHECK("glUseProgram");
@@ -1124,7 +955,7 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
             if (g_draw_err_count <= 5 || g_draw_err_count % 300 == 0) {
                 IDK_ERR("comp", "GL error after draw: 0x%x (tex[%d]=%u fb=%dx%d frame=%ux%u, occurrence %d)\n",
                         err, g_tex_idx, g_tex[g_tex_idx], fb_w, fb_h,
-                        g_frame_w, g_frame_h, g_draw_err_count);
+                        g_comp.frame_w, g_comp.frame_h, g_draw_err_count);
             }
             /* Invalidate texture after 5 consecutive errors */
             if (g_draw_err_count == 5) {
@@ -1134,17 +965,16 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
                 if (dead > 0) glDeleteTextures(1, &dead);
                 g_tex[g_tex_idx] = 0;
                 release_dmabuf_backing(g_tex_idx);
-                g_has_frame = false;
+                g_comp.has_frame = false;
             }
         }
-        /* Reset only on new frame upload in shm_to_texture / dmabuf path */
     }
     GLuint cur = g_tex[g_tex_idx];
     if (cur > 0 && !glIsTexture(cur)) {
         IDK_ERR("comp", "WARNING: tex[%d] (%u) is not a valid texture!\n", g_tex_idx, cur);
         g_tex[g_tex_idx] = 0;
         release_dmabuf_backing(g_tex_idx);
-        g_has_frame = false;
+        g_comp.has_frame = false;
     }
 
     if (vertex_array_object)
@@ -1188,30 +1018,17 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
 }
 
 int idk_compositor_egl_has_overlay(void) {
-    return g_has_frame;
+    return g_comp.has_frame ? 1 : 0;
 }
 
 void idk_compositor_egl_shutdown(void) {
-    /* SHM cache is function-scoped static in shm_to_texture - OS reclaims */
-    if (g_dmabuf_fd >= 0) {
-        close(g_dmabuf_fd);
-        g_dmabuf_fd = -1;
-    }
-
-    idk_tp_destroy(&g_tp);
-
-    /* Remove socket file */
-    if (g_sock_path[0]) {
-        unlink(g_sock_path);
-    }
-
-    /* GL cleanup skipped - OS reclaims on exit */
+    idk_compositor_shutdown();
     g_program = 0;
     g_tex[0] = g_tex[1] = 0;
     g_dmabuf_cache_id = 0;
     release_dmabuf_backing(0);
     release_dmabuf_backing(1);
-    g_has_frame = false;
+    g_comp.has_frame = false;
     IDK_LOG("comp", "Shut down\n");
 }
 

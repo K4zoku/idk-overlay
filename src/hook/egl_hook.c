@@ -13,6 +13,7 @@
 #include "hook/hook_plugin.h"
 #include "hook/wayland_input.h"
 #include "gl/gl_loader.h"
+#include "core/compositor.h"
 #include "core/compositor_egl.h"
 #include "core/log.h"
 
@@ -72,7 +73,7 @@ static int install_egl_hook(void) {
         return 0;
     }
 
-    if (idk_compositor_egl_init() != 0)
+    if (idk_compositor_init() != 0)
         IDK_LOG("egl", "compositor init queued (no GL context yet)\n");
 
     /* Step 1: Resolve eglSwapBuffers address from libEGL.so.

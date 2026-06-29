@@ -11,6 +11,7 @@
 #include "hook/syringe_hook.h"
 #include "hook/hook_util.h"
 #include "hook/hook_plugin.h"
+#include "core/compositor.h"
 #include "core/compositor_egl.h"
 #include "core/log.h"
 #include "gl/gl_loader.h"
@@ -68,7 +69,7 @@ static int install_glx_hook(void) {
         return 0;
     }
 
-    idk_compositor_egl_init();
+    idk_compositor_init();
 
     GlXSwapBuffersFn real_fn = resolve_real_glXSwapBuffers();
 
