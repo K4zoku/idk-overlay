@@ -111,6 +111,7 @@ public:
     uint32_t m_dmaExportFourcc = 0;
     uint32_t m_dmaExportStride = 0;
     uint64_t m_dmaExportModifier = 0;
+    uint16_t m_dmaBufId = 0;
 
     // Vulkan DMABUF export state
 #ifdef IDK_HAVE_VULKAN

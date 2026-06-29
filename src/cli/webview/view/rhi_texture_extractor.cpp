@@ -286,6 +286,8 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         m_view->m_dmaTexW = w;
         m_view->m_dmaTexH = h;
+        m_view->m_dmaBufId++;
+        if (m_view->m_dmaBufId == 0) m_view->m_dmaBufId = 1;
     }
 
     resolveFBOGL();
@@ -387,6 +389,7 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL()
         frame.stride  = m_view->m_dmaExportStride;
         frame.fourcc  = m_view->m_dmaExportFourcc;
         frame.modifier = m_view->m_dmaExportModifier;
+        frame.buf_id   = m_view->m_dmaBufId;
 
         /* Pass the original dmabuf fd (not a dup) so the SHM backend can
          * write its number into the shared page - the fd stays open as
