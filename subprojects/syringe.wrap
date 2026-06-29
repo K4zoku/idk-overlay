@@ -1,4 +1,4 @@
 [wrap-git]
 url = https://github.com/K4zoku/syringe.git
-branch = main
-revision = HEAD
+revision = 9034051c8776140d65ce1a1e6e151b2139da1374
+patch_directory = syringe

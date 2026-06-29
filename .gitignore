@@ -60,6 +60,7 @@ builddir/
 # External subprojects (wrap-git auto-cloned, e.g. syringe)
 subprojects/*
 !/subprojects/*.wrap
+!/subprojects/packagefiles/
 
 # debug log files
 *.log
