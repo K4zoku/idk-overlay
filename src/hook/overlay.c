@@ -624,6 +624,7 @@ static int idk_is_target_process(void) {
         "readlink", "dirname", "basename",
         "head", "tail", "cut", "grep", "sed",
         "true", "false",
+        "explorer.exe",
         NULL
     };
     for (int i = 0; blacklist[i]; i++) {
