@@ -42,6 +42,40 @@ extern "C" {
 
 #define IDK_IPC_SOCKNAME_MAX 108    /* AF_UNIX path max */
 
+/* Broker control-plane handshake
+ *
+ * Sent by the overlay (injected .so, Wine mount namespace) immediately
+ * after connecting to the broker's abstract socket "\0idk_broker_<uid>".
+ * The broker uses the info to exec idk-webview with the right env so
+ * the webview can connect directly to the overlay's transport/input
+ * sockets — no broker on the hot path.
+ *
+ * Socket names are stored WITHOUT a leading NUL. The sender (overlay)
+ * is responsible for prepending "\0" when binding; the consumer reads
+ * the names here and prepends "\0" at connect time. This keeps the
+ * struct a plain C string for logging/debugging.
+ */
+#define IDK_CP_ID_OVERLAY 1u
+
+#pragma pack(push, 1)
+typedef struct idk_cp_handshake {
+    uint32_t identity;          /* offset  0 - must be IDK_CP_ID_OVERLAY          */
+    char     comm[64];          /* offset  4 - game process name (NUL-term)       */
+    char     tp_socket[64];    /* offset 68 - abstract name, no leading '\0'      */
+    char     input_socket[64]; /* offset 132 - abstract name, no leading '\0'     */
+    uint8_t  tp_backend;       /* offset 196 - 0=socket, 1=shm                   */
+    uint8_t  _pad[7];          /* offset 197 - reserved                           */
+} idk_cp_handshake_t;          /* total 204 bytes                                  */
+#pragma pack(pop)
+
+#ifdef __cplusplus
+static_assert(sizeof(idk_cp_handshake_t) == 204,
+              "idk_cp_handshake_t must be 204 bytes");
+#else
+_Static_assert(sizeof(idk_cp_handshake_t) == 204,
+               "idk_cp_handshake_t must be 204 bytes");
+#endif
+
 /* Frame header (28 bytes, sent with fds via transport) */
 
 #define IDK_FRAME_FLAG_VISIBLE  0x01  /* bit0: overlay visible */
