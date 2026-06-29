@@ -589,25 +589,17 @@ int idk_compositor_egl_render(void) {
      * request-poll loop forever, never noticing the overlay is
      * visible again). */
     if (!g_overlay_visible) {
-        /* Drain pending frames, close any DMABUF fds to avoid leaks. */
         while (1) {
-            idk_frame_header_t hdr;
-            int fds[4], nfd = 0;
-            int rc = idk_tp_recv(&g_tp, &hdr, fds, &nfd);
+            int rc = idk_tp_drop_frame(&g_tp);
             if (rc <= 0) {
                 if (rc < 0) {
                     IDK_LOG("comp", "client disconnected while hidden, soft-disconnecting\n");
-                    /* Soft-disconnect: keep listen fd / SHM open so a
-                     * reconnecting webview can re-establish on the next
-                     * frame. Full idk_tp_destroy would close the listen
-                     * socket + unlink the SHM → permanent dead overlay. */
                     idk_tp_disconnect_client(&g_tp);
                     g_dmabuf_cache_id = 0;
                 }
                 break;
             }
-            for (int i = 0; i < nfd; i++) close(fds[i]);
-            IDK_LOG("comp", "hidden: drained frame (nfd=%d) without ACK/REQUEST\n", nfd);
+            IDK_LOG("comp", "hidden: drained frame\n");
         }
         g_was_hidden = true;
         return -1;

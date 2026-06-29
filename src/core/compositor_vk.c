@@ -1057,19 +1057,15 @@ int idk_vk_compositor_render(void) {
      * or REQUEST. The webview's request-poll loop stays parked. */
     if (!g_overlay_visible) {
         while (1) {
-            idk_frame_header_t hdr;
-            int fds[4], nfd = 0;
-            int rc = idk_tp_recv(&vk_tp, &hdr, fds, &nfd);
+            int rc = idk_tp_drop_frame(&vk_tp);
             if (rc <= 0) {
                 if (rc < 0) {
-                    /* Soft-disconnect: keep listen fd / SHM open for reconnect. */
                     idk_tp_disconnect_client(&vk_tp);
                     vk_dmabuf_cache_id = 0;
                 }
                 break;
             }
-            for (int i = 0; i < nfd; i++) close(fds[i]);
-            IDK_LOG("comp-vk", "hidden: drained frame (nfd=%d) without ACK/REQUEST\n", nfd);
+            IDK_LOG("comp-vk", "hidden: drained frame\n");
         }
         vk_was_hidden = 1;
         return -1;

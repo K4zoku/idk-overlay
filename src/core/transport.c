@@ -11,6 +11,7 @@ extern int  tp_socket_accept(idk_transport_t *tp);
 extern int  tp_socket_poll(idk_transport_t *tp);
 extern int  tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
                            int fds[4], int *nfd);
+extern int  tp_socket_drop_frame(idk_transport_t *tp);
 extern void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 extern int  tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
                            const int *fds, int nfd);
@@ -29,6 +30,7 @@ extern int  tp_shm_accept(idk_transport_t *tp);
 extern int  tp_shm_poll(idk_transport_t *tp);
 extern int  tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
                         int fds[4], int *nfd);
+extern int  tp_shm_drop_frame(idk_transport_t *tp);
 extern void tp_shm_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 extern int  tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
                         const int *fds, int nfd);
@@ -54,6 +56,7 @@ typedef struct {
     int  (*accept)(idk_transport_t *);
     int  (*poll)(idk_transport_t *);
     int  (*recv)(idk_transport_t *, idk_frame_header_t *, int[4], int *);
+    int  (*drop_frame)(idk_transport_t *);
     void (*send_ack)(idk_transport_t *, const idk_ack_msg_t *);
     int  (*send)(idk_transport_t *, const idk_frame_header_t *, const int *, int);
     int  (*wait_ack)(idk_transport_t *, idk_ack_msg_t *, int);
@@ -68,7 +71,7 @@ static const idk_tp_backend_t tp_backends[2] = {
         .init = tp_socket_init, .destroy = tp_socket_destroy,
         .disconnect_client = tp_socket_disconnect_client,
         .accept = tp_socket_accept, .poll = tp_socket_poll,
-        .recv = tp_socket_recv, .send_ack = tp_socket_send_ack,
+        .recv = tp_socket_recv, .drop_frame = tp_socket_drop_frame, .send_ack = tp_socket_send_ack,
         .send = tp_socket_send, .wait_ack = tp_socket_wait_ack,
         .send_request = tp_socket_send_request, .recv_request = tp_socket_recv_request,
         .send_input = tp_socket_send_input, .recv_input = tp_socket_recv_input,
@@ -77,7 +80,7 @@ static const idk_tp_backend_t tp_backends[2] = {
         .init = tp_shm_init, .destroy = tp_shm_destroy,
         .disconnect_client = tp_shm_disconnect_client,
         .accept = tp_shm_accept, .poll = tp_shm_poll,
-        .recv = tp_shm_recv, .send_ack = tp_shm_send_ack,
+        .recv = tp_shm_recv, .drop_frame = tp_shm_drop_frame, .send_ack = tp_shm_send_ack,
         .send = tp_shm_send, .wait_ack = tp_shm_wait_ack,
         .send_request = tp_shm_send_request, .recv_request = tp_shm_recv_request,
         .send_input = tp_shm_send_input, .recv_input = tp_shm_recv_input,
@@ -113,6 +116,10 @@ int idk_tp_poll(idk_transport_t *tp) {
 int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
                 int fds[4], int *nfd) {
     return tp_backends[tp->backend].recv(tp, hdr, fds, nfd);
+}
+
+int idk_tp_drop_frame(idk_transport_t *tp) {
+    return tp_backends[tp->backend].drop_frame(tp);
 }
 
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {

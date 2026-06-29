@@ -459,6 +459,21 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
     return 1;
 }
 
+int tp_shm_drop_frame(idk_transport_t *tp) {
+    void *ptr = TP_SH_SHM_PTR(tp->_rsv);
+    if (!ptr || !tp->ready) return -1;
+
+    if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1)
+        return -1;
+
+    if (atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE)) != SLOT_FRAME)
+        return 0;
+
+    atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
+    futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
+    return 1;
+}
+
 void tp_shm_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
     if (!ptr || !tp->ready || !ack) return;

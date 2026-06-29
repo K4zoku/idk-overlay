@@ -208,6 +208,15 @@ int tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
     return 1;
 }
 
+int tp_socket_drop_frame(idk_transport_t *tp) {
+    idk_frame_header_t hdr;
+    int fds[4], nfd = 0;
+    int rc = tp_socket_recv(tp, &hdr, fds, &nfd);
+    if (rc <= 0) return rc;
+    for (int i = 0; i < nfd; i++) close(fds[i]);
+    return 1;
+}
+
 void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
     if (tp->_client_fd < 0 || !ack) return;
 
