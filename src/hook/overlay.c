@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/eventfd.h>
 #include <stdarg.h>
 
 #include "hook/overlay.h"
@@ -43,6 +44,7 @@ static int g_x11_input_ok = 0;
 static int g_hooks_installed = 0;
 static int g_egl_hook_installed = 0;
 static pid_t g_webview_pid = -1;
+int g_input_eventfd = -1;
 
 /* Overlay visibility - controlled by hotkey, checked by compositor render.
  * _Atomic (not volatile) so cross-thread reads/writes are well-defined
@@ -248,6 +250,15 @@ static void fork_webview(void) {
 
     const char *comm = idk_process_name();
 
+    if (g_input_eventfd < 0) {
+        g_input_eventfd = eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK);
+        if (g_input_eventfd >= 0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d", g_input_eventfd);
+            setenv("IDK_INPUT_EVENTFD", buf, 1);
+        }
+    }
+
     g_webview_pid = fork();
     if (g_webview_pid < 0) {
         IDK_ERR("overlay", "fork() failed: %s\n", strerror(errno));
@@ -256,7 +267,10 @@ static void fork_webview(void) {
 
     if (g_webview_pid == 0) {
         prctl(PR_SET_PDEATHSIG, SIGTERM);
-        for (int i = 3; i < 1024; i++) close(i);
+        for (int i = 3; i < 1024; i++) {
+            if (i == g_input_eventfd) continue;
+            close(i);
+        }
 
         /* Strip libidk-overlay.so from LD_PRELOAD so the webview child
          * doesn't re-run the injected overlay constructor and crash.
@@ -475,6 +489,8 @@ void idk_overlay_shutdown(void) {
         g_webview_pid = -1;
         /* errno ECHILD là OK — monitor thread đã reap rồi */
     }
+
+    if (g_input_eventfd >= 0) { close(g_input_eventfd); g_input_eventfd = -1; }
 }
 
 int idk_overlay_try_install_wayland_input(void) {

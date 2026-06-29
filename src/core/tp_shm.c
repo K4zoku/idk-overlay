@@ -189,7 +189,12 @@ static int shm_init_consumer(idk_transport_t *tp, const char *name) {
     *shm_i32(ptr, SHM_O_PROD_PID) = 0;
     atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
     atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
-    *shm_i32(ptr, SHM_O_EVENTFD) = 0;
+
+    const char *efd_env = getenv("IDK_INPUT_EVENTFD");
+    int efd = efd_env ? atoi(efd_env) : 0;
+    if (efd < 0) efd = 0;
+    *shm_i32(ptr, SHM_O_EVENTFD) = efd;
+    TP_SH_EVENTFD(tp->_rsv) = efd;
 
     tp->_server_fd = shm_fd;
     tp->_client_fd = -1;
@@ -233,10 +238,8 @@ static int shm_init_producer(idk_transport_t *tp, const char *name) {
         return -1;
     }
 
-    int efd = (int)syscall(__NR_eventfd2, 0, EFD_SEMAPHORE | EFD_CLOEXEC | EFD_NONBLOCK);
-    if (efd < 0)
-        efd = 0;
-    *shm_i32(ptr, SHM_O_EVENTFD) = efd;
+    int efd = *shm_i32(ptr, SHM_O_EVENTFD);
+    if (efd < 0) efd = 0;
     TP_SH_EVENTFD(tp->_rsv) = efd;
 
     *shm_i32(ptr, SHM_O_PROD_PID) = (int32_t)getpid();
@@ -290,9 +293,6 @@ void tp_shm_destroy(idk_transport_t *tp) {
     const char *sn = TP_SH_SHM_NAME(tp->_rsv);
     if (sn[0]) memcpy(shm_name_save, sn, sizeof(shm_name_save) - 1);
 
-    int efd = TP_SH_EVENTFD(tp->_rsv);
-    if (efd > 0) { close(efd); TP_SH_EVENTFD(tp->_rsv) = 0; }
-
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
     if (ptr) {
         if (tp->role == IDK_TP_CONSUMER) {
@@ -315,9 +315,6 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
     void *ptr = TP_SH_SHM_PTR(tp->_rsv);
 
     if (tp->role == IDK_TP_CONSUMER && ptr) {
-        int efd = TP_SH_EVENTFD(tp->_rsv);
-        if (efd > 0) { close(efd); TP_SH_EVENTFD(tp->_rsv) = 0; }
-
         atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
         *shm_i32(ptr, SHM_O_PROD_PID) = 0;
         *shm_i32(ptr, SHM_O_DMABUF_NFD) = 0;
@@ -364,17 +361,6 @@ int tp_shm_accept(idk_transport_t *tp) {
         return -1;
     }
     tp->_client_fd = pidfd;
-
-    int efd_fd = *shm_i32(ptr, SHM_O_EVENTFD);
-    if (efd_fd > 0) {
-        int dup_efd = (int)syscall(__NR_pidfd_getfd, pidfd, efd_fd, 0);
-        if (dup_efd < 0) {
-            IDK_LOG("tp", "shm: pidfd_getfd(eventfd) failed: %s\n", strerror(errno));
-            TP_SH_EVENTFD(tp->_rsv) = 0;
-        } else {
-            TP_SH_EVENTFD(tp->_rsv) = dup_efd;
-        }
-    }
 
     atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 2);
     futex_wake(shm_atom(ptr, SHM_O_CONS_STATE));
