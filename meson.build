@@ -110,6 +110,22 @@ vulkan_layer_json = configure_file(
     },
 )
 
+# Install system-wide into implicit_layer.d so Vulkan loader discovers it
+# automatically. The enable_environment/disable_environment keys in the JSON
+# control activation — off by default, enabled via IDK_VK_LAYER=1.
+vulkan_layer_json_install = configure_file(
+    input: 'src/hook/idk_overlay.json.in',
+    output: 'idk_overlay_system.json',
+    configuration: {
+        'IDK_LAYER_LIB_PATH': get_option('prefix') / get_option('libdir') / 'libidk-overlay.so',
+    },
+)
+install_data(
+    vulkan_layer_json_install,
+    install_dir: get_option('datadir') / 'vulkan/implicit_layer.d',
+    rename: 'idk_overlay.json',
+)
+
 # ── CLI targets ────────────────────────────────────────────────────────
 if not meson.is_subproject()
     subdir('src/cli')
