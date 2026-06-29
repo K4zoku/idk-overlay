@@ -675,6 +675,8 @@ int idk_compositor_egl_render(void) {
                 processed = 1;
                 clock_gettime(CLOCK_MONOTONIC, &g_last_frame_ts);
             } else {
+                IDK_LOG("comp", "dmabuf cache miss: buf_id=%u cached=%u %ux%u fd=%d\n",
+                        hdr.buf_id, g_dmabuf_cache_id, hdr.width, hdr.height, dmabuf_fd);
                 if (!fn_eglGetCurrentDisplay) {
                     resolve_egl_functions();
                 }

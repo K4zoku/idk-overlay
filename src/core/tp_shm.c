@@ -369,17 +369,10 @@ int tp_shm_accept(idk_transport_t *tp) {
     int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
     if (prod_pid <= 0) return -1;
 
-    int pidfd = (int)syscall(__NR_pidfd_open, prod_pid, 0);
-    if (pidfd < 0) {
-        IDK_ERR("tp", "shm: pidfd_open(%d) failed: %s\n", prod_pid, strerror(errno));
-        return -1;
-    }
-    tp->_client_fd = pidfd;
-
     atomic_store(shm_atom(ptr, SHM_O_CONS_STATE), 2);
     futex_wake(shm_atom(ptr, SHM_O_CONS_STATE));
     tp->ready = true;
-    IDK_LOG("tp", "shm: consumer ready, producer pid=%d pidfd=%d\n", prod_pid, pidfd);
+    IDK_LOG("tp", "shm: consumer ready, producer pid=%d (pidfd deferred)\n", prod_pid);
     return 1;
 }
 
@@ -425,6 +418,16 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
             TP_SH_CACHED_FD(tp->_rsv) >= 0) {
             fds[i] = dup(TP_SH_CACHED_FD(tp->_rsv));
         } else {
+            if (tp->_client_fd < 0) {
+                int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
+                int pidfd = (int)syscall(__NR_pidfd_open, prod_pid, 0);
+                if (pidfd < 0) {
+                    IDK_ERR("tp", "shm: pidfd_open(%d) failed: %s\n", prod_pid, strerror(errno));
+                    *nfd = 0;
+                    return -1;
+                }
+                tp->_client_fd = pidfd;
+            }
             int stolen = (int)syscall(__NR_pidfd_getfd, tp->_client_fd,
                                       target_fd, 0);
             if (stolen < 0) {

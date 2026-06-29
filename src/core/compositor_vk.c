@@ -780,6 +780,8 @@ static int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride,
         vk_overlay_view = vk_dmabuf_view;
         /* Fall through to layout transition below. */
     } else {
+        IDK_LOG("comp-vk", "dmabuf cache miss: buf_id=%u cached=%u %ux%u fd=%d\n",
+                buf_id, vk_dmabuf_cache_id, w, h, fd);
         if (vk_dmabuf_view) { vkDestroyImageView(vk_dev, vk_dmabuf_view, NULL); vk_dmabuf_view = VK_NULL_HANDLE; }
         if (vk_dmabuf_img)  { vkDestroyImage(vk_dev, vk_dmabuf_img, NULL);  vk_dmabuf_img  = VK_NULL_HANDLE; }
         if (vk_dmabuf_img_mem) { vkFreeMemory(vk_dev, vk_dmabuf_img_mem, NULL); vk_dmabuf_img_mem = VK_NULL_HANDLE; }
