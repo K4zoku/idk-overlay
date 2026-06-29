@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -193,6 +194,19 @@ static void handle_session(int cfd) {
     fprintf(stderr, "idk-broker: session end (webview pid=%d)\n", (int)wv);
 }
 
+struct session_arg {
+    int cfd;
+};
+
+static void *session_thread(void *arg) {
+    struct session_arg *sa = (struct session_arg *)arg;
+    int cfd = sa->cfd;
+    free(sa);
+    handle_session(cfd);
+    close(cfd);
+    return NULL;
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     char name[64];
@@ -212,8 +226,16 @@ int main(void) {
             perror("accept");
             continue;
         }
-        handle_session(cfd);
-        close(cfd);
+        struct session_arg *sa = malloc(sizeof(*sa));
+        if (!sa) { close(cfd); continue; }
+        sa->cfd = cfd;
+        pthread_t t;
+        if (pthread_create(&t, NULL, session_thread, sa) != 0) {
+            free(sa);
+            close(cfd);
+            continue;
+        }
+        pthread_detach(t);
     }
     return 0;
 }
