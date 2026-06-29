@@ -163,11 +163,6 @@ static void *hook_install_thread(void *arg) {
                 done[p] = 1;
                 continue;
             }
-            if (strcmp(plug->name, "glx") == 0 && g_egl_hook_installed) {
-                IDK_LOG("overlay", "glx: skipped (egl already hooked)\n");
-                done[p] = 1;
-                continue;
-            }
             if (strcmp(plug->name, "egl") == 0 && g_hooks_installed &&
                 !g_egl_hook_installed) {
                 done[p] = 1;
@@ -202,17 +197,19 @@ static void *hook_install_thread(void *arg) {
     return NULL;
 }
 
+static void webview_disable(void) {
+    g_webview_dead = 1;
+    g_overlay_visible = 0;
+    g_captured = 0;
+}
+
 /* Locate the webview binary. Priority:
  *   1. IDK_WEBVIEW_BIN env var (explicit path)
  *   2. PATH search for "idk-webview"
  * Returns 0 and fills buf on success, -1 on failure. */
 static int find_webview_bin(char *buf, size_t bufsz) {
     const char *env = getenv("IDK_WEBVIEW_BIN");
-    if (env && env[0]) {
-        snprintf(buf, bufsz, "%s", env);
-        return 0;
-    }
-
+    if (env && env[0]) { snprintf(buf, bufsz, "%s", env); return 0; }
     const char *path = getenv("PATH");
     if (!path) path = "/usr/local/bin:/usr/bin:/bin";
     const char *p = path;
@@ -229,12 +226,8 @@ static int find_webview_bin(char *buf, size_t bufsz) {
     return -1;
 }
 
-static void webview_disable(void) {
-    g_webview_dead = 1;
-    g_overlay_visible = 0;
-    g_captured = 0;
-}
-
+/* Monitor thread — waits for the webview process to exit via waitpid.
+ * Distinguishes user-close from crash using exit code + heuristic. */
 static void *webview_monitor(void *arg) {
     pid_t pid = (pid_t)(intptr_t)arg;
     int status;
@@ -244,10 +237,39 @@ static void *webview_monitor(void *arg) {
     if (g_webview_dead)
         return NULL;
 
-    if (WIFEXITED(status) ||
-        (WIFSIGNALED(status) &&
-         (WTERMSIG(status) == SIGTERM || WTERMSIG(status) == SIGKILL))) {
-        IDK_LOG("overlay", "webview (pid=%d) closed by user - overlay disabled\n", pid);
+    g_webview_pid = -1;
+
+    IDK_LOG("overlay", "webview exit: pid=%d status=0x%x\n", (int)pid, status);
+    if (WIFEXITED(status))
+        IDK_LOG("overlay", "  exit code=%d\n", WEXITSTATUS(status));
+    if (WIFSIGNALED(status))
+        IDK_LOG("overlay", "  signal=%d\n", WTERMSIG(status));
+
+    int user_closed = 0;
+    if (WIFEXITED(status)) {
+        if (WEXITSTATUS(status) == 127) {
+            /* exec failed — treat as crash, will retry */
+            IDK_LOG("overlay", "webview exec failed (exit=127)\n");
+        } else if (WEXITSTATUS(status) == 0) {
+            user_closed = 1;
+        } else {
+            time_t elapsed = time(NULL) - g_webview_last_fork_time;
+            if (elapsed >= 2)
+                user_closed = 1;
+            else
+                IDK_LOG("overlay", "webview exited too fast (exit=%d, %lds)\n",
+                        WEXITSTATUS(status), (long)elapsed);
+        }
+    } else if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        if (sig == SIGTERM || sig == SIGKILL)
+            user_closed = 1;
+        else
+            IDK_LOG("overlay", "webview killed by signal %d\n", sig);
+    }
+
+    if (user_closed) {
+        IDK_LOG("overlay", "webview (pid=%d) closed by user - overlay disabled\n", (int)pid);
         webview_disable();
         return NULL;
     }
@@ -257,7 +279,7 @@ static void *webview_monitor(void *arg) {
         g_webview_crash_count = 0;
 
     g_webview_crash_count++;
-    g_webview_pid = -1;
+    g_webview_last_fork_time = now;
 
     if (g_webview_crash_count > 3) {
         IDK_ERR("overlay", "webview crashed %d times - giving up, disabling overlay\n",
@@ -271,18 +293,15 @@ static void *webview_monitor(void *arg) {
     return NULL;
 }
 
-/* Fork+exec the webview process as a child of the game.
- * The child inherits IDK_SOCKET, IDK_TP_BACKEND (default "shm"), and
- * any IDK_* env vars. Game name is passed via --match so the webview
- * can select the right config section. */
+/* Fork+exec the webview process. Uses syscall(SYS_execve, ...) to
+ * bypass glibc wrappers. If exec fails in a Wine-isolated environment,
+ * the child exits with code 127 and the monitor will refork. */
 static void fork_webview(void) {
     char bin[PATH_MAX];
     if (find_webview_bin(bin, sizeof(bin)) != 0) {
         IDK_LOG("overlay", "webview binary not found (set IDK_WEBVIEW_BIN or install idk-webview in PATH)\n");
         return;
     }
-
-    const char *comm = idk_process_name();
 
     if (g_input_eventfd < 0) {
         g_input_eventfd = eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK);
@@ -301,14 +320,13 @@ static void fork_webview(void) {
     }
 
     if (g_webview_pid == 0) {
+        const char *comm = idk_process_name();
+
         for (int i = 3; i < 1024; i++) {
             if (i == g_input_eventfd) continue;
             close(i);
         }
 
-        /* Strip libidk-overlay.so from LD_PRELOAD so the webview child
-         * doesn't re-run the injected overlay constructor and crash.
-         * Direct environ manipulation avoids async-signal-unsafe setenv. */
         extern char **environ;
         for (int ei = 0; environ[ei]; ei++) {
             if (strncmp(environ[ei], "LD_PRELOAD=", 11) == 0) {
@@ -336,30 +354,18 @@ static void fork_webview(void) {
             }
         }
 
-        IDK_LOG("overlay", "forked webview child, exec %s (comm=%s socket=%s backend=%s)\n",
-                bin, comm, g_socket_path, getenv("IDK_TP_BACKEND") ?: "socket");
-
-        char *argv[8];
-        int ai = 0;
-        argv[ai++] = bin;
-        argv[ai++] = "--socket";
-        argv[ai++] = g_socket_path;
-        if (comm[0]) {
-            argv[ai++] = "--match";
-            argv[ai++] = (char *)comm;
-        }
-        argv[ai] = NULL;
-
-        execv(bin, argv);
-        IDK_ERR("overlay", "execv(%s) failed: %s\n", bin, strerror(errno));
+        char *argv[] = {bin, "--socket", g_socket_path, "--match", (char *)comm, NULL};
+        IDK_LOG("overlay", "forked webview child, exec %s (comm=%s socket=%s)\n",
+                bin, comm[0] ? comm : "", g_socket_path);
+        syscall(SYS_execve, bin, argv, environ);
         _exit(127);
     }
 
     IDK_LOG("overlay", "webview forked (pid=%d, bin=%s)\n", (int)g_webview_pid, bin);
 
-    pthread_t mt;
-    if (pthread_create(&mt, NULL, webview_monitor, (void *)(intptr_t)g_webview_pid) == 0)
-        pthread_detach(mt);
+    pthread_t t;
+    if (pthread_create(&t, NULL, webview_monitor, (void *)(intptr_t)g_webview_pid) == 0)
+        pthread_detach(t);
 }
 
 static void get_config_path(char *buf, size_t bufsz) {
@@ -516,12 +522,11 @@ void idk_overlay_shutdown(void) {
         kill(g_webview_pid, SIGTERM);
         int status;
         if (waitpid(g_webview_pid, &status, WNOHANG) == 0) {
-            usleep(100000);  /* 100ms */
+            usleep(100000);
             kill(g_webview_pid, SIGKILL);
             waitpid(g_webview_pid, &status, 0);
         }
         g_webview_pid = -1;
-        /* errno ECHILD là OK — monitor thread đã reap rồi */
     }
 
     if (g_input_eventfd >= 0) { close(g_input_eventfd); g_input_eventfd = -1; }

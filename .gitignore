@@ -67,3 +67,6 @@ subprojects/*
 # PKGBUILD
 dist/*
 !dist/PKGBUILD
+
+# strace
+strace*
