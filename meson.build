@@ -23,6 +23,12 @@ vk_dep = cc.find_library('vulkan', required: false)
 syringe_proj = subproject('syringe', default_options: ['default_library=static'])
 syringe_dep = syringe_proj.get_variable('libsyringe_dep')
 
+# Strip .git from the syringe subproject so editors don't show nested-repo
+# status for patch-modified files.
+run_command('rm', '-rf',
+    meson.project_source_root() / 'subprojects/syringe/.git',
+    check: false)
+
 overlay_c_flags = [
     '-D_GNU_SOURCE',
     '-Wall',
