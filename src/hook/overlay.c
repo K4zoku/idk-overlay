@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #include <sys/eventfd.h>
 #include <stdarg.h>
+#include <poll.h>
 #include <time.h>
 
 #include "hook/overlay.h"
@@ -46,6 +47,8 @@ static int g_hooks_installed = 0;
 static int g_egl_hook_installed = 0;
 static pid_t g_webview_pid = -1;
 int g_input_eventfd = -1;
+static int g_use_broker = 0;
+static int g_broker_fd = -1;
 
 extern _Atomic int g_captured;
 
@@ -85,6 +88,131 @@ static int plugin_lib_loaded(const idk_hook_plugin_t *p) {
 }
 
 static void fork_webview(void);
+static void webview_disable(void);
+static int  connect_via_broker(void);
+static bool detect_wine(void);
+
+/* Cached result of detect_wine() — evaluated once during overlay init.
+ * /proc/self/maps scanning is the costliest check, do it sparingly. */
+static int g_wine_detected = -1;
+
+/* Abstract-namespace socket name of this overlay's broker control
+ * channel. Builder kept here so webview exec env (set by broker) and
+ * the overlay-side connect share the exact same string. */
+static void make_broker_name(char *buf, size_t bufsz) {
+    buf[0] = '\0';
+    snprintf(buf + 1, bufsz - 1, "idk_broker_%d", (int)getuid());
+}
+
+static socklen_t abstract_addrlen(const char *name) {
+    return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + strlen(name + 1));
+}
+
+static bool detect_wine(void) {
+    if (g_wine_detected >= 0) return g_wine_detected == 1;
+
+    const char *name = idk_process_name();
+    size_t len = name ? strlen(name) : 0;
+    if (len > 4 && strcasecmp(name + len - 4, ".exe") == 0) {
+        g_wine_detected = 1;
+        return true;
+    }
+
+    /* /proc/self/maps: a single pass looking for Wine's loader or its
+     * runtime libs. /usr/lib/wine is the distro install path; libwine/
+     * ntdll cover the in-game loaded modules. Cache the result. */
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) { g_wine_detected = 0; return false; }
+    char line[1024];
+    int found = 0;
+    while (!found && fgets(line, sizeof(line), f)) {
+        if (strstr(line, "/libwine") || strstr(line, "/ntdll") ||
+            strstr(line, "/usr/lib/wine") || strstr(line, "/usr/lib64/wine")) {
+            found = 1;
+        }
+    }
+    fclose(f);
+    g_wine_detected = found ? 1 : 0;
+    return found == 1;
+}
+
+/* Phase 2 broker path (Mode 2): connect to the host-namespace broker,
+ * send handshake describing the transport/input sockets the webview
+ * should connect to, then wait for an ack. Returns 0 on success and
+ * sets g_use_broker so the rest of the overlay skips fork_webview and
+ * the compositor uses abstract sockets via IDK_TP_ABSTRACT env. */
+static int connect_via_broker(void) {
+    int cfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (cfd < 0) {
+        IDK_ERR("overlay", "broker: socket() failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    char bname[64];
+    make_broker_name(bname, sizeof(bname));
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    size_t blen = 1 + strlen(bname + 1);
+    memcpy(addr.sun_path, bname, blen);
+    if (connect(cfd, (struct sockaddr *)&addr, abstract_addrlen(bname)) < 0) {
+        IDK_LOG("overlay", "broker: connect \\0%s failed: %s\n",
+                bname + 1, strerror(errno));
+        close(cfd);
+        return -1;
+    }
+
+    char tp_plain[64];   /* no leading NUL — stored in handshake */
+    char in_plain[64];
+    snprintf(tp_plain, sizeof(tp_plain), "idk_tp_%d", (int)getpid());
+    snprintf(in_plain, sizeof(in_plain), "idk_input_%d", (int)getpid());
+    /* Mirror into the local env so the compositor/wayland input pick
+     * the matching abstract names up when they call idk_comp_get_path /
+     * init_input_socket. */
+    setenv("IDK_TP_ABSTRACT",     tp_plain, 1);
+    setenv("IDK_INPUT_ABSTRACT",  in_plain, 1);
+
+    idk_cp_handshake_t hs;
+    memset(&hs, 0, sizeof(hs));
+    hs.identity = IDK_CP_ID_OVERLAY;
+    hs.tp_backend = 0; /* socket backend forced in broker mode */
+    const char *comm = idk_process_name();
+    if (comm) snprintf(hs.comm, sizeof(hs.comm), "%s", comm);
+    snprintf(hs.tp_socket,    sizeof(hs.tp_socket),    "%s", tp_plain);
+    snprintf(hs.input_socket, sizeof(hs.input_socket), "%s", in_plain);
+
+    size_t total = 0;
+    while (total < sizeof(hs)) {
+        ssize_t n = write(cfd, (const char *)&hs + total, sizeof(hs) - total);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            IDK_ERR("overlay", "broker: handshake write failed: %s\n", strerror(errno));
+            close(cfd);
+            return -1;
+        }
+        total += (size_t)n;
+    }
+
+    struct pollfd pfd = { .fd = cfd, .events = POLLIN };
+    if (poll(&pfd, 1, 5000) <= 0) {
+        IDK_ERR("overlay", "broker: ack timeout\n");
+        close(cfd);
+        return -1;
+    }
+    uint8_t ack = 0xff;
+    ssize_t r = read(cfd, &ack, 1);
+    if (r != 1 || ack != 0x00) {
+        IDK_ERR("overlay", "broker: ack failed (r=%zd ack=0x%02x)\n", r, ack);
+        close(cfd);
+        return -1;
+    }
+
+    /* Keep cfd open — its EOF is the signal that the broker (and its
+     * webview child) is gone. Future monitor thread could read it. */
+    fcntl(cfd, F_SETFD, FD_CLOEXEC);
+    g_broker_fd = cfd; /* leak intentionally */
+    IDK_LOG("overlay", "broker: connected (comm=%s tp=%s input=%s)\n",
+            hs.comm, hs.tp_socket, hs.input_socket);
+    return 0;
+}
 
 static void *hook_install_thread(void *arg) {
     (void)arg;
@@ -118,8 +246,25 @@ static void *hook_install_thread(void *arg) {
 
     IDK_LOG("overlay", "graphics library detected — initializing overlay\n");
 
-    /* ── Phase 2: Fork webview + install input hooks ─────────────── */
-    fork_webview();
+    /* ── Phase 2: connect broker or fork webview ────────────────────── */
+    bool want_broker = detect_wine();
+    const char *broker_env = getenv("IDK_BROKER");
+    bool broker_forced = broker_env && broker_env[0];
+    if (broker_forced) want_broker = true;
+
+    if (want_broker && connect_via_broker() == 0) {
+        g_use_broker = 1;
+        IDK_LOG("overlay", "broker mode active — fork_webview skipped\n");
+    } else if (want_broker && broker_forced) {
+        IDK_ERR("overlay", "IDK_BROKER forced but broker unreachable — overlay disabled\n");
+        webview_disable();
+        close(g_broker_fd); g_broker_fd = -1;
+        return NULL;
+    } else {
+        if (want_broker)
+            IDK_LOG("overlay", "wine detected, broker unavailable — fallback fork_webview\n");
+        fork_webview();
+    }
 
     for (int i = 0; i < 150 && !g_x11_input_tried; i++) {
         void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
