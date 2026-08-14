@@ -45,6 +45,9 @@ void View::Stop() {
 
 void View::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
   browser_ = browser;
+  /* Windowless browsers start hidden — show the view so the page's rAF/
+   * CSS animations are not throttled to 1fps. */
+  browser_->GetHost()->WasHidden(false);
   LoadUrl();
   browser_->GetHost()->SendExternalBeginFrame(); /* first render */
   IDK_LOG("webview-cef", "browser created (%dx%d)\n", render_w_, render_h_);
@@ -146,6 +149,8 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
       pending_ = true;
       frame_sent_ = true;
       send_time_ms_ = now_ms();
+      IDK_LOG("webview-cef", "dmabuf sent: %dx%d stride=%u mod=0x%llx t=%d\n", w, h, stride,
+              (unsigned long long)modifier, send_time_ms_);
     }
     return;
   }
@@ -247,6 +252,7 @@ void View::SendShmPixels(const uint8_t *px, int w, int h) {
     pending_ = true;
     frame_sent_ = true;
     send_time_ms_ = now_ms();
+    IDK_LOG("webview-cef", "shm sent: %dx%d t=%d\n", w, h, send_time_ms_);
   }
   /* idk_tp_send closed fd on success; on failure it did too (io.c). */
 }
@@ -315,6 +321,7 @@ void View::PollSocket() {
   if (pending_) {
     idk_ack_msg_t ack;
     if (idk_producer_wait_ack(&ack, 0) == 0) {
+      IDK_LOG("webview-cef", "ack t=%d ack=%d w=%d h=%d\n", now_ms(), ack.ack, ack.w, ack.h);
       ProcessAck(ack);
     } else if ((now_ms() - send_time_ms_) > 100) {
       /* Lost ACK (compositor busy/restarted) — unlock like the Qt backend. */
@@ -330,6 +337,7 @@ void View::PollSocket() {
         quit_.store(true);
         return;
       }
+      IDK_LOG("webview-cef", "request t=%d\n", now_ms());
       /* Game asks for the next frame → render exactly one (CEF renders
        * only on external begin frames; see OnAcceleratedPaint). */
       if (browser_)

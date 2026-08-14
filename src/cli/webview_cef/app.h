@@ -12,6 +12,11 @@ public:
     cl->AppendSwitch("no-sandbox");
     cl->AppendSwitch("disable-gpu-sandbox");
     cl->AppendSwitch("disable-crash-reporter");
+    /* OSR pages must keep rendering/animating even if Chromium considers
+     * them backgrounded — otherwise rAF/CSS animations throttle to 1fps. */
+    cl->AppendSwitch("disable-renderer-backgrounding");
+    cl->AppendSwitch("disable-background-timer-throttling");
+    cl->AppendSwitch("disable-backgrounding-occluded-windows");
   }
 
   IMPLEMENT_REFCOUNTING(App);
