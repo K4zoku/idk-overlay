@@ -42,8 +42,7 @@ void idk_overlay_shutdown(void);
  * Idempotent and safe to call from any thread - internally guarded by
  * a once-flag. The hook only installs if libwayland-client.so.0 is
  * loaded in the process. Designed to be called from the EGL/GLX/Vulkan
- * swap hook on first swap (after the graphics hook is confirmed working
- * and libwayland-client is guaranteed loaded).
+ * swap hook on first swap.
  *
  * @return 0 on success or already-installed, -1 if wayland not available.
  */
@@ -52,7 +51,7 @@ int idk_overlay_try_install_wayland_input(void);
 /**
  * Try to install the X11 input hook (idk_x11_input_init).
  * Idempotent. The hook only installs if libX11.so.6 is loaded.
- * Preferred over Wayland for XWayland games to avoid double-toggle.
+ * Preferred over Wayland for XWayland games.
  *
  * @return 0 on success or already-installed, -1 if X11 not available.
  */

@@ -72,6 +72,9 @@ subdir('src/shaders')
 subdir('src/core')
 idk_core_src = core_sources
 
+# Hook layer source groups (preload / vklayer / gl hooks / input backends).
+subdir('src/hook')
+
 subdir('src/lib')
 
 # ── libidk-overlay.so - LD_PRELOAD/inject path (EGL + GLX hooks) ──────
@@ -79,20 +82,7 @@ subdir('src/lib')
 # this library is only ever loaded deliberately (LD_PRELOAD, idk-inject).
 idk_overlay_so = library(
     'idk-overlay',
-    idk_core_src + [
-        'src/hook/overlay.c',
-        'src/hook/dlsym_shim.c',
-        'src/hook/egl_hook.c',
-        'src/hook/glx_hook.c',
-        'src/hook/wayland/wayland_input.c',
-        'src/hook/wayland/wayland_ptr.c',
-        'src/hook/wayland/wayland_kb.c',
-        'src/hook/wayland/wayland_sidecar.c',
-        'src/hook/wayland/wayland_socket.c',
-        'src/hook/wayland/wayland_scan.c',
-        'src/hook/x11/x11_input.c',
-        'src/hook/x11/x11_kb.c',
-        'src/hook/x11/x11_ptr.c',
+    idk_core_src + hook_overlay_sources + [
         render_gl_sources,
         'src/ipc/ipc.c',
         glsl_o_files,
@@ -115,9 +105,7 @@ if vk_layer_header_found
 endif
 idk_vklayer_so = library(
     'idk-vklayer',
-    idk_core_src + [
-        'src/hook/vulkan_layer.c',
-        'src/hook/layer_main.c',
+    idk_core_src + hook_vklayer_sources + [
         render_vk_sources,
     ],
     c_args: vklayer_c_args,

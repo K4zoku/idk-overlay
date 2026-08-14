@@ -16,8 +16,8 @@
  *
  * The input IPC socket is $XDG_RUNTIME_DIR/idk-overlay-<pid>-input
  * (or /tmp/idk-overlay-<pid>-input if XDG_RUNTIME_DIR is unset) -
- * separate from the frame socket to avoid multiplexing. The webview
- * connects to it and reads idk_ipc_input_event_t messages.
+ * separate from the frame socket. The webview connects to it and
+ * reads idk_ipc_input_event_t messages.
  */
 #ifndef IDK_WAYLAND_INPUT_H
 #define IDK_WAYLAND_INPUT_H
@@ -34,7 +34,7 @@ extern "C" {
  *
  * Should be called after libwayland-client.so.0 is loaded by the game.
  * In practice this means: from the EGL/GLX/Vulkan swap hook on first
- * call (the existing pattern in egl_hook.c / glx_hook.c).
+ * call.
  *
  * Also opens the input IPC socket as a server:
  * $XDG_RUNTIME_DIR/idk-overlay-<pid>-input (or /tmp/idk-overlay-<pid>-input
@@ -58,9 +58,7 @@ void idk_wayland_input_shutdown(void);
 int idk_wayland_input_is_captured(void);
 
 /**
- * Programmatically set the capture state. Useful for tests or for
- * triggering capture from elsewhere in the overlay (e.g. clicking a
- * "lock input" button in the overlay UI itself).
+ * Programmatically set the capture state.
  */
 void idk_wayland_input_set_capture(int enable);
 
@@ -68,11 +66,6 @@ void idk_wayland_input_set_capture(int enable);
  * Dispatch pending sidecar wayland input events. Should be called from
  * the game's main thread (e.g. from the EGL swap hook) to process
  * keyboard events on the sidecar's private event queue.
- *
- * This is the MangoHud-style fallback for hotkey detection: even if
- * listener substitution misses (game registered listeners before our
- * hook installed), the sidecar still receives duplicate key events
- * and can detect the hotkey.
  */
 void idk_wayland_input_sidecar_dispatch(void);
 

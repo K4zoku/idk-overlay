@@ -1,0 +1,15 @@
+wayland_sources = files(
+    'resolve.c',
+    'state.c',
+    'kb.c',
+    'hotkey.c',
+    'scan.c',
+    'queue.c',
+    'ptr.c',
+    'socket.c',
+    'sidecar/init.c',
+    'sidecar/kb.c',
+    'sidecar/cursor.c',
+    'sidecar/hooks.c',
+    'sidecar/marshal.c',
+)

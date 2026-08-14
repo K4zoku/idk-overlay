@@ -13,8 +13,8 @@
  * only toggles capture, never reaches either side.
  *
  * Socket path and wire protocol are identical to the Wayland input hook
- * (wayland_input.h) - the webview side needs no changes. Wayland and X11
- * hooks can coexist; whichever library is loaded installs its hook.
+ * (wayland_input.h). Wayland and X11 hooks can coexist; whichever
+ * library is loaded installs its hook.
  */
 #ifndef IDK_X11_INPUT_H
 #define IDK_X11_INPUT_H

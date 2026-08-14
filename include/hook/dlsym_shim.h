@@ -7,8 +7,7 @@ void *real_dlopen(const char *filename, int flags);
 char *real_dlerror(void);
 
 /* Resolve real libc pointers eagerly. MUST be called from the overlay
- * constructor before wine starts loading DLLs (lazy resolution from a
- * hook deadlocks wine's loader). */
+ * constructor before wine starts loading DLLs. */
 void idk_shim_init(void);
 
 #endif /* IDK_DLSYM_SHIM_H */
