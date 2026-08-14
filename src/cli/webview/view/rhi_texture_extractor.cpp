@@ -286,11 +286,12 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL() {
     return false;
   }
 
-  /* Recreate copy textures on size/ownership change. Two GPU blits:
-   *   m_dmaTex (tiled, renderable) ← Qt texture
-   *   m_dmaTexLinear (LINEAR dmabuf) ← m_dmaTex
-   * so the exported fd is LINEAR — the overlay's GL_EXT_memory_object
-   * import has no modifier param. No CPU/RAM copy anywhere. */
+  /* Recreate copy textures on size/ownership change. Single GPU blit:
+   *   staging dmabuf (tiled, gbm RENDERING) ← Qt texture
+   * so the exported fd matches the tiled layout the overlay's
+   * GL_EXT_memory_object import creates (i915 doesn't convert layout).
+   * m_dmaTex is only created as a fallback when gbm fails. No CPU/RAM
+   * copy anywhere. */
   if (m_view->m_dmaTex == 0 || m_view->m_dmaTexW != w || m_view->m_dmaTexH != h) {
     if (m_view->m_dmaEglImgLinear != EGL_NO_IMAGE_KHR) {
       eglDestroyImage(exportDpy, m_view->m_dmaEglImgLinear);
@@ -391,15 +392,17 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL() {
         ::close(linearFd);
     }
 
-    /* First-stage copy texture: tiled, renderable, blit target for Qt.
-     * Fallback export (tiled) uses this when no linear buffer exists. */
-    glGenTextures(1, &m_view->m_dmaTex);
-    glBindTexture(GL_TEXTURE_2D, m_view->m_dmaTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    /* Fallback copy texture (tiled, export via eglExportDMABUFImageMESA)
+     * — only used when the gbm staging path failed above. */
+    if (m_view->m_dmaTexLinear == 0) {
+      glGenTextures(1, &m_view->m_dmaTex);
+      glBindTexture(GL_TEXTURE_2D, m_view->m_dmaTex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
     m_view->m_dmaTexW = w;
     m_view->m_dmaTexH = h;
     m_view->m_dmaBufId++;
@@ -427,45 +430,12 @@ bool RhiTextureExtractor::tryExportDMABufOpenGL() {
   ((PFN_glGenFramebuffers)s_fn_glGenFramebuffers)(1, &drawFbo);
   ((PFN_glBindFramebuffer)s_fn_glBindFramebuffer)(0x8CA8, readFbo);
   ((PFN_glFramebufferTexture2D)s_fn_glFramebufferTexture2D)(0x8CA8, 0x8CE0, 0x0DE1, texId, 0);
-  /* Stage 1: Qt texture → tiled copy texture (GPU). */
+  /* Single blit: Qt texture → staging dmabuf texture (GPU). Fallback:
+   * Qt texture → tiled copy texture (exported via eglExportDMABUF). */
   ((PFN_glBindFramebuffer)s_fn_glBindFramebuffer)(0x8CA9, drawFbo);
-  ((PFN_glFramebufferTexture2D)s_fn_glFramebufferTexture2D)(0x8CA9, 0x8CE0, 0x0DE1, m_view->m_dmaTex, 0);
+  ((PFN_glFramebufferTexture2D)s_fn_glFramebufferTexture2D)(
+      0x8CA9, 0x8CE0, 0x0DE1, m_view->m_dmaTexLinear != 0 ? m_view->m_dmaTexLinear : m_view->m_dmaTex, 0);
   ((PFN_glBlitFramebuffer)s_fn_glBlitFramebuffer)(0, 0, w, h, 0, 0, w, h, 0x4000, 0x2600);
-  /* Stage 2: tiled copy → linear dmabuf texture (GPU). */
-  if (m_view->m_dmaTexLinear != 0) {
-    ((PFN_glFramebufferTexture2D)s_fn_glFramebufferTexture2D)(0x8CA9, 0x8CE0, 0x0DE1, m_view->m_dmaTexLinear, 0);
-    ((PFN_glBlitFramebuffer)s_fn_glBlitFramebuffer)(0, 0, w, h, 0, 0, w, h, 0x4000, 0x2600);
-    typedef void (*PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
-    static unsigned char *s_px = nullptr;
-    if (!s_px)
-      s_px = (unsigned char *)malloc(16);
-    memset(s_px, 0, 16);
-    ((PFN_glReadPixels)s_fn_glReadPixels)(0, 0, 2, 2, 0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, s_px);
-    static int s_readback_count = 0;
-    if (s_readback_count++ % 30 == 0) {
-      /* Read the actual dma-buf, not the GL texture (GL may hold the
-       * data internally while the buffer stays empty). */
-      size_t bufsz = (size_t)m_view->m_dmaExportStride * h;
-      void *map = mmap(NULL, bufsz, PROT_READ, MAP_SHARED, m_view->m_dmaExportFd, 0);
-      if (map != MAP_FAILED) {
-        const unsigned char *b = (const unsigned char *)map;
-        IDK_LOG(
-            "webview-qt",
-            "linear2 buf: off0=%02x%02x%02x%02x off4=%02x%02x%02x%02x off8=%02x%02x%02x%02x off12=%02x%02x%02x%02x\n",
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-        /* row 1 (stride offset) and row 2 */
-        uint32_t st = m_view->m_dmaExportStride;
-        IDK_LOG("webview-qt",
-                "linear2 buf rows: r1=%02x%02x%02x%02x r2=%02x%02x%02x%02x r3=%02x%02x%02x%02x r4=%02x%02x%02x%02x\n",
-                b[st], b[st + 1], b[st + 2], b[st + 3], b[2 * st], b[2 * st + 1], b[2 * st + 2], b[2 * st + 3],
-                b[3 * st], b[3 * st + 1], b[3 * st + 2], b[3 * st + 3], b[4 * st], b[4 * st + 1], b[4 * st + 2],
-                b[4 * st + 3]);
-        munmap(map, bufsz);
-      } else {
-        IDK_LOG("webview-qt", "linear2 mmap fail\n");
-      }
-    }
-  }
   ((PFN_glBindFramebuffer)s_fn_glBindFramebuffer)(0x8D40, 0);
   ((PFN_glDeleteFramebuffers)s_fn_glDeleteFramebuffers)(1, &readFbo);
   ((PFN_glDeleteFramebuffers)s_fn_glDeleteFramebuffers)(1, &drawFbo);
