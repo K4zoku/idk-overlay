@@ -46,6 +46,7 @@ void View::Stop() {
 void View::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
   browser_ = browser;
   LoadUrl();
+  browser_->GetHost()->SendExternalBeginFrame(); /* first render */
   IDK_LOG("webview-cef", "browser created (%dx%d)\n", render_w_, render_h_);
 }
 
@@ -95,7 +96,7 @@ void View::OnPaint(CefRefPtr<CefBrowser>, PaintElementType type, const RectList 
   /* Software OSR (shared_texture off / GPU failure): pixels → SHM. */
   if (type != PET_VIEW || !buffer)
     return;
-  if (!connected_ || !visible_ || pending_ || !want_frame_)
+  if (!connected_ || !visible_ || pending_)
     return;
   if (width <= 0 || height <= 0)
     return;
@@ -106,7 +107,7 @@ void View::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType type, cons
                               const CefAcceleratedPaintInfo &info) {
   if (type != PET_VIEW)
     return; /* popups not composited (v1) */
-  if (!connected_ || !visible_ || pending_ || !want_frame_)
+  if (!connected_ || !visible_ || pending_)
     return;
   if (use_dmabuf_ && !dmabuf_failed_)
     SendFrameDmaBuf(info);
@@ -143,7 +144,7 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
     hdr.buf_id = buf_id;
     if (idk_producer_send_dma_buf(&fd, &hdr) == 0) {
       pending_ = true;
-      want_frame_ = false;
+      frame_sent_ = true;
       send_time_ms_ = now_ms();
     }
     return;
@@ -183,7 +184,7 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
 
   if (idk_producer_send_dma_buf(fds, &hdr) == 0) {
     pending_ = true;
-    want_frame_ = false;
+    frame_sent_ = true;
     send_time_ms_ = now_ms();
   }
 }
@@ -244,20 +245,13 @@ void View::SendShmPixels(const uint8_t *px, int w, int h) {
 
   if (idk_producer_send_frame(fd, &hdr) == 0) {
     pending_ = true;
-    want_frame_ = false;
+    frame_sent_ = true;
     send_time_ms_ = now_ms();
   }
   /* idk_tp_send closed fd on success; on failure it did too (io.c). */
 }
 
 /* ── Producer connect + pacing ─────────────────────────────────────── */
-
-void View::StartPollers() {
-  if (pollers_)
-    return;
-  pollers_ = true;
-  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->PollTask(); }, 16);
-}
 
 void View::ConnectTask() {
   bool now = idk_producer_is_connected();
@@ -266,14 +260,13 @@ void View::ConnectTask() {
     connected_ = true;
     connect_attempts_ = 0;
     IDK_LOG("webview-cef", "compositor connected\n");
+    KickRender(); /* first frame: render on demand, retry until sent */
     if (!input_) {
       input_ = new InputThread(this, sock_path_);
       input_->Start();
     }
-    StartPollers();
   } else if (!now && connected_) {
     connected_ = false;
-    pollers_ = false;
     IDK_LOG("webview-cef", "compositor disconnected - reconnecting\n");
   } else if (!now && !connected_) {
     connect_attempts_++;
@@ -282,11 +275,11 @@ void View::ConnectTask() {
       connected_ = true;
       connect_attempts_ = 0;
       IDK_LOG("webview-cef", "compositor connected after %d attempts\n", attempts);
+      KickRender();
       if (!input_) {
         input_ = new InputThread(this, sock_path_);
         input_->Start();
       }
-      StartPollers();
     } else {
       bool log_it = connect_attempts_ == 1 || connect_attempts_ == 5 || connect_attempts_ == 30 ||
                     (connect_attempts_ > 30 && connect_attempts_ % 60 == 0);
@@ -298,35 +291,51 @@ void View::ConnectTask() {
   PostToUIDelayed([self = CefRefPtr<View>(this)] { self->ConnectTask(); }, 1000);
 }
 
-void View::PollTask() {
-  if (connected_ && visible_) {
-    if (pending_) {
-      idk_ack_msg_t ack;
-      if (idk_producer_wait_ack(&ack, 0) == 0) {
-        ProcessAck(ack);
-      } else if ((now_ms() - send_time_ms_) > 100) {
-        /* Lost ACK (compositor busy/restarted) — unlock like the Qt backend. */
-        pending_ = false;
-        IDK_LOG("webview-cef", "ACK timeout - force-unlock pending\n");
-      }
-    }
-    if (!pending_) {
-      idk_request_msg_t req;
-      if (idk_producer_recv_request(&req, 0) == 0) {
-        if (req.type == IDK_REQUEST_SHUTDOWN) {
-          IDK_LOG("webview-cef", "compositor shutdown request\n");
-          CefPostTask(TID_UI, new FnTask([] { CefQuitMessageLoop(); }));
-          return;
-        }
-        if (req.type == IDK_REQUEST_NEXT_FRAME) {
-          want_frame_ = true;
-          if (browser_)
-            browser_->GetHost()->Invalidate(PET_VIEW);
-        }
-      }
+/* Render on demand. A begin frame issued before the page has any content
+ * is consumed without producing a frame, so retry every 50ms until the
+ * first frame actually goes out. */
+void View::KickRender() {
+  if (!browser_ || !connected_)
+    return;
+  browser_->GetHost()->SendExternalBeginFrame();
+  if (!frame_sent_)
+    PostToUIDelayed([self = CefRefPtr<View>(this)] { self->RenderRetry(); }, 50);
+}
+
+void View::RenderRetry() {
+  if (!browser_ || !connected_ || frame_sent_ || quit_.load())
+    return;
+  browser_->GetHost()->SendExternalBeginFrame();
+  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->RenderRetry(); }, 50);
+}
+
+void View::PollSocket() {
+  if (!connected_ || !visible_)
+    return;
+  if (pending_) {
+    idk_ack_msg_t ack;
+    if (idk_producer_wait_ack(&ack, 0) == 0) {
+      ProcessAck(ack);
+    } else if ((now_ms() - send_time_ms_) > 100) {
+      /* Lost ACK (compositor busy/restarted) — unlock like the Qt backend. */
+      pending_ = false;
+      IDK_LOG("webview-cef", "ACK timeout - force-unlock pending\n");
     }
   }
-  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->PollTask(); }, 16);
+  if (!pending_) {
+    idk_request_msg_t req;
+    if (idk_producer_recv_request(&req, 0) == 0) {
+      if (req.type == IDK_REQUEST_SHUTDOWN) {
+        IDK_LOG("webview-cef", "compositor shutdown request\n");
+        quit_.store(true);
+        return;
+      }
+      /* Game asks for the next frame → render exactly one (CEF renders
+       * only on external begin frames; see OnAcceleratedPaint). */
+      if (browser_)
+        browser_->GetHost()->SendExternalBeginFrame();
+    }
+  }
 }
 
 void View::ProcessAck(const idk_ack_msg_t &ack) {
@@ -348,9 +357,6 @@ void View::ProcessAck(const idk_ack_msg_t &ack) {
       browser_->GetHost()->WasResized();
       browser_->GetHost()->NotifyMoveOrResizeStarted();
     }
-    want_frame_ = true;
-    if (browser_)
-      browser_->GetHost()->Invalidate(PET_VIEW);
   }
 
   pending_ = false;
@@ -405,12 +411,9 @@ void View::SetOverlayVisible(bool v) {
     return;
   visible_ = v;
   FireVisibleEvents(v);
-  if (v) {
-    want_frame_ = true;
-    if (browser_)
-      browser_->GetHost()->Invalidate(PET_VIEW);
-  } else {
-    want_frame_ = false;
+  if (v && browser_) {
+    /* Repaint so a fresh frame goes out (paints are dropped while hidden). */
+    browser_->GetHost()->SendExternalBeginFrame();
   }
 }
 

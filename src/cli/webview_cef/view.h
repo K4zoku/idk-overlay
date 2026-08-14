@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,10 +31,15 @@ public:
   View(GroupConfig conf, bool no_dmabuf, std::string sock_path, bool sock_abstract);
   ~View();
 
-  /* UI thread. Initializes the producer + starts the connect/poll tasks. */
+  /* UI thread. Initializes the producer + starts the connect task. */
   void Start();
-  /* UI thread. Stops the input thread and quits the message loop. */
+  /* UI thread. Stops the input thread (call before process exit). */
   void Stop();
+
+  /* UI thread, called by the main loop whenever the producer socket is
+   * readable (or on a timeout): drains ACK/REQUEST non-blocking. */
+  void PollSocket();
+  bool QuitRequested() const { return quit_.load(); }
 
   /* ── UI-thread entry points (input.cc posts these via tasks.h) ── */
   void SendKeyEventUI(const CefKeyEvent &ev);
@@ -66,11 +72,11 @@ private:
   /* CefLoadHandler */
   void OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, int) override;
 
-  /* Producer lifecycle + pacing (UI thread, chained delayed tasks). */
+  /* Producer lifecycle + pacing (UI thread). */
   void ConnectTask();
-  void PollTask();
   void ProcessAck(const idk_ack_msg_t &ack);
-  void StartPollers();
+  void KickRender();
+  void RenderRetry();
 
   /* Frame paths. OnAcceleratedPaint delivers the fd only for the duration
    * of the callback, so each path copies/dups before returning. */
@@ -93,8 +99,8 @@ private:
   bool sock_abstract_ = false;
   bool no_dmabuf_;
   bool connected_ = false;
-  bool pollers_ = false;
   int connect_attempts_ = 0;
+  std::atomic<bool> quit_{false};
 
   int render_w_;
   int render_h_;
@@ -103,9 +109,9 @@ private:
   bool dmabuf_failed_ = false;
   int dmabuf_reject_count_ = 0;
 
-  bool pending_ = false;   /* frame in flight, awaiting ACK */
-  bool want_frame_ = true; /* compositor asked for the next frame */
-  bool visible_ = true;    /* overlay visibility */
+  bool pending_ = false;    /* frame in flight, awaiting ACK */
+  bool visible_ = true;     /* overlay visibility */
+  bool frame_sent_ = false; /* first frame sent (kick retries stop) */
   bool capture_ = false;
   bool js_capture_ = false; /* last capture state seen by JS (edge events) */
   bool js_visible_ = true;  /* last visibility state seen by JS */

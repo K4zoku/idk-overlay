@@ -153,3 +153,11 @@ int idk_producer_recv_request(idk_request_msg_t *req, int timeout_ms) {
   }
   return idk_tp_recv_request(&g_tp, req, timeout_ms);
 }
+
+/* Socket fd carrying ACK/REQUEST data, for event-loop integration.
+ * Returns -1 when not connected or the backend is not fd-pollable. */
+int idk_producer_poll_fd(void) {
+  if (!g_tp.ready || g_tp.backend != IDK_TP_SOCKET)
+    return -1;
+  return g_tp._client_fd;
+}

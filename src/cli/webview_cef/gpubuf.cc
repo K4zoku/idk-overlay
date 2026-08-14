@@ -302,14 +302,16 @@ int GpuBuf::BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h, uin
                      info.modifier))
     return -1;
 
-  /* Single GPU blit: CEF linear → staging (driver-native tiled). */
+  /* Single GPU blit: CEF linear (bottom-up memory) → staging
+   * (driver-native tiled). Invert Y so the staging buffer is top-down,
+   * matching what the compositor's quad expects. */
   if (!in_fbo_)
     ((PFN_GL_GEN_FRAMEBUFFERS)fn_gen_framebuffers_)(1, &in_fbo_);
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_READ_FRAMEBUFFER, in_fbo_);
   ((PFN_GL_FRAMEBUFFER_TEXTURE2D)fn_framebuffer_texture2d_)(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                                             in_tex_, 0);
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_DRAW_FRAMEBUFFER, fbo_);
-  ((PFN_GL_BLIT_FRAMEBUFFER)fn_blit_framebuffer_)(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  ((PFN_GL_BLIT_FRAMEBUFFER)fn_blit_framebuffer_)(0, 0, w, h, 0, h, w, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_FRAMEBUFFER, 0);
 
   *stride = bo_stride_;

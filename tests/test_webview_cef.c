@@ -22,6 +22,15 @@
 #define ACCEPT_TIMEOUT_MS 30000
 #define FRAME_TIMEOUT_MS 15000
 
+/* Animated page: each external begin frame advances an rAF tick → new
+ * damage → new frame. A static page would only produce one frame. */
+#define ANIM_URL                                                                                                       \
+  "data:text/html,%3Cbody%20style%3D%22margin%3A0%22%3E%3Cscript%3E"                                                   \
+  "let%20c%3D0%3Bfunction%20f()%7Bdocument.body.style.background%3D"                                                   \
+  "(c%2B%2B%252)%3F%27%230f0%27%3A%27%2300f%27%3B"                                                                     \
+  "requestAnimationFrame(f)%7DrequestAnimationFrame(f)%3C%2Fscript%3E"                                                 \
+  "%3C%2Fbody%3E"
+
 static const char *argv_bin;
 
 static int wait_readable(int fd, int timeout_ms) {
@@ -77,8 +86,7 @@ TEST(cef_webview_frame_flow) {
   pid_t pid = fork();
   ASSERT_TRUE(pid >= 0);
   if (pid == 0) {
-    execl(argv_bin, argv_bin, "--socket", SOCK_PATH, "--url",
-          "data:text/html,%3Cbody%20style%3D%22margin%3A0%3Bbackground%3A%2300ff00%22%3E%3C%2Fbody%3E", (char *)NULL);
+    execl(argv_bin, argv_bin, "--socket", SOCK_PATH, "--url", ANIM_URL, (char *)NULL);
     _exit(127);
   }
 
@@ -120,7 +128,7 @@ TEST(cef_webview_shm_fallback) {
   pid_t pid = fork();
   ASSERT_TRUE(pid >= 0);
   if (pid == 0) {
-    execl(argv_bin, argv_bin, "--socket", SOCK_PATH, "--url", "data:text/html,<h1>shm</h1>", (char *)NULL);
+    execl(argv_bin, argv_bin, "--socket", SOCK_PATH, "--url", ANIM_URL, (char *)NULL);
     _exit(127);
   }
 

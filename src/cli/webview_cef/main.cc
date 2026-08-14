@@ -17,6 +17,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <fstream>
+#include <poll.h>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -189,6 +190,9 @@ int main(int argc, char *argv[]) {
   CefSettings settings; /* wrapper ctor sets size; do NOT memset */
   settings.no_sandbox = true;
   settings.windowless_rendering_enabled = true;
+  /* The main loop polls the producer socket directly (game-rate ACK/REQUEST
+   * with no 16ms timer cap) and drives CEF via CefDoMessageLoopWork. */
+  settings.external_message_pump = true;
   settings.background_color = 0; /* fully transparent painting */
   settings.log_severity = LOGSEVERITY_WARNING;
   CefString(&settings.resources_dir_path).FromASCII(resources.c_str());
@@ -213,10 +217,16 @@ int main(int argc, char *argv[]) {
   CefWindowInfo wi;
   wi.SetAsWindowless(0);
   wi.shared_texture_enabled = true; /* dmabuf planes via OnAcceleratedPaint */
+  /* Game-driven pacing: each compositor REQUEST issues exactly one
+   * SendExternalBeginFrame → CEF renders at the game's fps, no more,
+   * no less (no internal 60fps timer). */
+  wi.external_begin_frame_enabled = true;
 
   CefBrowserSettings bs; /* wrapper ctor sets size */
   bs.background_color = 0;
-  bs.windowless_frame_rate = 60;
+  /* No artificial capture cap: the game drives the rate via external
+   * begin frames. 1000fps makes SetMinCapturePeriod a no-op in practice. */
+  bs.windowless_frame_rate = 1000;
 
   CefRefPtr<CefBrowser> browser = CefBrowserHost::CreateBrowserSync(wi, view, "about:blank", bs, nullptr, nullptr);
   if (!browser) {
@@ -225,9 +235,20 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  view->Start(); /* producer connect + input thread + pacing */
+  view->Start(); /* producer connect + input thread */
 
-  CefRunMessageLoop();
+  /* External message pump: block on the producer socket (game-rate
+   * ACK/REQUEST wakeups), then pump CEF work. */
+  for (;;) {
+    if (view->QuitRequested())
+      break;
+    int fd = idk_producer_poll_fd();
+    struct pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
+    int rc = poll(&pfd, fd >= 0 ? 1 : 0, 8);
+    if (fd >= 0 && rc > 0 && (pfd.revents & (POLLIN | POLLHUP)))
+      view->PollSocket();
+    CefDoMessageLoopWork();
+  }
   view->Stop(); /* join the input thread */
   view = nullptr;
 

@@ -9,9 +9,9 @@
 #ifndef IDK_PRODUCER_H
 #define IDK_PRODUCER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 #include "public/idk_ipc.h"
 
@@ -21,7 +21,7 @@ extern "C" {
 
 /* Constants */
 
-#define IDK_CLIENT_PIXEL_SIZE(w, h)  ((w) * (h) * 4)
+#define IDK_CLIENT_PIXEL_SIZE(w, h) ((w) * (h) * 4)
 
 /* Client initialization */
 
@@ -67,6 +67,12 @@ int idk_producer_wait_ack(idk_ack_msg_t *ack, int timeout_ms);
  * @param timeout_ms Timeout in milliseconds (0 = non-blocking).
  */
 int idk_producer_recv_request(idk_request_msg_t *req, int timeout_ms);
+
+/**
+ * Socket fd carrying ACK/REQUEST data, for event-loop integration.
+ * Returns -1 when not connected or the backend is not fd-pollable.
+ */
+int idk_producer_poll_fd(void);
 
 /**
  * Check if connected to compositor.
