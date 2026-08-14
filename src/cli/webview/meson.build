@@ -28,7 +28,7 @@ if qt6_dep.found()
         'idk-webview',
         webview_files + idk_webview_moc,
         include_directories: [inc, webview_inc],
-        dependencies: [qt6_dep, egl_dep, gl_dep, idk_fs_dep, vk_dep],
+        dependencies: [qt6_dep, egl_dep, gl_dep, idk_fs_dep, vk_dep, gbm_dep],
         install: true,
     )
 endif

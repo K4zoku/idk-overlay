@@ -19,6 +19,7 @@ dl_lib = cc.find_library('dl', required: true)
 egl_dep = cc.find_library('EGL', required: false)
 gl_dep = cc.find_library('OpenGL', required: false)
 vk_dep = cc.find_library('vulkan', required: false)
+gbm_dep = cc.find_library('gbm', required: false)
 
 syringe_proj = subproject('syringe', default_options: ['default_library=static'])
 syringe_dep = syringe_proj.get_variable('libsyringe_dep')

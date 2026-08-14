@@ -345,6 +345,37 @@ static int hook_XSelectInput(Display *dpy, Window w, long mask) {
   return orig_XSelectInput(dpy, w, mask);
 }
 
+/* Hooks */
+
+/* Capture wine's X display as early as possible (winex11.drv calls
+ * XOpenDisplay at init, before the game loads GL). Our EGL display for
+ * dmabuf import must be created on THIS display — EGLImages from a
+ * second X connection cannot be bound into the game's GLX context
+ * (driver hangs). Resolve the real function from libX11 directly
+ * (hook_orig/RTLD_NEXT is unreliable for a preloaded symbol). */
+typedef Display *(*XOpenDisplay_fn)(const char *);
+static XOpenDisplay_fn orig_XOpenDisplay = NULL;
+
+Display *XOpenDisplay(const char *name) {
+  if (!orig_XOpenDisplay) {
+    void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
+    if (!h)
+      h = dlopen("libX11.so.6", RTLD_NOW);
+    if (!h)
+      h = dlopen("libX11.so", RTLD_NOW);
+    if (h)
+      orig_XOpenDisplay = (XOpenDisplay_fn)dlsym(h, "XOpenDisplay");
+  }
+  if (!orig_XOpenDisplay)
+    return NULL;
+  Display *dpy = orig_XOpenDisplay(name);
+  if (dpy && !g_game_display)
+    g_game_display = dpy;
+  return dpy;
+}
+
+Display *idk_x11_game_display(void) { return g_game_display; }
+
 int idk_x11_input_init(void) {
   if (g_hook_installed)
     return 0;
