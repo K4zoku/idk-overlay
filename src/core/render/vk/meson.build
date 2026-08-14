@@ -1,0 +1,15 @@
+render_vk_sources = files(
+    'context.h',
+    'context.c',
+    'gpa.c',
+    'descset.c',
+    'renderpass.c',
+    'pipeline.c',
+    'shaders.c',
+    'format.c',
+    'upload.c',
+    'dmabuf.c',
+    'cache.c',
+    'ring.c',
+    'render.c',
+)

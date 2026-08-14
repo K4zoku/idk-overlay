@@ -1,0 +1,16 @@
+render_gl_sources = files(
+    'context.c',
+    'errors.c',
+    'glsl.c',
+    'import_dmabuf.c',
+    'import_gl.c',
+    'link.c',
+    'loader.c',
+    'render.c',
+    'resolve.c',
+    'select.c',
+    'spirv.c',
+    'state.c',
+    'tex.c',
+    'version.c',
+)
