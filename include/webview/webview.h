@@ -17,7 +17,7 @@ class QQuickWindow;
 #include "groupconfig.h"
 #include "manager.h"
 
-#include "public/idk_ipc.h" /* idk_ack_msg_t */
+#include "public/idk_ipc.h"
 
 class RhiTextureExtractor;
 
@@ -80,9 +80,8 @@ public:
   bool m_useDmaBuf = true;
   bool m_dmaBufFailed = false;
   /* Consecutive DMABUF rejection counter. Incremented on each ack=1 from
-   * compositor, reset on ack=0. Only set m_dmaBufFailed=true after 5
-   * consecutive rejections - handles transient failures (first frame
-   * after resize, NVIDIA driver hiccups on vkGetMemoryFdPropertiesKHR). */
+   * compositor, reset on ack=0. m_dmaBufFailed is set after 5
+   * consecutive rejections. */
   int m_dmabufRejectCount = 0;
   bool m_needSharedCtx = true;
   EGLDisplay m_eglDpy = EGL_NO_DISPLAY;
@@ -93,20 +92,17 @@ public:
   void (*m_queryFn)(void);  // eglExportDMABUFImageQueryMESA/EXT (MESA-ext signature)
   void (*m_exportFn)(void); // eglExportDMABUFImageMESA/EXT
   /* Our own GL texture for hybrid DMABUF path - grabFramebuffer() →
-   * glTexSubImage2D → export as dmabuf. Bypasses Qt RHI's texture
-   * which has stale/white content when exported directly. */
+   * glTexSubImage2D → export as dmabuf. */
   GLuint m_dmaTex = 0;
   int m_dmaTexW = 0;
   int m_dmaTexH = 0;
   /* Linear staging texture: m_dmaTex (tiled, renderable) is blitted
-   * here (GPU-only) so the exported fd is LINEAR — the overlay's
-   * GL_EXT_memory_object import has no modifier param. */
+   * here (GPU-only). */
   GLuint m_dmaTexLinear = 0;
   EGLImageKHR m_dmaEglImgLinear = EGL_NO_IMAGE_KHR;
   /* Cached EGLImage + exported dmabuf fd. Reused across frames as long
-   * as m_dmaTex / size don't change - avoids recreating eglCreateImage +
-   * eglExportDMABUFImageMESA every frame (expensive on Mesa). The fd is
-   * dup'd per send (sendmsg takes ownership of the dup, not the original).
+   * as m_dmaTex / size don't change. The fd is dup'd per send
+   * (sendmsg takes ownership of the dup, not the original).
    * On size change or shutdown, both are destroyed. */
   EGLImageKHR m_dmaEglImg = EGL_NO_IMAGE_KHR;
   int m_dmaExportFd = -1;
@@ -137,7 +133,7 @@ public:
 
   // Overlay visibility (mirrors g_overlay_visible on the hook side,
   // updated via Manager::overlayVisibleChanged signal). When false,
-  // ackPoll/request timers are stopped to drive CPU usage to ~0%.
+  // ackPoll/request timers are stopped.
   bool m_overlayVisible = true;
 
   RhiTextureExtractor *m_extractor = nullptr;

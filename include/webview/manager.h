@@ -1,14 +1,14 @@
 #pragma once
 
+#include <QLabel>
+#include <QList>
 #include <QObject>
-#include <QTimer>
 #include <QSettings>
 #include <QString>
-#include <QList>
-#include <QWidget>
-#include <QTabBar>
-#include <QLabel>
 #include <QSystemTrayIcon>
+#include <QTabBar>
+#include <QTimer>
+#include <QWidget>
 
 class WebView;
 class InputReceiver;
@@ -16,73 +16,67 @@ class InputReceiver;
 /**
  * Manager - manages socket connection to idk-overlay and webview lifecycle.
  *
- * Adapted from imgoverlay's Manager. Handles:
+ * Handles:
  * - Connecting to idk-overlay socket
  * - Managing WebView instances (one per overlay group)
- * - Sending frames via idk_fs_* API
+ * - Sending frames via idk_producer_* API
  * - Receiving input events from the game's wayland input hook
  *   (InputReceiver, when the user toggles input capture with F8)
  */
-class Manager : public QObject
-{
-    Q_OBJECT
+class Manager : public QObject {
+  Q_OBJECT
 
 public:
-    explicit Manager(const QString &confFile,
-                     const QString &socketPath,
-                     bool noDmaBuf = false,
-                     const QString &cliUrl = QString(),
-                     int cliWidth = 0,
-                     int cliHeight = 0,
-                     const QString &cliMatch = QString(),
-                     QObject *parent = nullptr);
-    ~Manager();
+  explicit Manager(const QString &confFile, const QString &socketPath, bool noDmaBuf = false,
+                   const QString &cliUrl = QString(), int cliWidth = 0, int cliHeight = 0,
+                   const QString &cliMatch = QString(), QObject *parent = nullptr);
+  ~Manager();
 
-    bool isConnected() const;
-    QString socketPath() const { return m_socketPath; }
+  bool isConnected() const;
+  QString socketPath() const { return m_socketPath; }
 
 signals:
-    void socketConnected();
-    void socketDisconnected();
-    void inputCaptureChanged(bool captured);
-    void overlayVisibleChanged(bool visible);
+  void socketConnected();
+  void socketDisconnected();
+  void inputCaptureChanged(bool captured);
+  void overlayVisibleChanged(bool visible);
 
 private slots:
-    void onInputCaptureChanged(bool captured);
-    void onOverlayVisibleChanged(bool visible);
+  void onInputCaptureChanged(bool captured);
+  void onOverlayVisibleChanged(bool visible);
 
 private:
-    void initWebViews();
-    void showView(int index);
-    void updateStatus();
-    QString resolvePath(const QString &path) const;
-    void startInputReceiver();
-    void stopInputReceiver();
+  void initWebViews();
+  void showView(int index);
+  void updateStatus();
+  QString resolvePath(const QString &path) const;
+  void startInputReceiver();
+  void stopInputReceiver();
 
-    // State
-    QSettings *m_settings;
-    QString m_socketPath;
-    bool m_socketAbstract = false;  /* IDK_TP_ABSTRACT env set (broker mode) */
-    QTimer *m_reconnectTimer;
-    int m_disconnect_count = 0;  // throttle disconnect log spam
-    bool m_was_connected = false; // track idk_fs fd state transitions
-    bool m_noDmaBuf = false;     // force SHM mode
-    QString m_cliUrl;            // CLI --url override
-    int m_cliWidth = 0;          // CLI --width override
-    int m_cliHeight = 0;         // CLI --height override
-    QString m_cliMatch;          // CLI --match (process name regex)
-    InputReceiver *m_inputRx = nullptr;
-    QTimer *m_inputRetryTimer = nullptr;
-    int m_inputRetries = 0;  /* input receiver connect retry counter */
-    bool m_lastVisibleState = false;
-    bool m_lastCaptureState = false;
+  // State
+  QSettings *m_settings;
+  QString m_socketPath;
+  bool m_socketAbstract = false; /* IDK_TP_ABSTRACT env set (broker mode) */
+  QTimer *m_reconnectTimer;
+  int m_disconnect_count = 0;   // throttle disconnect log spam
+  bool m_was_connected = false; // track idk_producer fd state transitions
+  bool m_noDmaBuf = false;      // force SHM mode
+  QString m_cliUrl;             // CLI --url override
+  int m_cliWidth = 0;           // CLI --width override
+  int m_cliHeight = 0;          // CLI --height override
+  QString m_cliMatch;           // CLI --match (process name regex)
+  InputReceiver *m_inputRx = nullptr;
+  QTimer *m_inputRetryTimer = nullptr;
+  int m_inputRetries = 0; /* input receiver connect retry counter */
+  bool m_lastVisibleState = false;
+  bool m_lastCaptureState = false;
 
-    // UI
-    QWidget *m_window;
-    QTabBar *m_tabBar;
-    QWidget *m_container;
-    QLabel *m_statusLabel;
+  // UI
+  QWidget *m_window;
+  QTabBar *m_tabBar;
+  QWidget *m_container;
+  QLabel *m_statusLabel;
 
-    // Overlays
-    QList<WebView*> m_views;
+  // Overlays
+  QList<WebView *> m_views;
 };

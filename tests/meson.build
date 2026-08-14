@@ -40,13 +40,13 @@ foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
     test(name, test_exe)
 endforeach
 
-# Tests needing idk_fs_lib (public API)
-foreach src : ['test_idk_fs.c']
+# Tests needing idk_producer_lib (public API)
+foreach src : ['test_idk_producer.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,
         include_directories: inc,
-        link_with: [idk_fs_lib],
+        link_with: [idk_producer_lib],
     )
     test(name, test_exe)
 endforeach

@@ -1,12 +1,12 @@
 #include <errno.h>
 #include <string.h>
 #include "test_runner.h"
-#include "public/idk_fs.h"
+#include "public/idk_producer.h"
 #include "public/idk_ipc.h"
 
 TEST(init2_null_path) {
     errno = 0;
-    ASSERT_EQ(idk_fs_init(NULL), -1);
+    ASSERT_EQ(idk_producer_init(NULL), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
@@ -15,41 +15,41 @@ TEST(init2_path_too_long) {
     memset(long_path, 'a', sizeof(long_path) - 1);
     long_path[sizeof(long_path) - 1] = '\0';
     errno = 0;
-    ASSERT_EQ(idk_fs_init(long_path), -1);
+    ASSERT_EQ(idk_producer_init(long_path), -1);
     ASSERT_EQ(errno, ERANGE);
 }
 
 TEST(send_frame_null) {
     errno = 0;
-    ASSERT_EQ(idk_fs_send_frame(0, NULL), -1);
+    ASSERT_EQ(idk_producer_send_frame(0, NULL), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
 TEST(send_pixels_null_pixels) {
     idk_frame_header_t frame = { .width = 100, .height = 100 };
     errno = 0;
-    ASSERT_EQ(idk_fs_send_pixels(NULL, &frame), -1);
+    ASSERT_EQ(idk_producer_send_pixels(NULL, &frame), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
 TEST(send_pixels_null_frame) {
     char buf[4] = {0};
     errno = 0;
-    ASSERT_EQ(idk_fs_send_pixels(buf, NULL), -1);
+    ASSERT_EQ(idk_producer_send_pixels(buf, NULL), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
 TEST(send_dma_buf_null_fds) {
     idk_frame_header_t frame = { .nfd = 1 };
     errno = 0;
-    ASSERT_EQ(idk_fs_send_dma_buf(NULL, &frame), -1);
+    ASSERT_EQ(idk_producer_send_dma_buf(NULL, &frame), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
 TEST(send_dma_buf_null_frame) {
     int fd = 0;
     errno = 0;
-    ASSERT_EQ(idk_fs_send_dma_buf(&fd, NULL), -1);
+    ASSERT_EQ(idk_producer_send_dma_buf(&fd, NULL), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
@@ -57,7 +57,7 @@ TEST(send_dma_buf_nfd_zero) {
     idk_frame_header_t frame = { .nfd = 0 };
     int fd = 0;
     errno = 0;
-    ASSERT_EQ(idk_fs_send_dma_buf(&fd, &frame), -1);
+    ASSERT_EQ(idk_producer_send_dma_buf(&fd, &frame), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
@@ -65,21 +65,21 @@ TEST(send_dma_buf_nfd_too_high) {
     idk_frame_header_t frame = { .nfd = 5 };
     int fd = 0;
     errno = 0;
-    ASSERT_EQ(idk_fs_send_dma_buf(&fd, &frame), -1);
+    ASSERT_EQ(idk_producer_send_dma_buf(&fd, &frame), -1);
     ASSERT_EQ(errno, EINVAL);
 }
 
 TEST(wait_ack_not_connected) {
-    idk_fs_shutdown();
+    idk_producer_shutdown();
     errno = 0;
-    ASSERT_EQ(idk_fs_wait_ack(NULL, 0), -1);
+    ASSERT_EQ(idk_producer_wait_ack(NULL, 0), -1);
     ASSERT_EQ(errno, ENOTCONN);
 }
 
 TEST(shutdown_idempotent) {
-    idk_fs_shutdown();
-    idk_fs_shutdown();
-    idk_fs_shutdown();
+    idk_producer_shutdown();
+    idk_producer_shutdown();
+    idk_producer_shutdown();
 }
 
 int main(void) {

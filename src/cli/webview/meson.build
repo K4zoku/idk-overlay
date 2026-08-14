@@ -12,11 +12,24 @@ if qt6_dep.found()
     qt = import('qt6')
     webview_files = files(
         'config/groupconfig.cpp',
-        'input/input_receiver.cpp',
-        'view/rhi_texture_extractor.cpp',
-        'view/webview.cpp',
+        'input/events.cpp',
+        'input/keys.cpp',
+        'input/repeat.cpp',
+        'input/socket.cpp',
         'main.cpp',
-        'manager.cpp',
+        'manager/config.cpp',
+        'manager/connect.cpp',
+        'manager/js.cpp',
+        'manager/views.cpp',
+        'view/capture.cpp',
+        'view/memory.cpp',
+        'view/poll.cpp',
+        'view/resize.cpp',
+        'view/rhi/common.cpp',
+        'view/rhi/gbm.cpp',
+        'view/rhi/gl_dmabuf.cpp',
+        'view/rhi/readpixels.cpp',
+        'view/rhi/vk_dmabuf.cpp',
     )
     webview_moc_headers = files(
         '../../../include/webview/input_receiver.h',
@@ -28,7 +41,7 @@ if qt6_dep.found()
         'idk-webview',
         webview_files + idk_webview_moc,
         include_directories: [inc, webview_inc],
-        dependencies: [qt6_dep, egl_dep, gl_dep, idk_fs_dep, vk_dep, gbm_dep],
+        dependencies: [qt6_dep, egl_dep, gl_dep, idk_producer_dep, vk_dep, gbm_dep],
         install: true,
     )
 endif

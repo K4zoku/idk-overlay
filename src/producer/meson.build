@@ -1,7 +1,7 @@
-# libidk-framesource.so - frame sender library (used by idk-webview)
-idk_fs_lib = library(
-    'idk-framesource',
-    ['idk_fs.c', '../core/log.c'] + transport_sources,
+# libidk-producer.so - frame sender library (used by idk-webview)
+idk_producer_lib = library(
+    'idk-producer',
+    ['api.c', '../core/log.c'] + transport_sources,
     c_args: fs_c_flags,
     include_directories: inc,
     link_args: ['-ldl', '-lpthread'],
@@ -9,7 +9,7 @@ idk_fs_lib = library(
     install: true,
 )
 
-idk_fs_dep = declare_dependency(
+idk_producer_dep = declare_dependency(
     include_directories: inc,
-    link_with: idk_fs_lib,
+    link_with: idk_producer_lib,
 )

@@ -1,13 +1,13 @@
 /*
- * idk_fs.h - Client module for sending overlay frames to idk-overlay socket
+ * idk_producer.h - Client module for sending overlay frames to idk-overlay socket
  *
  * Usage:
- *   idk_fs_init("$XDG_RUNTIME_DIR/idk-overlay-1234");
- *   idk_fs_send_dma_buf(fds, &frame);
- *   idk_fs_shutdown();
+ *   idk_producer_init("$XDG_RUNTIME_DIR/idk-overlay-1234");
+ *   idk_producer_send_dma_buf(fds, &frame);
+ *   idk_producer_shutdown();
  */
-#ifndef IDK_FS_H
-#define IDK_FS_H
+#ifndef IDK_PRODUCER_H
+#define IDK_PRODUCER_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -31,12 +31,12 @@ extern "C" {
  *
  * @param sockpath   Socket path (e.g., "/run/user/1000/idk-overlay-1234").
  */
-int idk_fs_init(const char *sockpath);
+int idk_producer_init(const char *sockpath);
 
 /**
  * Shut down the client and close the socket.
  */
-void idk_fs_shutdown(void);
+void idk_producer_shutdown(void);
 
 /* Sending frames */
 
@@ -46,32 +46,32 @@ void idk_fs_shutdown(void);
  * @param fd         File descriptor carrying pixel data (SHM or dmabuf).
  * @param frame      Frame metadata (caller fills width/height/stride/flags/etc).
  */
-int idk_fs_send_frame(int fd, const idk_frame_header_t *frame);
+int idk_producer_send_frame(int fd, const idk_frame_header_t *frame);
 
 /**
  * Send a raw pixel buffer as a frame (creates SHM internally).
  * Sets frame->flags = IDK_FRAME_FLAG_VISIBLE (clears DMABUF bit).
  */
-int idk_fs_send_pixels(const void *pixels, const idk_frame_header_t *frame);
+int idk_producer_send_pixels(const void *pixels, const idk_frame_header_t *frame);
 
 /**
  * Wait for compositor ACK after sending a frame.
  * Fills *ack with the ACK message (includes resize info).
  * @param ack        Output: ACK message (w/h for resize, ack for accept/reject).
  */
-int idk_fs_wait_ack(idk_ack_msg_t *ack, int timeout_ms);
+int idk_producer_wait_ack(idk_ack_msg_t *ack, int timeout_ms);
 
 /**
  * Receive a REQUEST from the compositor (non-blocking poll).
  * @param req        Output: REQUEST message (type field).
  * @param timeout_ms Timeout in milliseconds (0 = non-blocking).
  */
-int idk_fs_recv_request(idk_request_msg_t *req, int timeout_ms);
+int idk_producer_recv_request(idk_request_msg_t *req, int timeout_ms);
 
 /**
  * Check if connected to compositor.
  */
-bool idk_fs_is_connected(void);
+bool idk_producer_is_connected(void);
 
 /**
  * Send DMA-BUF fds directly (no SHM copy - for GPU-rendered content).
@@ -80,10 +80,10 @@ bool idk_fs_is_connected(void);
  * @param dma_buf_fds  Array of DMA-BUF fds from GPU (Qt RHI, EGL, etc.).
  * @param frame        Frame metadata (nfd must match array size, max 4).
  */
-int idk_fs_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *frame);
+int idk_producer_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *frame);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* IDK_FS_H */
+#endif /* IDK_PRODUCER_H */

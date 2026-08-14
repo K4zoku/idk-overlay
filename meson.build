@@ -68,14 +68,14 @@ endif
 subdir('src/shaders')
 
 # Core source groups (compositor + transport backends). Shared by both
-# libs (idk-overlay, idk-vklayer), idk-framesource and the tests.
+# libs (idk-overlay, idk-vklayer), idk-producer and the tests.
 subdir('src/core')
 idk_core_src = core_sources
 
 # Hook layer source groups (preload / vklayer / gl hooks / input backends).
 subdir('src/hook')
 
-subdir('src/lib')
+subdir('src/producer')
 
 # ── libidk-overlay.so - LD_PRELOAD/inject path (EGL + GLX hooks) ──────
 # Has __attribute__((constructor)) on_load() in overlay.c — safe because
@@ -158,7 +158,7 @@ endif
 # ── Build summary ──────────────────────────────────────────────────────
 message('\n=== idk-overlay build configuration ===')
 message('  libidk-overlay.so:    inject path (EGL + Vulkan hooks)')
-message('  libidk-framesource:   shared library (frame sender)')
+message('  libidk-producer:   shared library (frame sender)')
 message('  idk-webview:          Qt6 webview (DMA-BUF + idk socket)')
 message('  idk-inject:           CLI (wraps syringe_inject)')
 message('  idk-broker:           host-ns webview spawner (Wine/Proton)')
