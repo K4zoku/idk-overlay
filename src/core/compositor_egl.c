@@ -97,14 +97,26 @@ static PFN_eglDestroyContext_fn fn_eglDestroyContext = NULL;
 static PFN_eglDestroySurface_fn fn_eglDestroySurface = NULL;
 static PFN_eglBindAPI_fn fn_eglBindAPI = NULL;
 
+static void resolve_egl_functions(void);
+
+/* Resolve EGL functions from the hook install thread (egl_hook
+ * idk_egl_init) — never dlopen from the render path (deadlocks wine's
+ * loader). EGLImage binding is only used when the game has a current
+ * EGL display; GLX hosts take the GL_EXT_memory_object path instead. */
+void idk_compositor_egl_preload(void) { resolve_egl_functions(); }
+
 static void resolve_egl_functions(void) {
   if (fn_eglGetDisplay)
     return;
   void *lib = real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
   if (!lib)
+    lib = real_dlopen("libEGL.so.1", RTLD_NOW);
+  if (!lib)
     lib = real_dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+  if (!lib)
+    lib = real_dlopen("libEGL.so", RTLD_NOW);
   if (!lib) {
-    IDK_LOG("comp", "libEGL not loaded, EGL dmabuf path disabled\n");
+    IDK_LOG("comp", "libEGL not found, EGL dmabuf path disabled\n");
     return;
   }
   fn_eglGetDisplay = (PFN_eglGetDisplay_fn)real_dlsym(lib, "eglGetDisplay");
@@ -152,7 +164,7 @@ static void resolve_egl_functions(void) {
  * EGL apps can still use the EGL_LINUX_DMA_BUF_EXT path above.
  */
 
-#define GL_HANDLE_TYPE_OPAQUE_FD_EXT 0x22C1
+#define GL_HANDLE_TYPE_OPAQUE_FD_EXT 0x9586
 #define GL_RGBA8 0x8058
 #define GL_TEXTURE_SWIZZLE_R 0x8E42
 #define GL_TEXTURE_SWIZZLE_G 0x8E43
@@ -259,11 +271,13 @@ static GLuint gl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h, uint32
     return 0;
   }
 
-  /* MangoHud trick: use GL_HANDLE_TYPE_OPAQUE_FD_EXT for dmabuf fds.
-   * Mesa's driver detects the actual fd type and handles dmabuf correctly.
-   * The spec only defines OPAQUE_FD for GL-exported fds, but Mesa extends
-   * this to accept dmabuf fds as well. */
+  /* Use the dmabuf's real size (lseek SEEK_END). strided*height is only
+   * the linear size — tiled buffers (e.g. Intel Y-tiled) are larger, and
+   * Mesa rejects/wrongly imports if size doesn't match the fd. */
   GLu64 size = (GLu64)stride * (GLu64)h;
+  off_t real_size = lseek(dmabuf_fd, 0, SEEK_END);
+  if (real_size > 0)
+    size = (GLu64)real_size;
   fn_glImportMemoryFdEXT(mem, size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, import_fd);
   /* After ImportMemoryFdEXT (success), import_fd is owned by GL driver.
    * On failure, we must close it ourselves. */
@@ -365,9 +379,8 @@ static void release_dmabuf_backing(int i) {
     return;
   if (g_tex_img[i] && fn_eglDestroyImageKHR) {
     EGLDisplay dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
-    if (dpy != EGL_NO_DISPLAY) {
+    if (dpy != EGL_NO_DISPLAY)
       fn_eglDestroyImageKHR(dpy, g_tex_img[i]);
-    }
   }
   g_tex_img[i] = 0;
   if (g_tex_dmabuf_fd[i] >= 0) {
@@ -582,29 +595,26 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h, uint32_t str
                              EGLImageKHR *out_img) {
   if (out_img)
     *out_img = 0;
+
+  /* Only use EGLImage path when the game's current context is an EGL
+   * context (eglGetCurrentDisplay non-NULL). GLX hosts (osu-wine) have
+   * no current EGL display — an EGLImage created on a separate display
+   * cannot be bound into the game's GLX context (hangs the driver).
+   * Caller falls back to GL_EXT_memory_object (MangoHud-style) instead.
+   * Check before resolving: resolving may dlopen libEGL, which must not
+   * happen from the render path on a GLX host. */
+  EGLDisplay egl_dpy = fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : EGL_NO_DISPLAY;
+  if (egl_dpy == EGL_NO_DISPLAY) {
+    IDK_LOG("comp", "egl_dmabuf_to_texture: no current EGL display (GLX host?), using GL_EXT_memory_object\n");
+    return 0;
+  }
+
   if (!fn_eglCreateImageKHR) {
     resolve_egl_functions();
     if (!fn_eglCreateImageKHR) {
       IDK_ERR("comp", "EGL dma_buf import not available\n");
       return 0;
     }
-  }
-
-  /* Determine display: prefer the host's current EGL display (for EGL apps).
-   * For GLX apps (no current EGL display), the caller should fall back to
-   * gl_dmabuf_to_texture (GL_EXT_memory_object MangoHud-style path).
-   * EGLImage created on a separate compositor EGLDisplay cannot be bound
-   * to a texture in the host's GLX context (Mesa driver crashes inside
-   * glEGLImageTargetTexStorageEXT when the EGLImage's display doesn't
-   * match the current context's display). */
-  EGLDisplay egl_dpy = EGL_NO_DISPLAY;
-  if (fn_eglGetCurrentDisplay) {
-    egl_dpy = fn_eglGetCurrentDisplay();
-  }
-  if (egl_dpy == EGL_NO_DISPLAY) {
-    /* GLX host - caller handles via gl_dmabuf_to_texture fallback */
-    IDK_LOG("comp", "egl_dmabuf_to_texture: no current EGL display (GLX host?)\n");
-    return 0;
   }
 
   uint32_t drm_fmt = format;
@@ -638,11 +648,11 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h, uint32_t str
   }
   attrs[ai++] = EGL_NONE;
 
-  // IDK_LOG("comp", "eglCreateImage: %ux%u fourcc=0x%x stride=%u modifier=0x%llx\n",
-  //         (unsigned)w, (unsigned)h, (unsigned)drm_fmt, (unsigned)stride,
-  //         (unsigned long long)modifier);
+  IDK_LOG("comp", "eglCreateImage: %ux%u fourcc=0x%x stride=%u modifier=0x%llx dpy=%p\n", (unsigned)w, (unsigned)h,
+          (unsigned)drm_fmt, (unsigned)stride, (unsigned long long)modifier, (void *)egl_dpy);
 
   EGLImageKHR img = fn_eglCreateImageKHR(egl_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
+  IDK_LOG("comp", "eglCreateImageKHR returned %p\n", (void *)img);
 
   if (img == EGL_NO_IMAGE_KHR) {
     EGLint egl_err = fn_eglGetError ? fn_eglGetError() : 0;
@@ -677,32 +687,17 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h, uint32_t str
   //         tex, (void*)egl_dpy,
   //         (void*)(fn_eglGetCurrentDisplay ? fn_eglGetCurrentDisplay() : NULL));
 
-  /* Resolve EGL image binding functions up front */
-  if (!fn_glEGLImageTargetTexture2DOES) {
-    void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib)
-      lib = dlopen("libOpenGL.so.0", RTLD_NOW);
-    if (lib) {
-      fn_glEGLImageTargetTexture2DOES =
-          (PFN_glEGLImageTargetTexture2DOES_fn)real_dlsym(lib, "glEGLImageTargetTexture2DOES");
-    }
-  }
+  /* Resolve EGL image binding functions from the already-loaded GL lib
+   * (no dlopen here — the render path must never dlopen in wine).
+   * idk_compositor_egl_init_gl resolves these from the game's libGL;
+   * fall back to eglGetProcAddress if still missing. */
   if (!fn_glEGLImageTargetTexture2DOES && fn_eglGetProcAddress) {
     fn_glEGLImageTargetTexture2DOES =
         (PFN_glEGLImageTargetTexture2DOES_fn)fn_eglGetProcAddress("glEGLImageTargetTexture2DOES");
   }
-  if (!fn_glEGLImageTargetTexStorageEXT) {
-    void *lib = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib)
-      lib = dlopen("libOpenGL.so.0", RTLD_NOW);
-    if (lib) {
-      fn_glEGLImageTargetTexStorageEXT =
-          (PFN_glEGLImageTargetTexStorageEXT_fn)real_dlsym(lib, "glEGLImageTargetTexStorageEXT");
-    }
-    if (!fn_glEGLImageTargetTexStorageEXT && fn_eglGetProcAddress) {
-      fn_glEGLImageTargetTexStorageEXT =
-          (PFN_glEGLImageTargetTexStorageEXT_fn)fn_eglGetProcAddress("glEGLImageTargetTexStorageEXT");
-    }
+  if (!fn_glEGLImageTargetTexStorageEXT && fn_eglGetProcAddress) {
+    fn_glEGLImageTargetTexStorageEXT =
+        (PFN_glEGLImageTargetTexStorageEXT_fn)fn_eglGetProcAddress("glEGLImageTargetTexStorageEXT");
   }
 
   /* TexStorageEXT first (desktop GL - proper EGL_image_storage path),
@@ -713,10 +708,28 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h, uint32_t str
   static int s_texstorage_success_logged = 0;
   static int s_texstorage_failed = 0;
 
-  if (fn_glEGLImageTargetTexStorageEXT) {
+  /* Texture2DOES first (GL_OES_EGL_image) - supported in GLX contexts
+   * where GL_EXT_EGL_image_storage (TexStorageEXT) is not, e.g. NVIDIA
+   * GLX. On Mesa GLX both work. */
+  if (!ok && fn_glEGLImageTargetTexture2DOES) {
+    IDK_LOG("comp", "Texture2DOES bind: tex=%u img=%p\n", tex, (void *)img);
+    while (glGetError() != GL_NO_ERROR) {
+    } /* drain */
+    fn_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImage)img);
+    IDK_LOG("comp", "Texture2DOES bind returned\n");
+    err = glGetError();
+    if (err == GL_NO_ERROR) {
+      ok = GL_TRUE;
+      IDK_LOG("comp", "EGL image bound via Texture2DOES\n");
+    }
+  }
+
+  if (!ok && fn_glEGLImageTargetTexStorageEXT) {
+    IDK_LOG("comp", "TexStorageEXT bind: tex=%u img=%p\n", tex, (void *)img);
     while (glGetError() != GL_NO_ERROR) {
     } /* drain */
     fn_glEGLImageTargetTexStorageEXT(GL_TEXTURE_2D, (GLeglImage)img, NULL);
+    IDK_LOG("comp", "TexStorageEXT bind returned\n");
     err = glGetError();
     if (err == GL_NO_ERROR) {
       ok = GL_TRUE;
@@ -726,21 +739,7 @@ GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h, uint32_t str
       }
     } else {
       s_texstorage_failed = 1;
-      IDK_LOG("comp", "TexStorageEXT failed (0x%04X), trying Texture2DOES\n", err);
-    }
-  }
-
-  /* Texture2DOES fallback - only if TexStorageEXT unavailable or failed.
-   * On desktop GL, glEGLImageTargetTexture2DOES may not work correctly
-   * (it's a GLES extension); only use if we have no better option. */
-  if (!ok && fn_glEGLImageTargetTexture2DOES) {
-    while (glGetError() != GL_NO_ERROR) {
-    } /* drain */
-    fn_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImage)img);
-    err = glGetError();
-    if (err == GL_NO_ERROR) {
-      ok = GL_TRUE;
-      IDK_LOG("comp", "EGL image bound via Texture2DOES (fallback)\n");
+      IDK_LOG("comp", "TexStorageEXT failed (0x%04X)\n", err);
     }
   }
   if (err != GL_NO_ERROR) {
@@ -1105,6 +1104,13 @@ int idk_compositor_egl_init_gl(void) {
   if (libgl) {
     fn_glEGLImageTargetTexture2DOES = (PFN_glEGLImageTargetTexture2DOES_fn)dlsym(libgl, "glEGLImageTargetTexture2DOES");
     IDK_LOG("comp", "glEGLImageTargetTexture2DOES dlsym=%p (libgl)\n", (void *)fn_glEGLImageTargetTexture2DOES);
+    fn_glEGLImageTargetTexStorageEXT =
+        (PFN_glEGLImageTargetTexStorageEXT_fn)dlsym(libgl, "glEGLImageTargetTexStorageEXT");
+    IDK_LOG("comp", "glEGLImageTargetTexStorageEXT dlsym=%p (libgl)\n", (void *)fn_glEGLImageTargetTexStorageEXT);
+  }
+  if (idk_fn_glGetString) {
+    const GLubyte *rend = idk_fn_glGetString(GL_RENDERER);
+    IDK_LOG("comp", "GL_RENDERER: %s\n", rend ? (const char *)rend : "(null)");
   }
   g_program = idk_shader_loader_init(&g_gl_version, &g_is_gles);
   if (g_program == 0) {

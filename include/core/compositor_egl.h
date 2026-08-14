@@ -1,4 +1,4 @@
- /*
+/*
  * compositor_egl.h - EGL/GL compositor for overlay frames
  *
  * Simpler API than before:
@@ -11,8 +11,8 @@
 #ifndef IDK_COMPOSITOR_EGL_H
 #define IDK_COMPOSITOR_EGL_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +58,13 @@ void idk_compositor_egl_notify_resize(int w, int h);
  * Check if the compositor is initialized (listening socket open).
  */
 int idk_compositor_egl_has_overlay(void);
+
+/**
+ * Resolve EGL functions + init our own EGL display for dmabuf import.
+ * Call from hook install thread before the game renders (never from
+ * the render path — EGL init inside the swap hook deadlocks wine).
+ */
+void idk_compositor_egl_preload(void);
 
 /**
  * Shut down the compositor. Destroys GL resources.
