@@ -51,6 +51,21 @@ foreach src : ['test_idk_producer.c']
     test(name, test_exe)
 endforeach
 
+# End-to-end CEF webview test (built only with -Dcef_dist)
+cef_dist = get_option('cef_dist')
+if cef_dist != ''
+    test_cef_exe = executable('test_webview_cef', 'test_webview_cef.c',
+        c_args: test_c_args,
+        include_directories: inc,
+        dependencies: test_comp_dep,
+    )
+    test('test_webview_cef', test_cef_exe,
+        args: [idk_webview_cef_exe],
+        is_parallel: false,
+        timeout: 60,
+    )
+endif
+
 # Static library for ipc.c - validation tests
 test_ipc_lib = static_library('test_ipc',
     '../src/ipc/ipc.c',

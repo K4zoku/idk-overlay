@@ -1,0 +1,6 @@
+option(
+    'cef_dist',
+    type: 'string',
+    value: '',
+    description: 'Path to a CEF linux64 binary distribution (enables idk-webview-cef)',
+)

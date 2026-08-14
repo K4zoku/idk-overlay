@@ -156,10 +156,14 @@ if not meson.is_subproject()
 endif
 
 # ── Build summary ──────────────────────────────────────────────────────
+cef_dist = get_option('cef_dist')
 message('\n=== idk-overlay build configuration ===')
 message('  libidk-overlay.so:    inject path (EGL + Vulkan hooks)')
 message('  libidk-producer:   frame producer library (webview)')
 message('  idk-webview:          Qt6 webview (DMA-BUF + idk socket)')
+if cef_dist != ''
+  message('  idk-webview-cef:      CEF webview (OSR + DMA-BUF + idk socket)')
+endif
 message('  idk-inject:           CLI (wraps syringe_inject)')
 message('  idk-broker:           host-ns webview spawner (Wine/Proton)')
 message('=============================================\n')

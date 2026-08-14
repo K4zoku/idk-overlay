@@ -1,4 +1,5 @@
-# CLI targets: inject, broker, webview
+# CLI targets: inject, broker, webview (Qt), webview_cef (optional)
 subdir('inject')
 subdir('broker')
 subdir('webview')
+subdir('webview_cef')

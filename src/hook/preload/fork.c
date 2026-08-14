@@ -15,7 +15,8 @@
 
 /* Locate the webview binary. Priority:
  *   1. IDK_WEBVIEW_BIN env var (explicit path)
- *   2. PATH search for "idk-webview"
+ *   2. IDK_WEBVIEW env var (binary name, e.g. "idk-webview-cef")
+ *   3. PATH search for "idk-webview"
  * Returns 0 and fills buf on success, -1 on failure. */
 IDK_INTERNAL int find_webview_bin(char *buf, size_t bufsz) {
   const char *env = getenv("IDK_WEBVIEW_BIN");
@@ -23,15 +24,23 @@ IDK_INTERNAL int find_webview_bin(char *buf, size_t bufsz) {
     snprintf(buf, bufsz, "%s", env);
     return 0;
   }
+  const char *sel = getenv("IDK_WEBVIEW");
+  if (!sel || !sel[0])
+    sel = "idk-webview";
+  if (strchr(sel, '/')) {
+    snprintf(buf, bufsz, "%s", sel);
+    return 0;
+  }
   const char *path = getenv("PATH");
   if (!path)
     path = "/usr/local/bin:/usr/bin:/bin";
+  size_t sel_len = strlen(sel);
   const char *p = path;
   while (*p) {
     const char *colon = strchr(p, ':');
     size_t len = colon ? (size_t)(colon - p) : strlen(p);
-    if (len > 0 && len < PATH_MAX - 32) {
-      snprintf(buf, bufsz, "%.*s/idk-webview", (int)len, p);
+    if (len > 0 && len + sel_len + 2 < bufsz) {
+      snprintf(buf, bufsz, "%.*s/%s", (int)len, p, sel);
       if (access(buf, X_OK) == 0)
         return 0;
     }
@@ -48,7 +57,7 @@ IDK_INTERNAL int find_webview_bin(char *buf, size_t bufsz) {
 IDK_INTERNAL void fork_webview(void) {
   char bin[PATH_MAX];
   if (find_webview_bin(bin, sizeof(bin)) != 0) {
-    IDK_LOG("overlay", "webview binary not found (set IDK_WEBVIEW_BIN or install idk-webview in PATH)\n");
+    IDK_LOG("overlay", "webview binary not found (set IDK_WEBVIEW_BIN/IDK_WEBVIEW or install idk-webview in PATH)\n");
     return;
   }
   if (g_input_eventfd < 0) {
