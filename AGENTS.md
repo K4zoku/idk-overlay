@@ -48,7 +48,7 @@ Default is 2 (no broker) so test static lib and external callers never block.
 - `IDK_INPUT_ABSTRACT` — abstract socket name for input (set together with transport)
 - `IDK_BROKER=1` — force broker mode (wine detection is automatic otherwise)
 - `IDK_SOCKET` — override filesystem socket path (ignored when `IDK_TP_ABSTRACT` is set)
-- `IDK_WEBVIEW` — webview binary name to spawn (default `idk-webview`; `idk-webview-cef` selects the CEF backend). Honored by both the hook fork path (`src/hook/preload/fork.c`) and the broker (`src/cli/broker/spawn.c`). `IDK_WEBVIEW_BIN` (absolute path) still wins.
+- `IDK_WEBVIEW` — webview binary name to spawn (default `idk-webview`; `idk-webview-cef` selects the CEF backend). Hook fork path reads it from its own env (`src/hook/preload/fork.c`); broker path receives it from the game via the handshake `webview` field (`src/cli/broker/spawn.c`) — the broker is a separate long-running process so the game's env alone is not enough. `IDK_WEBVIEW_BIN` (absolute path) still wins on the hook path.
 - `IDK_CEF_DIR` — CEF dist root for `idk-webview-cef` (default: compiled-in `-Dcef_dist` path)
 - `IDK_CEF_DEBUG_PORT` — `idk-webview-cef`: enable DevTools on this port (optional)
 

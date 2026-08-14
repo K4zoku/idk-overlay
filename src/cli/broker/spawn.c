@@ -8,9 +8,12 @@
 
 #include "internal.h"
 
-/* Webview binary name. Priority: IDK_WEBVIEW_BIN (explicit path) >
- * IDK_WEBVIEW (name, e.g. "idk-webview-cef") > default. */
-static const char *webview_bin(void) {
+/* Webview binary name. Priority: handshake IDK_WEBVIEW (from the game's
+ * env, via the overlay) > broker's own IDK_WEBVIEW_BIN / IDK_WEBVIEW >
+ * default. */
+static const char *webview_bin(const idk_cp_handshake_t *hs) {
+  if (hs->webview[0])
+    return hs->webview;
   const char *bin = getenv("IDK_WEBVIEW_BIN");
   if (bin && bin[0])
     return bin;
@@ -45,7 +48,7 @@ pid_t spawn_webview(const idk_cp_handshake_t *hs, int *exec_err_fd) {
     snprintf(buf, sizeof(buf), "%s", hs->input_socket);
     setenv("IDK_INPUT_ABSTRACT", buf, 1);
     setenv("IDK_MATCH", hs->comm, 1);
-    const char *bin = webview_bin();
+    const char *bin = webview_bin(hs);
     char *argv[4] = {(char *)bin, NULL, NULL, NULL};
     if (hs->no_dmabuf)
       argv[1] = (char *)"--no-dmabuf";

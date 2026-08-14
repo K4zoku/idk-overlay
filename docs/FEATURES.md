@@ -61,7 +61,7 @@ without a separate `_abstract` entry point.
 |---------|--------|
 | Per-user abstract socket `\0idk_broker_<uid>` | ✓ |
 | `SO_PEERCRED` same-uid auth on accept | ✓ |
-| Handshake `{ identity, comm, tp_socket, input_socket, tp_backend }` | ✓ (`idk_cp_handshake_t`, 204 bytes packed) |
+| Handshake `{ identity, comm, tp_socket, input_socket, tp_backend, no_dmabuf, webview }` | ✓ (`idk_cp_handshake_t`, 230 bytes packed) |
 | Host-namespace webview exec | ✓ (`idk-broker` → `idk-webview`) |
 | Overlay auto-detect (`.exe` / `/proc/self/maps` scan) | ✓ |
 | Force via `IDK_BROKER=1` | ✓ |

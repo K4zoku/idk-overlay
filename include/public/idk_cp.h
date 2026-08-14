@@ -35,14 +35,15 @@ typedef struct idk_cp_handshake {
   char input_socket[64]; /* offset 132 - abstract name, no leading '\0'     */
   uint8_t tp_backend;    /* offset 196 - 0=socket, 1=shm                   */
   uint8_t no_dmabuf;     /* offset 197 - 1=compositor can't import dmabuf  */
-  uint8_t _pad[6];       /* offset 198 - reserved                           */
-} idk_cp_handshake_t;    /* total 204 bytes                                  */
+  char webview[32];      /* offset 198 - webview binary name (NUL-term,
+                          *              from IDK_WEBVIEW, "" = default)   */
+} idk_cp_handshake_t;    /* total 230 bytes                                  */
 #pragma pack(pop)
 
 #ifdef __cplusplus
-static_assert(sizeof(idk_cp_handshake_t) == 204, "idk_cp_handshake_t must be 204 bytes");
+static_assert(sizeof(idk_cp_handshake_t) == 230, "idk_cp_handshake_t must be 230 bytes");
 #else
-_Static_assert(sizeof(idk_cp_handshake_t) == 204, "idk_cp_handshake_t must be 204 bytes");
+_Static_assert(sizeof(idk_cp_handshake_t) == 230, "idk_cp_handshake_t must be 230 bytes");
 #endif
 
 #ifdef __cplusplus

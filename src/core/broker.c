@@ -110,6 +110,9 @@ int connect_via_broker(void) {
   hs.tp_backend = 0; /* socket backend forced in broker mode */
   const char *no_dmabuf = getenv("IDK_NO_DMABUF");
   hs.no_dmabuf = no_dmabuf && no_dmabuf[0] && no_dmabuf[0] != '0';
+  const char *webview = getenv("IDK_WEBVIEW");
+  if (webview && webview[0])
+    snprintf(hs.webview, sizeof(hs.webview), "%s", webview);
   const char *comm = idk_process_name();
   if (comm)
     snprintf(hs.comm, sizeof(hs.comm), "%s", comm);
