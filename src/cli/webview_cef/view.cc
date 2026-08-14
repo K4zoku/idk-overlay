@@ -117,15 +117,48 @@ void View::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType type, cons
 /* ── Frame paths ───────────────────────────────────────────────────── */
 
 void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
-  if (info.plane_count < 1 || info.plane_count > 4)
-    return;
   int w = info.extra.visible_rect.width;
   int h = info.extra.visible_rect.height;
   if (w <= 0 || h <= 0)
     return;
 
-  /* The fds belong to CEF's buffer pool: dup them — idk_tp_send closes
-   * the fds it is handed (SCM_RIGHTS ownership transfer). */
+  /* Preferred: blit CEF's (linear) buffer into our driver-native staging
+   * buffer — the compositor imports with the driver's default tiled
+   * layout, so a linear buffer would be misread (see gpubuf.h). */
+  uint32_t stride = 0, fourcc = 0;
+  uint64_t modifier = 0;
+  uint16_t buf_id = 0;
+  if (gpu_.Init() && gpu_.BlitAndExport(info, w, h, &stride, &fourcc, &modifier, &buf_id) == 0) {
+    int fd = dup(gpu_.Fd());
+    if (fd < 0)
+      return;
+    idk_frame_header_t hdr = {};
+    hdr.modifier = modifier;
+    hdr.width = w;
+    hdr.height = h;
+    hdr.stride = stride;
+    hdr.fourcc = fourcc;
+    hdr.flags = IDK_FRAME_FLAG_VISIBLE;
+    hdr.nfd = 1;
+    hdr.buf_id = buf_id;
+    if (idk_producer_send_dma_buf(&fd, &hdr) == 0) {
+      pending_ = true;
+      want_frame_ = false;
+      send_time_ms_ = now_ms();
+    }
+    return;
+  }
+
+  /* Fallback: forward CEF's own pooled buffer (dup — idk_tp_send closes
+   * the fds it is handed). Only correct when the compositor imports
+   * linear buffers as-is. */
+  static bool s_warned = false;
+  if (!s_warned) {
+    IDK_LOG("webview-cef", "staging blit unavailable - forwarding CEF buffer directly\n");
+    s_warned = true;
+  }
+  if (info.plane_count < 1 || info.plane_count > 4)
+    return;
   int fds[4];
   for (int i = 0; i < info.plane_count; i++)
     fds[i] = dup(info.planes[i].fd);
@@ -364,12 +397,14 @@ void View::SetCapture(bool on) {
   capture_ = on;
   if (browser_)
     browser_->GetHost()->SetFocus(on);
+  FireCaptureEvents(on);
 }
 
 void View::SetOverlayVisible(bool v) {
   if (visible_ == v)
     return;
   visible_ = v;
+  FireVisibleEvents(v);
   if (v) {
     want_frame_ = true;
     if (browser_)
@@ -377,4 +412,36 @@ void View::SetOverlayVisible(bool v) {
   } else {
     want_frame_ = false;
   }
+}
+
+/* ── JS events (mirror the Qt webview: window CustomEvents) ─────────── */
+
+void View::FireJs(const std::string &events) {
+  if (!browser_)
+    return;
+  std::string js =
+      "(function(){var evts=[" + events + "];for(var i=0;i<evts.length;i++)window.dispatchEvent(evts[i]);})()";
+  browser_->GetMainFrame()->ExecuteJavaScript(js, "", 0);
+}
+
+void View::FireCaptureEvents(bool captured) {
+  std::string evts =
+      std::string("new CustomEvent('overlaycapturechanged',{detail:{captured:") + (captured ? "true" : "false") + "}})";
+  if (captured && !js_capture_)
+    evts = "new CustomEvent('overlaycapturestart')," + evts;
+  else if (!captured && js_capture_)
+    evts = "new CustomEvent('overlaycaptureend')," + evts;
+  js_capture_ = captured;
+  FireJs(evts);
+}
+
+void View::FireVisibleEvents(bool visible) {
+  std::string evts =
+      std::string("new CustomEvent('overlayvisiblechanged',{detail:{visible:") + (visible ? "true" : "false") + "}})";
+  if (visible && !js_visible_)
+    evts = "new CustomEvent('overlayshow')," + evts;
+  else if (!visible && js_visible_)
+    evts = "new CustomEvent('overlayhide')," + evts;
+  js_visible_ = visible;
+  FireJs(evts);
 }

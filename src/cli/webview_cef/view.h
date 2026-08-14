@@ -9,6 +9,7 @@
 #include "include/cef_render_handler.h"
 
 #include "config.h"
+#include "gpubuf.h"
 #include "public/idk_frames.h"
 
 class InputThread;
@@ -80,6 +81,9 @@ private:
   void InjectScripts();
   void LoadUrl();
   std::string SockName() const;
+  void FireJs(const std::string &events);
+  void FireCaptureEvents(bool captured);
+  void FireVisibleEvents(bool visible);
 
   GroupConfig conf_;
   CefRefPtr<CefBrowser> browser_;
@@ -103,7 +107,11 @@ private:
   bool want_frame_ = true; /* compositor asked for the next frame */
   bool visible_ = true;    /* overlay visibility */
   bool capture_ = false;
+  bool js_capture_ = false; /* last capture state seen by JS (edge events) */
+  bool js_visible_ = true;  /* last visibility state seen by JS */
   int send_time_ms_ = 0;
+
+  GpuBuf gpu_; /* staging blit (CEF linear → driver-native tiled) */
 
   IMPLEMENT_REFCOUNTING(View);
 };

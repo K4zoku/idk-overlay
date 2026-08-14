@@ -36,9 +36,10 @@ if cef_dist != ''
   cef_webview_inc = include_directories('../../../include')
   idk_webview_cef_exe = executable(
       'idk-webview-cef',
-      files('app.h', 'config.cc', 'input.cc', 'keys.cc', 'main.cc', 'view.cc'),
+      files('app.h', 'config.cc', 'gpubuf.cc', 'input.cc', 'keys.cc', 'main.cc',
+            'view.cc'),
       include_directories: [inc, cef_inc],
-      dependencies: [idk_producer_dep, dl_lib, pthread_lib],
+      dependencies: [idk_producer_dep, dl_lib, pthread_lib, gbm_dep],
       cpp_args: [
           '-std=c++20',
           '-DWRAPPING_CEF_SHARED',
