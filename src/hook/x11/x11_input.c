@@ -17,21 +17,22 @@
  * toggle exists at runtime.
  */
 
-#include "hook/x11_internal.h"
-#include "hook/syringe_hook.h"
 #include "hook/hook_util.h"
+#include "hook/overlay.h"
+#include "hook/syringe_hook.h"
+#include "hook/x11_internal.h"
 
 /* X11-specific globals (NOT shared with Wayland) */
 void *g_x11_handle = NULL;
 int g_hook_installed = 0;
 Display *g_game_display = NULL;
-Window  g_game_window = 0;
-Cursor  g_blank_cursor = 0;
-Cursor  g_saved_cursor = 0;
-int     g_cursor_grabbed = 0;
+Window g_game_window = 0;
+Cursor g_blank_cursor = 0;
+Cursor g_saved_cursor = 0;
+int g_cursor_grabbed = 0;
 
 #define X11_DEFINE_ORIG(ret, name, params) name##_fn orig_##name = NULL;
-#define X11_DEFINE_FN(ret, name, params)   name##_fn fn_##name = NULL;
+#define X11_DEFINE_FN(ret, name, params) name##_fn fn_##name = NULL;
 X11_EVENT_FOREACH(X11_DEFINE_ORIG)
 X11_CURSOR_FOREACH(X11_DEFINE_FN)
 #undef X11_DEFINE_ORIG
@@ -40,55 +41,66 @@ X11_CURSOR_FOREACH(X11_DEFINE_FN)
 /* Symbol resolution */
 
 static int resolve_x11_symbols(void) {
-    if (g_x11_handle) return 0;
+  if (g_x11_handle)
+    return 0;
 
-    void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
-    if (!h) h = dlopen("libX11.so.6", RTLD_NOW);
-    if (!h) h = dlopen("libX11.so", RTLD_NOW);
-    if (!h) {
-        XERR("dlopen libX11 failed: %s", dlerror());
-        return -1;
-    }
-    g_x11_handle = h;
+  void *h = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
+  if (!h)
+    h = dlopen("libX11.so.6", RTLD_NOW);
+  if (!h)
+    h = dlopen("libX11.so", RTLD_NOW);
+  if (!h) {
+    XERR("dlopen libX11 failed: %s", dlerror());
+    return -1;
+  }
+  g_x11_handle = h;
 
 #define X11_RESOLVE(ret, name, params) fn_##name = (name##_fn)dlsym(h, #name);
-    X11_CURSOR_FOREACH(X11_RESOLVE)
+  X11_CURSOR_FOREACH(X11_RESOLVE)
 #undef X11_RESOLVE
 
-    if (!fn_XStringToKeysym) {
-        XERR("XStringToKeysym not resolved\n");
-        return -1;
-    }
+  if (!fn_XStringToKeysym) {
+    XERR("XStringToKeysym not resolved\n");
+    return -1;
+  }
 
-    XLOG("libX11 resolved: XKeycodeToKeysym=%p XStringToKeysym=%p XDefineCursor=%p XGrabPointer=%p",
-         (void*)fn_XKeycodeToKeysym, (void*)fn_XStringToKeysym,
-         (void*)fn_XDefineCursor, (void*)fn_XGrabPointer);
-    return 0;
+  XLOG("libX11 resolved: XKeycodeToKeysym=%p XStringToKeysym=%p XDefineCursor=%p XGrabPointer=%p",
+       (void *)fn_XKeycodeToKeysym, (void *)fn_XStringToKeysym, (void *)fn_XDefineCursor, (void *)fn_XGrabPointer);
+  return 0;
 }
 
 /* Capture toggle */
 
 void idk_x11_input_set_capture(int enable) {
-    int new_state = enable ? 1 : 0;
-    if (new_state == g_captured) return;
+  int new_state = enable ? 1 : 0;
+  if (new_state == g_captured)
+    return;
 
-    g_captured = new_state;
-    XLOG("set_capture(%s)", new_state ? "ON" : "OFF");
+  g_captured = new_state;
+  XLOG("set_capture(%s)", new_state ? "ON" : "OFF");
 
-    /* No XGrabPointer - our XNextEvent-family hooks already intercept events
-     * before the game sees them. Grabbing would lock the cursor into the game
-     * window (relative mouse mode), which is NOT what we want for an overlay.
-     * The game continues to receive non-input events (Expose, ConfigureNotify,
-     * etc.) normally; we only swallow KeyPress/KeyRelease/ButtonPress/
-     * ButtonRelease/MotionNotify when captured. */
+  /* Show a visible cursor while captured — the game stops rendering its
+   * own cursor (no motion events). XUndefineCursor reverts the window to
+   * the game's cursor on release. */
+  if (g_game_display && g_game_window && fn_XDefineCursor) {
+    if (new_state && !g_blank_cursor && fn_XCreateFontCursor)
+      g_blank_cursor = fn_XCreateFontCursor(g_game_display, 68 /* XC_left_ptr */);
+    if (new_state && g_blank_cursor) {
+      fn_XDefineCursor(g_game_display, g_game_window, g_blank_cursor);
+      if (fn_XFlush)
+        fn_XFlush(g_game_display);
+    } else if (!new_state && g_blank_cursor && fn_XFreeCursor) {
+      fn_XFreeCursor(g_game_display, g_blank_cursor);
+      g_blank_cursor = 0;
+    }
+  }
 
-    send_capture_state((uint32_t)new_state);
-    if (new_state) send_repeat_info();
+  send_capture_state((uint32_t)new_state);
+  if (new_state)
+    send_repeat_info();
 }
 
-int idk_x11_input_is_captured(void) {
-    return g_captured;
-}
+int idk_x11_input_is_captured(void) { return g_captured; }
 
 /* Event dispatch */
 
@@ -100,58 +112,44 @@ extern int x11_handle_motion_event(XEventStorage *ev);
 /* Dispatch a single X event. Returns 1 if it should be swallowed
  * (captured or hotkey), 0 if it should be returned to the caller. */
 int x11_dispatch_event(XEventStorage *ev) {
-    if (!ev) return 0;
-    int type = ev->xany.type;
+  if (!ev)
+    return 0;
+  int type = ev->xany.type;
 
-    /* Cache display + window from any event */
-    if (!g_game_display && ev->xany.display) g_game_display = ev->xany.display;
-    if (!g_game_window && ev->xany.window) g_game_window = ev->xany.window;
+  /* Cache display + window from any event */
+  if (!g_game_display && ev->xany.display)
+    g_game_display = ev->xany.display;
+  if (!g_game_window && ev->xany.window)
+    g_game_window = ev->xany.window;
 
-    /* Retroactively inject pointer + key release masks on the game window.
-     * Games like glxgears call XSelectInput BEFORE our hook installs, so
-     * our XSelectInput hook never fires. We need to OR-in our masks here
-     * so ButtonPress/ButtonRelease/MotionNotify/KeyRelease events arrive.
-     * Done once per process (g_masks_injected flag). */
-    static int g_masks_injected = 0;
-    if (!g_masks_injected && g_game_display && g_game_window &&
-        fn_XGetWindowAttributes && orig_XSelectInput) {
-        g_masks_injected = 1;
+  /* Retroactively inject pointer + key release masks on the game window.
+   * Games like glxgears call XSelectInput BEFORE our hook installs, so
+   * our XSelectInput hook never fires. We need to OR-in our masks here
+   * so ButtonPress/ButtonRelease/MotionNotify/KeyRelease events arrive.
+   * Done once per process (g_masks_injected flag). */
+  static int g_masks_injected = 0;
+  if (!g_masks_injected && g_game_display && g_game_window && orig_XSelectInput) {
+    g_masks_injected = 1;
+    long extra = ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyReleaseMask;
+    orig_XSelectInput(g_game_display, g_game_window, extra);
+    XLOG("retroactively set event masks: 0x%lx on window 0x%lx", extra, (unsigned long)g_game_window);
+  }
 
-        /* XWindowAttributes is a large struct. We only need your_event_mask.
-         * On x86-64 Linux, it's at offset 104 (long). Use a raw buffer. */
-        long attrs[64];  /* oversized to be safe */
-        if (fn_XGetWindowAttributes(g_game_display, g_game_window, attrs) != 0) {
-            long cur_mask = attrs[13];  /* your_event_mask at offset 104 = 13*8 */
-            long new_mask = cur_mask | ButtonPressMask | ButtonReleaseMask |
-                            PointerMotionMask | KeyReleaseMask;
-            orig_XSelectInput(g_game_display, g_game_window, new_mask);
-            XLOG("retroactively injected event masks: 0x%lx -> 0x%lx on window 0x%lx",
-                 cur_mask, new_mask, (unsigned long)g_game_window);
-        } else {
-            /* Fallback: just set our masks (may lose game's masks) */
-            long extra = ButtonPressMask | ButtonReleaseMask |
-                         PointerMotionMask | KeyReleaseMask;
-            orig_XSelectInput(g_game_display, g_game_window, extra);
-            XLOG("retroactively set event masks (fallback): 0x%lx on window 0x%lx",
-                 extra, (unsigned long)g_game_window);
-        }
-    }
+  switch (type) {
+  case KeyPress:
+  case KeyRelease:
+    return x11_handle_key_event(ev);
 
-    switch (type) {
-        case KeyPress:
-        case KeyRelease:
-            return x11_handle_key_event(ev);
+  case ButtonPress:
+  case ButtonRelease:
+    return x11_handle_button_event(ev);
 
-        case ButtonPress:
-        case ButtonRelease:
-            return x11_handle_button_event(ev);
+  case MotionNotify:
+    return x11_handle_motion_event(ev);
 
-        case MotionNotify:
-            return x11_handle_motion_event(ev);
-
-        default:
-            return 0;  /* don't swallow other event types */
-    }
+  default:
+    return 0; /* don't swallow other event types */
+  }
 }
 
 /* Hooks */
@@ -166,116 +164,165 @@ int x11_dispatch_event(XEventStorage *ev) {
  * reaching glXSwapBuffers (→ compositor never processes frames → ACK timeout).
  * Returning a NoExpose event lets the game's loop proceed to render+swap. */
 static void fill_noexpose(XEventStorage *ev, Display *dpy) {
-    memset(ev, 0, sizeof(*ev));
-    ev->xany.type = NoExpose;  /* 14 */
-    ev->xany.display = dpy;
+  memset(ev, 0, sizeof(*ev));
+  ev->xany.type = NoExpose; /* 14 */
+  ev->xany.display = dpy;
 }
 
 static int hook_XNextEvent(Display *dpy, XEventStorage *ev) {
-    if (!orig_XNextEvent)
-        orig_XNextEvent = (XNextEvent_fn)hook_orig("XNextEvent");
-    if (!g_game_display) g_game_display = dpy;
+  if (!orig_XNextEvent)
+    orig_XNextEvent = (XNextEvent_fn)hook_orig("XNextEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
 
-    int r = orig_XNextEvent(dpy, ev);
-    if (r != 0) return r;
-    if (x11_dispatch_event(ev)) {
-        /* Event swallowed (captured/hotkey) - return NoExpose instead of
-         * looping, so the game's main loop proceeds to render + swap. */
-        fill_noexpose(ev, dpy);
-    }
-    return 0;
+  int r = orig_XNextEvent(dpy, ev);
+  if (r != 0)
+    return r;
+  if (x11_dispatch_event(ev)) {
+    /* Event swallowed (captured/hotkey) - return NoExpose instead of
+     * looping, so the game's main loop proceeds to render + swap. */
+    fill_noexpose(ev, dpy);
+  }
+  return 0;
 }
 
 static int hook_XPeekEvent(Display *dpy, XEventStorage *ev) {
-    if (!orig_XPeekEvent)
-        orig_XPeekEvent = (XPeekEvent_fn)hook_orig("XPeekEvent");
-    if (!g_game_display) g_game_display = dpy;
+  if (!orig_XPeekEvent)
+    orig_XPeekEvent = (XPeekEvent_fn)hook_orig("XPeekEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
 
-    int r = orig_XPeekEvent(dpy, ev);
-    if (r != 0) return r;
-    x11_dispatch_event(ev);
-    return 0;
+  int r = orig_XPeekEvent(dpy, ev);
+  if (r != 0)
+    return r;
+  x11_dispatch_event(ev);
+  return 0;
 }
 
 static int hook_XCheckWindowEvent(Display *dpy, Window w, long mask, XEventStorage *ev) {
-    if (!orig_XCheckWindowEvent)
-        orig_XCheckWindowEvent = (XCheckWindowEvent_fn)hook_orig("XCheckWindowEvent");
-    if (!g_game_display) g_game_display = dpy;
-    if (!g_game_window && w) g_game_window = w;
+  if (!orig_XCheckWindowEvent)
+    orig_XCheckWindowEvent = (XCheckWindowEvent_fn)hook_orig("XCheckWindowEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
+  if (!g_game_window && w)
+    g_game_window = w;
 
-    int r = orig_XCheckWindowEvent(dpy, w, mask, ev);
-    if (r == 0) return 0;
-    if (x11_dispatch_event(ev)) {
-        fill_noexpose(ev, dpy);
-    }
-    return 1;
+  int r = orig_XCheckWindowEvent(dpy, w, mask, ev);
+  if (r == 0)
+    return 0;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 1;
 }
 
 static int hook_XMaskEvent(Display *dpy, long mask, XEventStorage *ev) {
-    if (!orig_XMaskEvent)
-        orig_XMaskEvent = (XMaskEvent_fn)hook_orig("XMaskEvent");
-    if (!g_game_display) g_game_display = dpy;
+  if (!orig_XMaskEvent)
+    orig_XMaskEvent = (XMaskEvent_fn)hook_orig("XMaskEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
 
-    int r = orig_XMaskEvent(dpy, mask, ev);
-    if (r != 0) return r;
-    if (x11_dispatch_event(ev)) {
-        fill_noexpose(ev, dpy);
-    }
-    return 0;
+  int r = orig_XMaskEvent(dpy, mask, ev);
+  if (r != 0)
+    return r;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 0;
 }
 
 static int hook_XCheckMaskEvent(Display *dpy, long mask, XEventStorage *ev) {
-    if (!orig_XCheckMaskEvent)
-        orig_XCheckMaskEvent = (XCheckMaskEvent_fn)hook_orig("XCheckMaskEvent");
-    if (!g_game_display) g_game_display = dpy;
+  if (!orig_XCheckMaskEvent)
+    orig_XCheckMaskEvent = (XCheckMaskEvent_fn)hook_orig("XCheckMaskEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
 
-    int r = orig_XCheckMaskEvent(dpy, mask, ev);
-    if (r == 0) return 0;
-    if (x11_dispatch_event(ev)) {
-        fill_noexpose(ev, dpy);
-    }
-    return 1;
+  int r = orig_XCheckMaskEvent(dpy, mask, ev);
+  if (r == 0)
+    return 0;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 1;
 }
 
 static int hook_XCheckTypedEvent(Display *dpy, int type, XEventStorage *ev) {
-    if (!orig_XCheckTypedEvent)
-        orig_XCheckTypedEvent = (XCheckTypedEvent_fn)hook_orig("XCheckTypedEvent");
-    if (!g_game_display) g_game_display = dpy;
+  if (!orig_XCheckTypedEvent)
+    orig_XCheckTypedEvent = (XCheckTypedEvent_fn)hook_orig("XCheckTypedEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
 
-    int r = orig_XCheckTypedEvent(dpy, type, ev);
-    if (r == 0) return 0;
-    if (x11_dispatch_event(ev)) {
-        fill_noexpose(ev, dpy);
-    }
-    return 1;
+  int r = orig_XCheckTypedEvent(dpy, type, ev);
+  if (r == 0)
+    return 0;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 1;
 }
 
 static int hook_XCheckTypedWindowEvent(Display *dpy, Window w, int type, XEventStorage *ev) {
-    if (!orig_XCheckTypedWindowEvent)
-        orig_XCheckTypedWindowEvent = (XCheckTypedWindowEvent_fn)hook_orig("XCheckTypedWindowEvent");
-    if (!g_game_display) g_game_display = dpy;
-    if (!g_game_window && w) g_game_window = w;
+  if (!orig_XCheckTypedWindowEvent)
+    orig_XCheckTypedWindowEvent = (XCheckTypedWindowEvent_fn)hook_orig("XCheckTypedWindowEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
+  if (!g_game_window && w)
+    g_game_window = w;
 
-    int r = orig_XCheckTypedWindowEvent(dpy, w, type, ev);
-    if (r == 0) return 0;
-    if (x11_dispatch_event(ev)) {
-        fill_noexpose(ev, dpy);
-    }
-    return 1;
+  int r = orig_XCheckTypedWindowEvent(dpy, w, type, ev);
+  if (r == 0)
+    return 0;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 1;
 }
 
 static int hook_XWindowEvent(Display *dpy, Window w, long mask, XEventStorage *ev) {
-    if (!orig_XWindowEvent)
-        orig_XWindowEvent = (XWindowEvent_fn)hook_orig("XWindowEvent");
-    if (!g_game_display) g_game_display = dpy;
-    if (!g_game_window && w) g_game_window = w;
+  if (!orig_XWindowEvent)
+    orig_XWindowEvent = (XWindowEvent_fn)hook_orig("XWindowEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
+  if (!g_game_window && w)
+    g_game_window = w;
 
-    int r = orig_XWindowEvent(dpy, w, mask, ev);
-    if (r != 0) return r;
-    if (x11_dispatch_event(ev)) {
-        fill_noexpose(ev, dpy);
-    }
+  int r = orig_XWindowEvent(dpy, w, mask, ev);
+  if (r != 0)
+    return r;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 0;
+}
+
+static int hook_XIfEvent(Display *dpy, XEventStorage *ev, void *pred, void *arg) {
+  if (!orig_XIfEvent)
+    orig_XIfEvent = (XIfEvent_fn)hook_orig("XIfEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
+
+  int r = orig_XIfEvent(dpy, ev, pred, arg);
+  if (r != 0)
+    return r;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 0;
+}
+
+static int hook_XCheckIfEvent(Display *dpy, XEventStorage *ev, void *pred, void *arg) {
+  if (!orig_XCheckIfEvent)
+    orig_XCheckIfEvent = (XCheckIfEvent_fn)hook_orig("XCheckIfEvent");
+  if (!g_game_display)
+    g_game_display = dpy;
+
+  int r = orig_XCheckIfEvent(dpy, ev, pred, arg);
+  if (r == 0)
     return 0;
+  if (x11_dispatch_event(ev)) {
+    fill_noexpose(ev, dpy);
+  }
+  return 1;
 }
 
 /* Init / shutdown */
@@ -286,84 +333,99 @@ static int hook_XWindowEvent(Display *dpy, Window w, long mask, XEventStorage *e
  * ButtonPress/ButtonRelease/MotionNotify events flow into the X event queue
  * where our XNextEvent-family hooks can intercept them when captured. */
 static int hook_XSelectInput(Display *dpy, Window w, long mask) {
-    if (!orig_XSelectInput)
-        orig_XSelectInput = (XSelectInput_fn)hook_orig("XSelectInput");
-    if (!g_game_display) g_game_display = dpy;
-    if (!g_game_window && w) g_game_window = w;
+  if (!orig_XSelectInput)
+    orig_XSelectInput = (XSelectInput_fn)hook_orig("XSelectInput");
+  if (!g_game_display)
+    g_game_display = dpy;
+  if (!g_game_window && w)
+    g_game_window = w;
 
-    /* Inject pointer + key release masks. KeyReleaseMask so we get
-     * KeyRelease events (needed to stop webview key repeat timer). */
-    mask |= ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyReleaseMask;
+  mask |= ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyReleaseMask;
 
-    return orig_XSelectInput(dpy, w, mask);
+  return orig_XSelectInput(dpy, w, mask);
 }
 
 int idk_x11_input_init(void) {
-    if (g_hook_installed) return 0;
-
-    if (resolve_x11_symbols() != 0) return -1;
-
-    /* Reuse Wayland's configure_hotkey() - same env var (IDK_HOTKEY_CAPTURE),
-     * same parsing, same scancode/keysym tables. The hotkey detection
-     * (is_capture_hotkey/is_overlay_hotkey) is also shared. */
-    configure_hotkey();
-
-    /* Reuse Wayland's init_input_socket() - same socket path scheme
-     * (/tmp/idk-overlay-<pid>-input), same accept thread, same
-     * send_event_to_webview helper. The webview side is identical. */
-    if (init_input_socket() != 0)
-        XERR("input socket init failed - events will be dropped");
-
-    /* Install syringe hooks for XNextEvent-family. */
-    #define INSTALL(name) \
-        syringe_hook_install(#name, (void *)hook_##name, (void **)&orig_##name)
-
-    int n = 0;
-    n += INSTALL(XNextEvent);
-    n += INSTALL(XPeekEvent);
-    n += INSTALL(XCheckWindowEvent);
-    n += INSTALL(XMaskEvent);
-    n += INSTALL(XCheckMaskEvent);
-    n += INSTALL(XCheckTypedEvent);
-    n += INSTALL(XCheckTypedWindowEvent);
-    n += INSTALL(XWindowEvent);
-    n += INSTALL(XSelectInput);
-
-    #undef INSTALL
-
-    if (n == 0) {
-        XERR("no X11 hooks installed\n");
-        return -1;
-    }
-
-    g_hook_installed = 1;
-    XLOG("hooks installed: %d XNextEvent-family functions", n);
+  if (g_hook_installed)
     return 0;
+
+  if (resolve_x11_symbols() != 0)
+    return -1;
+
+  /* Reuse Wayland's configure_hotkey() - same env var (IDK_HOTKEY_CAPTURE),
+   * same parsing, same scancode/keysym tables. The hotkey detection
+   * (is_capture_hotkey/is_overlay_hotkey) is also shared. */
+  configure_hotkey();
+
+  /* Reuse Wayland's init_input_socket() - same socket path scheme
+   * (/tmp/idk-overlay-<pid>-input), same accept thread, same
+   * send_event_to_webview helper. The webview side is identical. */
+  if (init_input_socket() != 0)
+    XERR("input socket init failed - events will be dropped");
+
+/* Install syringe hooks for XNextEvent-family. */
+#define INSTALL(name) syringe_hook_install(#name, (void *)hook_##name, (void **)&orig_##name)
+
+  int n = 0;
+  XLOG("install XNextEvent");
+  n += INSTALL(XNextEvent);
+  XLOG("install XPeekEvent");
+  n += INSTALL(XPeekEvent);
+  XLOG("install XCheckWindowEvent");
+  n += INSTALL(XCheckWindowEvent);
+  XLOG("install XMaskEvent");
+  n += INSTALL(XMaskEvent);
+  XLOG("install XCheckMaskEvent");
+  n += INSTALL(XCheckMaskEvent);
+  XLOG("install XCheckTypedEvent");
+  n += INSTALL(XCheckTypedEvent);
+  XLOG("install XCheckTypedWindowEvent");
+  n += INSTALL(XCheckTypedWindowEvent);
+  XLOG("install XWindowEvent");
+  n += INSTALL(XWindowEvent);
+  XLOG("install XIfEvent");
+  n += INSTALL(XIfEvent);
+  XLOG("install XCheckIfEvent");
+  n += INSTALL(XCheckIfEvent);
+  XLOG("install XSelectInput");
+  n += INSTALL(XSelectInput);
+
+#undef INSTALL
+
+  if (n == 0) {
+    XERR("no X11 hooks installed\n");
+    return -1;
+  }
+
+  g_hook_installed = 1;
+  XLOG("hooks installed: %d XNextEvent-family functions", n);
+  return 0;
 }
 
 void idk_x11_input_shutdown(void) {
-    if (!g_hook_installed) return;
-    g_hook_installed = 0;
+  if (!g_hook_installed)
+    return;
+  g_hook_installed = 0;
 
-    /* Release cursor grab if active */
-    if (g_cursor_grabbed && g_game_display && fn_XUngrabPointer) {
-        fn_XUngrabPointer(g_game_display, 0);
-        g_cursor_grabbed = 0;
-    }
-    if (g_blank_cursor && g_game_display && fn_XFreeCursor) {
-        fn_XFreeCursor(g_game_display, g_blank_cursor);
-        g_blank_cursor = 0;
-    }
+  /* Release cursor grab if active */
+  if (g_cursor_grabbed && g_game_display && fn_XUngrabPointer) {
+    fn_XUngrabPointer(g_game_display, 0);
+    g_cursor_grabbed = 0;
+  }
+  if (g_blank_cursor && g_game_display && fn_XFreeCursor) {
+    fn_XFreeCursor(g_game_display, g_blank_cursor);
+    g_blank_cursor = 0;
+  }
 
-    /* Note: teardown_input_socket() is shared with Wayland. Only call
-     * it once - Wayland's shutdown will handle it if both are active.
-     * If only X11 was active, we call it here. */
-    if (g_input_listen_fd >= 0) {
-        teardown_input_socket();
-    }
+  /* Note: teardown_input_socket() is shared with Wayland. Only call
+   * it once - Wayland's shutdown will handle it if both are active.
+   * If only X11 was active, we call it here. */
+  if (g_input_listen_fd >= 0) {
+    teardown_input_socket();
+  }
 
-    if (g_x11_handle) {
-        dlclose(g_x11_handle);
-        g_x11_handle = NULL;
-    }
+  if (g_x11_handle) {
+    dlclose(g_x11_handle);
+    g_x11_handle = NULL;
+  }
 }

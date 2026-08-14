@@ -55,9 +55,10 @@ if vk_header_found
     if vk_test
         add_project_arguments('-DIDK_HAVE_VULKAN', language: 'c')
         add_project_arguments('-DIDK_HAVE_VULKAN', language: 'cpp')
-        if vk_layer_header_found
-            add_project_arguments('-DIDK_HAVE_VK_LAYER', language: 'c')
-        endif
+        # NOTE: -DIDK_HAVE_VK_LAYER is NOT global — only libidk-vklayer.so
+        # compiles vulkan_layer.c. A global define would make wayland_input.c
+        # reference idk_vk_layer_is_active() (defined in vulkan_layer.c) and
+        # break the preload lib link.
     endif
 endif
 
@@ -66,14 +67,26 @@ endif
 subdir('src/shaders')
 subdir('src/lib')
 
-# ── libidk-overlay.so - inject path (EGL + Vulkan hooks) ───────────────
+# Sources shared by both the preload overlay and the Vulkan layer.
+idk_core_src = [
+    'src/core/log.c',
+    'src/core/compositor.c',
+    'src/core/broker.c',
+    'src/core/transport.c',
+    'src/core/tp_socket.c',
+    'src/core/tp_shm.c',
+]
+
+# ── libidk-overlay.so - LD_PRELOAD/inject path (EGL + GLX hooks) ──────
+# Has __attribute__((constructor)) on_load() in overlay.c — safe because
+# this library is only ever loaded deliberately (LD_PRELOAD, idk-inject).
 idk_overlay_so = library(
     'idk-overlay',
-    [
+    idk_core_src + [
         'src/hook/overlay.c',
+        'src/hook/dlsym_shim.c',
         'src/hook/egl_hook.c',
         'src/hook/glx_hook.c',
-        'src/hook/vulkan_layer.c',
         'src/hook/wayland/wayland_input.c',
         'src/hook/wayland/wayland_ptr.c',
         'src/hook/wayland/wayland_kb.c',
@@ -83,13 +96,7 @@ idk_overlay_so = library(
         'src/hook/x11/x11_input.c',
         'src/hook/x11/x11_kb.c',
         'src/hook/x11/x11_ptr.c',
-        'src/core/log.c',
         'src/core/compositor_egl.c',
-        'src/core/compositor.c',
-        'src/core/compositor_vk.c',
-        'src/core/transport.c',
-        'src/core/tp_socket.c',
-        'src/core/tp_shm.c',
         'src/gl/gl_loader.c',
         'src/gl/shader_loader.c',
         'src/ipc/ipc.c',
@@ -98,6 +105,29 @@ idk_overlay_so = library(
     c_args: overlay_c_flags,
     include_directories: inc,
     dependencies: [syringe_dep, egl_dep, vk_dep],
+    link_args: ['-ldl', '-lpthread'],
+    version: '0.1',
+    install: true,
+)
+
+# ── libidk-vklayer.so - Vulkan layer (VK hooks only) ──────────────────
+# NO constructor: the Vulkan loader dlopens this into *any* Vulkan app
+# (vulkaninfo, vkcube, ...). Everything runs lazily from vkCreateInstance
+# via layer_main.c's idk_layer_ensure_started().
+vklayer_c_args = overlay_c_flags
+if vk_layer_header_found
+    vklayer_c_args += '-DIDK_HAVE_VK_LAYER'
+endif
+idk_vklayer_so = library(
+    'idk-vklayer',
+    idk_core_src + [
+        'src/hook/vulkan_layer.c',
+        'src/hook/layer_main.c',
+        'src/core/compositor_vk.c',
+    ],
+    c_args: vklayer_c_args,
+    include_directories: inc,
+    dependencies: [vk_dep],
     link_args: ['-ldl', '-lpthread'],
     objects: spv_o_files,
     version: '0.1',
@@ -112,7 +142,7 @@ vulkan_layer_json = configure_file(
     input: 'src/hook/idk_overlay.json.in',
     output: 'idk_overlay.json',
     configuration: {
-        'IDK_LAYER_LIB_PATH': meson.current_build_dir() / 'libidk-overlay.so.0.1',
+        'IDK_LAYER_LIB_PATH': meson.current_build_dir() / 'libidk-vklayer.so.0.1',
     },
 )
 
@@ -123,7 +153,7 @@ vulkan_layer_json_install = configure_file(
     input: 'src/hook/idk_overlay.json.in',
     output: 'idk_overlay_system.json',
     configuration: {
-        'IDK_LAYER_LIB_PATH': get_option('prefix') / get_option('libdir') / 'libidk-overlay.so',
+        'IDK_LAYER_LIB_PATH': get_option('prefix') / get_option('libdir') / 'libidk-vklayer.so',
     },
 )
 install_data(

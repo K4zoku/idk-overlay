@@ -10,6 +10,7 @@
 #include "hook/syringe_hook.h"
 #include "hook/graphic_hooks.h"
 #include "hook/hook_util.h"
+#include "hook/dlsym_shim.h"
 #include "hook/hook_plugin.h"
 #include "hook/wayland_input.h"
 #include "gl/gl_loader.h"
@@ -48,7 +49,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
 
     if (!fn_eglQuerySurface)
         fn_eglQuerySurface = (EGLBoolean (*)(EGLDisplay, EGLSurface, EGLint, EGLint*))
-            dlsym(RTLD_DEFAULT, "eglQuerySurface");
+            real_dlsym(RTLD_DEFAULT, "eglQuerySurface");
     if (fn_eglQuerySurface && dpy && surface) {
         EGLint surf_w = 0, surf_h = 0;
         if (fn_eglQuerySurface(dpy, surface, EGL_WIDTH, &surf_w) &&
@@ -81,9 +82,9 @@ static int install_egl_hook(void) {
      * which works even when the game calls eglSwapBuffers via dlsym
      * (e.g. .NET runtime, SDL3 dlopen'd EGL). */
     void *egl_swap_addr = NULL;
-    void *lib = dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib) lib = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
-    if (lib) egl_swap_addr = dlsym(lib, "eglSwapBuffers");
+    void *lib = real_dlopen("libEGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+    if (!lib) lib = real_dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+    if (lib) egl_swap_addr = real_dlsym(lib, "eglSwapBuffers");
 
     /* Step 2: Try syringe_hook_install_addr (inline trampoline) first.
      * This patches the actual function code, catching ALL callers

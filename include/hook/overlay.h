@@ -58,6 +58,12 @@ int idk_overlay_try_install_wayland_input(void);
  */
 int idk_overlay_try_install_x11_input(void);
 
+int idk_is_wine(void);
+
+/* Vulkan layer: bootstrap broker/webview state from vkCreateInstance.
+ * Layer-only entry point (defined in layer_main.c of libidk-vklayer.so). */
+int idk_layer_ensure_started(void);
+
 #ifdef __cplusplus
 }
 #endif
