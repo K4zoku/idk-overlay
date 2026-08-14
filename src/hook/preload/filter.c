@@ -10,13 +10,13 @@
 static const char *const k_wine_blacklist[] = {
     "wineboot",     "wineserver",   "services.exe", "explorer.exe", "svchost.exe",     "winedevice.exe",
     "mscorsvw.exe", "plugplay.exe", "rpcss.exe",    "msiexec.exe",  "rundll32.exe",    "cmd.exe",
-    "reg.exe",      "schtasks.exe", "start.exe",    "bridge.exe",   "_v2-entry-point",
+    "reg.exe",      "schtasks.exe", "start.exe",    "bridge.exe",   "_v2-entry-point", NULL,
 };
 
 /* Short-lived shell tools that inherit LD_PRELOAD from the parent. */
 static const char *const k_shell_blacklist[] = {
-    "awk",   "gawk",     "mawk",    "sh",       "bash", "dash", "UpdateNix", "mktemp", "cp",  "mv",   "rm",
-    "chmod", "readlink", "dirname", "basename", "head", "tail", "cut",       "grep",   "sed", "true", "false",
+    "awk",      "gawk",    "mawk",     "sh",   "bash", "dash", "UpdateNix", "mktemp", "cp",   "mv",    "rm", "chmod",
+    "readlink", "dirname", "basename", "head", "tail", "cut",  "grep",      "sed",    "true", "false", NULL,
 };
 
 /* Skip overlay init in known non-game child processes that inherit
