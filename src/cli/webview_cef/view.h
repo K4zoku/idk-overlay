@@ -75,8 +75,6 @@ private:
   /* Producer lifecycle + pacing (UI thread). */
   void ConnectTask();
   void ProcessAck(const idk_ack_msg_t &ack);
-  void KickRender();
-  void RenderRetry();
 
   /* Frame paths. OnAcceleratedPaint delivers the fd only for the duration
    * of the callback, so each path copies/dups before returning. */
@@ -109,9 +107,8 @@ private:
   bool dmabuf_failed_ = false;
   int dmabuf_reject_count_ = 0;
 
-  bool pending_ = false;    /* frame in flight, awaiting ACK */
-  bool visible_ = true;     /* overlay visibility */
-  bool frame_sent_ = false; /* first frame sent (kick retries stop) */
+  bool pending_ = false; /* frame in flight, awaiting ACK */
+  bool visible_ = true;  /* overlay visibility */
   bool capture_ = false;
   bool js_capture_ = false; /* last capture state seen by JS (edge events) */
   bool js_visible_ = true;  /* last visibility state seen by JS */

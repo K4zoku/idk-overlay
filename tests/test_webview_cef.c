@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -152,6 +153,16 @@ TEST(cef_webview_shm_fallback) {
       shm_frames++;
       ASSERT_EQ(hdr.stride, 0u);
       ASSERT_EQ(hdr.fourcc, 0u);
+      /* Content-freshness check: the rAF page alternates green/blue;
+       * a stale render would keep sending the same pixels. */
+      size_t sz = (size_t)hdr.width * hdr.height * 4;
+      void *map = mmap(NULL, sz, PROT_READ, MAP_SHARED, fds[0], 0);
+      if (map != MAP_FAILED) {
+        const uint8_t *px =
+            (const uint8_t *)map + (size_t)(hdr.height / 2) * hdr.width * 4 + (size_t)(hdr.width / 2) * 4;
+        printf("[probe] shm pixel #%02x%02x%02x\n", px[0], px[1], px[2]);
+        munmap(map, sz);
+      }
     }
     for (int j = 0; j < nfd; j++)
       close(fds[j]);

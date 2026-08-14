@@ -217,15 +217,14 @@ int main(int argc, char *argv[]) {
   CefWindowInfo wi;
   wi.SetAsWindowless(0);
   wi.shared_texture_enabled = true; /* dmabuf planes via OnAcceleratedPaint */
-  /* Game-driven pacing: each compositor REQUEST issues exactly one
-   * SendExternalBeginFrame → CEF renders at the game's fps, no more,
-   * no less (no internal 60fps timer). */
-  wi.external_begin_frame_enabled = true;
 
   CefBrowserSettings bs; /* wrapper ctor sets size */
   bs.background_color = 0;
-  /* No artificial capture cap: the game drives the rate via external
-   * begin frames. 1000fps makes SetMinCapturePeriod a no-op in practice. */
+  /* CEF's internal begin-frame timer at a high rate: the page renders
+   * whenever it has damage (rAF/CSS/socket updates), so content is always
+   * fresh. Sends stay ACK-gated — the game receives exactly one frame per
+   * its own frame. External begin frames were tried first but drop
+   * REQUESTs while a begin frame is pending (begin_frame_pending_). */
   bs.windowless_frame_rate = 1000;
 
   CefRefPtr<CefBrowser> browser = CefBrowserHost::CreateBrowserSync(wi, view, "about:blank", bs, nullptr, nullptr);

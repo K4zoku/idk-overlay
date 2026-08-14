@@ -49,7 +49,6 @@ void View::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
    * CSS animations are not throttled to 1fps. */
   browser_->GetHost()->WasHidden(false);
   LoadUrl();
-  browser_->GetHost()->SendExternalBeginFrame(); /* first render */
   IDK_LOG("webview-cef", "browser created (%dx%d)\n", render_w_, render_h_);
 }
 
@@ -147,7 +146,6 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
     hdr.buf_id = buf_id;
     if (idk_producer_send_dma_buf(&fd, &hdr) == 0) {
       pending_ = true;
-      frame_sent_ = true;
       send_time_ms_ = now_ms();
       IDK_LOG("webview-cef", "dmabuf sent: %dx%d stride=%u mod=0x%llx t=%d\n", w, h, stride,
               (unsigned long long)modifier, send_time_ms_);
@@ -189,7 +187,6 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
 
   if (idk_producer_send_dma_buf(fds, &hdr) == 0) {
     pending_ = true;
-    frame_sent_ = true;
     send_time_ms_ = now_ms();
   }
 }
@@ -250,7 +247,6 @@ void View::SendShmPixels(const uint8_t *px, int w, int h) {
 
   if (idk_producer_send_frame(fd, &hdr) == 0) {
     pending_ = true;
-    frame_sent_ = true;
     send_time_ms_ = now_ms();
     IDK_LOG("webview-cef", "shm sent: %dx%d t=%d\n", w, h, send_time_ms_);
   }
@@ -266,7 +262,6 @@ void View::ConnectTask() {
     connected_ = true;
     connect_attempts_ = 0;
     IDK_LOG("webview-cef", "compositor connected\n");
-    KickRender(); /* first frame: render on demand, retry until sent */
     if (!input_) {
       input_ = new InputThread(this, sock_path_);
       input_->Start();
@@ -281,7 +276,6 @@ void View::ConnectTask() {
       connected_ = true;
       connect_attempts_ = 0;
       IDK_LOG("webview-cef", "compositor connected after %d attempts\n", attempts);
-      KickRender();
       if (!input_) {
         input_ = new InputThread(this, sock_path_);
         input_->Start();
@@ -297,24 +291,8 @@ void View::ConnectTask() {
   PostToUIDelayed([self = CefRefPtr<View>(this)] { self->ConnectTask(); }, 1000);
 }
 
-/* Render on demand. A begin frame issued before the page has any content
- * is consumed without producing a frame, so retry every 50ms until the
- * first frame actually goes out. */
-void View::KickRender() {
-  if (!browser_ || !connected_)
-    return;
-  browser_->GetHost()->SendExternalBeginFrame();
-  if (!frame_sent_)
-    PostToUIDelayed([self = CefRefPtr<View>(this)] { self->RenderRetry(); }, 50);
-}
-
-void View::RenderRetry() {
-  if (!browser_ || !connected_ || frame_sent_ || quit_.load())
-    return;
-  browser_->GetHost()->SendExternalBeginFrame();
-  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->RenderRetry(); }, 50);
-}
-
+/* ACK/REQUEST drain (called by the main loop when the socket is ready).
+ * Sends are ACK-gated in OnAcceleratedPaint; REQUEST is just a nudge. */
 void View::PollSocket() {
   if (!connected_ || !visible_)
     return;
@@ -337,11 +315,8 @@ void View::PollSocket() {
         quit_.store(true);
         return;
       }
-      IDK_LOG("webview-cef", "request t=%d\n", now_ms());
-      /* Game asks for the next frame → render exactly one (CEF renders
-       * only on external begin frames; see OnAcceleratedPaint). */
-      if (browser_)
-        browser_->GetHost()->SendExternalBeginFrame();
+      /* NEXT_FRAME is a nudge only — the internal begin-frame timer keeps
+       * the page rendering; sends are ACK-gated in OnAcceleratedPaint. */
     }
   }
 }
@@ -419,10 +394,8 @@ void View::SetOverlayVisible(bool v) {
     return;
   visible_ = v;
   FireVisibleEvents(v);
-  if (v && browser_) {
-    /* Repaint so a fresh frame goes out (paints are dropped while hidden). */
-    browser_->GetHost()->SendExternalBeginFrame();
-  }
+  /* The page keeps rendering (internal timer); paints are dropped while
+   * hidden, so the next paint after show is sent automatically. */
 }
 
 /* ── JS events (mirror the Qt webview: window CustomEvents) ─────────── */
