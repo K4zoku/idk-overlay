@@ -7,16 +7,15 @@
  *   | flags  uint8         |  offset  1 - bit0=press(1)/release(0)
  *   | mods   uint16        |  offset  2 - Ctrl=1,Shift=2,Alt=4,Super=8
  *   | time   uint32        |  offset  4 - wayland timestamp (ms)
- *   | payload union (8B)   |  offset  8 - key/btn/motion/axis/repeat
- *   +----------------------+  total 16 bytes
+ *   | payload union (12B)  |  offset  8 - key/btn/motion/axis/repeat/overlay
+ *   +----------------------+  total 20 bytes
  *
  * Input events use a separate socket via idk_ipc_send/recv_input().
  *
  * The game (injected .so) hooks wl_proxy_add_listener to intercept
  * wl_pointer/wl_keyboard listeners. When "input capture" is toggled on
- * (default hotkey: F8), all keyboard/mouse events are swallowed from the
- * game and forwarded to the webview via this protocol so the overlay UI
- * can receive text input, clicks, etc.
+ * (default hotkey: F8), keyboard/mouse events are swallowed from the
+ * game and forwarded to the webview via this protocol.
  *
  * Socket direction:
  *   - Game listens on $XDG_RUNTIME_DIR/idk-overlay-<pid>-input (server)

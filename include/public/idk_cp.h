@@ -10,8 +10,7 @@
  *
  * Socket names are stored WITHOUT a leading NUL. The sender (overlay)
  * is responsible for prepending "\0" when binding; the consumer reads
- * the names here and prepends "\0" at connect time. This keeps the
- * struct a plain C string for logging/debugging.
+ * the names here and prepends "\0" at connect time.
  *
  * ACK byte codes (reply to the handshake): 0 = accepted,
  * 1 = rejected (DMABUF not supported).

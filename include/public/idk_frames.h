@@ -49,7 +49,7 @@ static_assert(sizeof(idk_frame_header_t) == 28, "idk_frame_header_t must be 28 b
 _Static_assert(sizeof(idk_frame_header_t) == 28, "idk_frame_header_t must be 28 bytes");
 #endif
 
-/* ACK: 1B ack + 4B w + 4B h + 3B pad = 16B */
+/* ACK (16 bytes — deliberately NOT packed, natural C alignment) */
 
 typedef struct idk_ack_msg {
   uint8_t ack;     /* 0 = accepted, 1 = rejected (DMABUF not supported) */
@@ -58,9 +58,8 @@ typedef struct idk_ack_msg {
   uint8_t _pad[3]; /* reserved */
 } idk_ack_msg_t;
 
-/* REQUEST message (8 bytes, consumer→producer) */
-/* Compositor sends this after presenting a frame to signal
- * "ready for next frame." Webview responds with a frame send. */
+/* REQUEST message (8 bytes, compositor→webview): sent after presenting
+ * a frame to request the next one. */
 
 #define IDK_REQUEST_NEXT_FRAME 0
 #define IDK_REQUEST_SHUTDOWN 1

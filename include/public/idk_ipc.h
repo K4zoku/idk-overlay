@@ -1,7 +1,7 @@
 /*
  * idk_ipc.h - Wire protocol types for idk-overlay (umbrella)
  *
- * Wire format (P0.5 cleanup - 2026-06-26):
+ * Wire format:
  *
  * Frame (28 bytes header + fd via SCM_RIGHTS / pidfd_getfd)
  * Input event (20 bytes, no fd passing)
