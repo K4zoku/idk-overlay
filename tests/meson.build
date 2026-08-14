@@ -8,11 +8,7 @@ test_c_args = [
 
 # Static library of compositor functions + transport (no GPU deps)
 test_comp_lib = static_library('test_comp',
-    '../src/core/compositor.c',
-    '../src/core/log.c',
-    '../src/core/transport.c',
-    '../src/core/tp_socket.c',
-    '../src/core/tp_shm.c',
+    ['../src/core/log.c'] + compositor_sources + transport_sources,
     c_args: test_c_args,
     include_directories: inc,
 )

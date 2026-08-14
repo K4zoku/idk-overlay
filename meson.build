@@ -66,17 +66,13 @@ endif
 # ── Subprojects ────────────────────────────────────────────────────────
 
 subdir('src/shaders')
-subdir('src/lib')
 
-# Sources shared by both the preload overlay and the Vulkan layer.
-idk_core_src = [
-    'src/core/log.c',
-    'src/core/compositor.c',
-    'src/core/broker.c',
-    'src/core/transport.c',
-    'src/core/tp_socket.c',
-    'src/core/tp_shm.c',
-]
+# Core source groups (compositor + transport backends). Shared by both
+# libs (idk-overlay, idk-vklayer), idk-framesource and the tests.
+subdir('src/core')
+idk_core_src = core_sources
+
+subdir('src/lib')
 
 # ── libidk-overlay.so - LD_PRELOAD/inject path (EGL + GLX hooks) ──────
 # Has __attribute__((constructor)) on_load() in overlay.c — safe because
