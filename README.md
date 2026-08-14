@@ -315,7 +315,7 @@ The overlay is rendered out-of-process by the webview client and shared with the
 | Component | Description |
 |-----------|-------------|
 | `libidk-overlay.so` | Injectable library - hooks EGL/GLX/Vulkan, composites overlay |
-| `libidk-framesource.so` | Frame sender library (used by webview) |
+| `libidk-producer.so` | Frame producer library (used by webview) |
 | `idk-webview` | Qt6 WebEngine webview client |
 | `idk-inject` | CLI - injects libidk-overlay.so into running process |
 | `bin/idk-overlay` | Wrapper script - launches game with overlay (WIP, not used in the usage examples above yet) |
@@ -344,44 +344,41 @@ typedef struct idk_hook_plugin {
 } idk_hook_plugin_t;
 ```
 
-To add a new hook: implement the plugin, add `&idk_plugin_foo` to `g_plugins[]` in `overlay.c`.
+To add a new hook: implement the plugin, add `&idk_plugin_foo` to `g_plugins[]` in `src/hook/preload/plugins.c`.
 
 ### Project structure
 
 ```
 src/
-├── core/               Compositor engine
-│   ├── compositor_common.c  Shared: socket init, ACK, resize debounce
-│   ├── compositor_egl.c     EGL+GL compositor (DMABUF via EGL_EXT_image_dma_buf)
-│   └── compositor_vk.c      Vulkan compositor (DMABUF via VK_EXT_external_memory)
-├── gl/                 GL function loader + shader compiler
-│   ├── gl_loader.c          GL function pointer resolution at runtime
-│   └── shader_loader.c      Shader compile (SPIR-V + GLSL fallback)
-├── hook/               Graphics + input hooks
-│   ├── overlay.c            Orchestrator - background polling, plugin discovery
-│   ├── egl_hook.c           EGL swap hook plugin
-│   ├── glx_hook.c           GLX swap hook plugin
-│   ├── vulkan_hook.c        Vulkan syringe hook plugin
-│   ├── vulkan_layer.c       Vulkan layer (VK_LAYER_PATH)
-│   ├── x11/                 X11 input capture (3 files)
-│   └── wayland/             Wayland input capture (6 files)
-├── ipc/                Wire protocol (frame header 28B, input event 20B)
-├── lib/                libidk-framesource.so (frame sender for webview)
+├── core/               Portable core (no GPU/platform knowledge)
+│   ├── compositor/     Shared compositor singleton, frame recv/ack, resize debounce
+│   ├── transport/      Wire transport: dispatch vtable + socket/ + shm/ backends
+│   └── render/         Render backends (overlay blit into game frame)
+│       ├── gl/         GL/EGL backend (DMABUF via EGL_EXT_image_dma_buf)
+│       └── vk/         Vulkan backend (DMABUF via VK_EXT_external_memory)
+├── hook/               Interception entry (per-API, per-platform)
+│   ├── preload/        LD_PRELOAD entry: constructor, filter, webview fork/monitor
+│   ├── gl/             GLX/EGL swap hook plugins + dlsym interposer
+│   ├── vklayer/        Vulkan layer (VK_LAYER_PATH)
+│   └── input/          Input capture backends (wayland/, x11/)
+├── ipc/                Wire protocol validation (frame 28B, input 20B)
+├── producer/           libidk-producer.so (frame producer for webview)
 ├── shaders/            GLSL + Vulkan SPIR-V shaders
 └── cli/
     ├── inject/         idk-inject CLI tool (wraps syringe_inject)
     ├── broker/         idk-broker daemon (host-ns webview spawner for Wine/Proton)
     └── webview/        Qt6 WebEngine client
-        ├── main.cpp, manager.cpp
-        ├── view/       webview.cpp, rhi_texture_extractor.cpp
-        ├── input/      input_receiver.cpp
-        └── config/     groupconfig.cpp
+        ├── main.cpp, config/
+        ├── view/       capture, poll, resize, memory
+        │   └── rhi/    dmabuf export (gl/vk/readpixels backends)
+        ├── input/      keys, events, socket, repeat
+        └── manager/    config, views, js, connect
 
 include/
-├── core/               Compositor + log headers
+├── core/               Compositor, transport, render backend headers
 ├── gl/                 GL loader + shader headers
-├── hook/               Plugin interface, hook utilities, wayland input
-├── public/             Public API (idk_fs.h, idk_ipc.h)
+├── hook/               Plugin interface, hook utilities, input backend header
+├── public/             Public API (idk_producer.h, idk_ipc.h umbrella)
 ├── shaders/            VK shader symbols (SPIR-V embedded)
 └── webview/            Webview private headers
 ```

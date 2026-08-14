@@ -98,7 +98,7 @@ idk_overlay_so = library(
 # ── libidk-vklayer.so - Vulkan layer (VK hooks only) ──────────────────
 # NO constructor: the Vulkan loader dlopens this into *any* Vulkan app
 # (vulkaninfo, vkcube, ...). Everything runs lazily from vkCreateInstance
-# via layer_main.c's idk_layer_ensure_started().
+# via src/hook/vklayer/startup.c's idk_layer_ensure_started().
 vklayer_c_args = overlay_c_flags
 if vk_layer_header_found
     vklayer_c_args += '-DIDK_HAVE_VK_LAYER'
@@ -158,7 +158,7 @@ endif
 # ── Build summary ──────────────────────────────────────────────────────
 message('\n=== idk-overlay build configuration ===')
 message('  libidk-overlay.so:    inject path (EGL + Vulkan hooks)')
-message('  libidk-producer:   shared library (frame sender)')
+message('  libidk-producer:   frame producer library (webview)')
 message('  idk-webview:          Qt6 webview (DMA-BUF + idk socket)')
 message('  idk-inject:           CLI (wraps syringe_inject)')
 message('  idk-broker:           host-ns webview spawner (Wine/Proton)')

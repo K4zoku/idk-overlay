@@ -1,2 +1,0 @@
-option('spirv', type: 'boolean', value: false,
-       description: 'Build SPIR-V shader objects via glslc')

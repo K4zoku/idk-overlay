@@ -2,7 +2,7 @@
 
 ## Build & Test
 ```bash
-meson setup build -Dspirv=true        # SPIR-V optional (needs glslc)
+meson setup build                    # SPIR-V optional (auto-detected via glslc)
 meson compile -C build -j$(nproc)
 meson test -C build
 ```
@@ -10,24 +10,27 @@ meson test -C build
 Tests are standalone C executables with a custom `TEST()`/`RUN()`/`ASSERT_*` macro framework (`tests/test_runner.h`). No test framework binary.
 
 ## Codebase Structure
-- `src/hook/overlay.c` — orchestrator, constructor, plugin discovery, lib filtering via `dlopen(RTLD_NOLOAD)`
-  - `on_load()` constructor: checks `idk_is_target_process()`, spawns `broker_connect_thread` + `hook_install_thread`
-  - `broker_connect_thread`: runs `detect_wine()` + broker connect concurrently, signals via `g_broker_cond`
-  - `hook_install_thread`: polls for GL/VK libs (Phase 1), waits for broker decision (Phase 2), forks webview or uses broker, installs hooks (Phase 3)
-- `src/hook/egl_hook.c`, `glx_hook.c`, `vulkan_hook.c`, `vulkan_layer.c` — graphics backend plugins (call `idk_compositor_init/recv_frame/send_ack`)
-- `src/core/compositor.c` — shared compositor singleton (`g_comp`), transport init/recv/send/resize/SHM-cache/vendor-detect, broker state sync (`g_broker_state` + `pthread_cond_t`)
-- `src/core/transport.c`, `tp_socket.c`, `tp_shm.c` — wire transport layers
-- `src/cli/broker/main.c` — host-ns webview spawner (spawns detached thread per session)
+- `src/hook/preload/` — LD_PRELOAD entry: `on_load()` constructor, target-process filter, GL/VK lib polling, webview fork + monitor, hotkey config
+  - `ctor.c` `on_load()`: checks `idk_is_target_process()`, spawns `hook_install_thread`
+  - `install.c` `hook_install_thread`: polls for GL/VK libs (phase 1), broker decision (phase 2 — `detect_wine()` + `connect_via_broker()`, signals `g_broker_cond`), forks webview or uses broker, installs plugins (phase 3)
+- `src/hook/gl/` — GLX/EGL symbol interception (`glx.c`, `egl.c` — `idk_hook_plugin_t` plugins) + `dlsym.c` (dlsym interposer)
+- `src/hook/vklayer/` — Vulkan layer (no constructor; lazy init from `vkCreateInstance`): negotiation, GPA dispatch, create-device ext injection, present hook
+- `src/hook/input/` — input capture backends (`wayland/`, `x11/`), shared input socket sender
+- `src/core/compositor/` — shared compositor singleton (`g_comp`), frame recv/ack/request, resize debounce, SHM cache, path helpers, broker state sync (`g_broker_state` + `pthread_cond_t`)
+- `src/core/transport/` — wire transport: `dispatch.c` (backend vtable), `socket/` (AF_UNIX), `shm/` (shared memory, futex/pidfd)
+- `src/core/render/` — render backends (`gl/`, `vk/`): composite the overlay frame into the game frame
+- `src/producer/` — `idk_producer_*` client API (frame sender, used by webview)
+- `src/cli/broker/` — host-ns webview spawner (`main.c` accept loop, `session.c`, `spawn.c`, `reap.c`)
 - `include/core/compositor.h` — `idk_compositor_t` struct + all pure helper declarations + API
-- `include/public/idk_ipc.h` — wire protocol types (28B frame, 16B ACK, 20B input event)
-- `include/public/idk_fs.h` — frame sender public API (used by webview)
+- `include/public/idk_ipc.h` — wire protocol umbrella (`idk_cp.h`, `idk_frames.h`, `idk_input.h`)
+- `include/public/idk_producer.h` — frame producer public API (used by webview)
 - `subprojects/syringe.wrap` — syringe injection toolkit (meson wrap-git from github.com/K4zoku/syringe)
 
 ## Broker State Sync
 The broker decision (`g_broker_state`) is a 3-way synchronization point:
-1. **`broker_connect_thread`** sets state and signals via `pthread_cond_signal`
+1. **`hook_install_thread`** phase 2 (src/hook/preload/install.c) runs `detect_wine()` + `connect_via_broker()`, sets state and signals via `pthread_cond_signal`
 2. **`idk_compositor_init`** (called from backend hooks) waits via `pthread_cond_timedwait` (5s timeout), picks up `IDK_TP_ABSTRACT` env var set by broker
-3. **`hook_install_thread`** Phase 2 polls `g_broker_state` every 50ms (5s total) — forks webview or uses broker
+3. **`hook_install_thread`** re-reads the state after the wait to pick fork-webview vs broker mode
 
 State values: 0=pending, 1=broker-connected, 2=no-broker, 3=broker-failed
 Default is 2 (no broker) so test static lib and external callers never block.
@@ -54,7 +57,7 @@ Default is 2 (no broker) so test static lib and external callers never block.
 - **Performance over complexity**: prefer the faster path even if it makes code less elegant. This is a real-time overlay composited into a game's frame — every microsecond matters.
 - **No `-fstack-protector`** (inject library targets) — game injection requires it off
 - **Wire protocol**: all structs have `_Static_assert` on `sizeof()` and `#pragma pack(push, 1)` — always update both when changing types
-- **Shaders**: GLSL embedded via `ld -r -b binary` + `objcopy` symbol rename; SPIR-V optional via `glslc` (toggle `-Dspirv=true`)
+- **Shaders**: GLSL embedded via `ld -r -b binary` + `objcopy` symbol rename; SPIR-V optional via `glslc` (auto-detected)
 
 ## Vulkan Layer
 The layer manifest is generated from `src/hook/idk_overlay.json.in`. Enable at runtime:

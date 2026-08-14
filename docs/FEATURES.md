@@ -17,7 +17,7 @@ In broker mode (Wine mount namespace) the transport is socket-only —
 the SHM + `tp_fdchan` plan is tracked under "Deferred to v2" in
 `specs.md`. Abstract sockets (`sun_path[0] == '\0'`) are selected
 conventionally by `tp_socket` whenever the name passed in starts with a
-NUL byte, so `idk_tp_init` / `idk_fs_init` accept abstract names
+NUL byte, so `idk_tp_init` / `idk_producer_init` accept abstract names
 without a separate `_abstract` entry point.
 
 ## Graphics Backends
