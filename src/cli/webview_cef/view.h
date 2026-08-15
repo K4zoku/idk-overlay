@@ -75,6 +75,8 @@ private:
   /* Producer lifecycle + pacing (UI thread). */
   void ConnectTask();
   void ProcessAck(const idk_ack_msg_t &ack);
+  void NudgeFrame();
+  void NudgeRetry();
 
   /* Frame paths. OnAcceleratedPaint delivers the fd only for the duration
    * of the callback, so each path copies/dups before returning. */
@@ -107,12 +109,18 @@ private:
   bool dmabuf_failed_ = false;
   int dmabuf_reject_count_ = 0;
 
-  bool pending_ = false; /* frame in flight, awaiting ACK */
-  bool visible_ = true;  /* overlay visibility */
+  bool pending_ = false;        /* frame in flight, awaiting ACK */
+  bool visible_ = true;         /* overlay visibility */
+  bool render_pending_ = false; /* begin frame issued, waiting for a paint */
+  bool page_ready_ = false;     /* main URL reached OnLoadEnd */
   bool capture_ = false;
   bool js_capture_ = false; /* last capture state seen by JS (edge events) */
   bool js_visible_ = true;  /* last visibility state seen by JS */
   int send_time_ms_ = 0;
+
+  int rate_sent_ = 0; /* 1s diagnostics counters */
+  int rate_req_ = 0;
+  int rate_ack_ = 0;
 
   GpuBuf gpu_; /* staging blit (CEF linear → driver-native tiled) */
 

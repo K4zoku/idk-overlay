@@ -60,9 +60,11 @@ void View::LoadUrl() {
 }
 
 void View::OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int) {
-  if (!frame->IsMain())
+  if (!frame->IsMain() || frame->GetURL() == "about:blank" || page_ready_)
     return;
+  page_ready_ = true;
   InjectScripts();
+  NudgeFrame();
 }
 
 void View::InjectScripts() {
@@ -98,6 +100,7 @@ void View::OnPaint(CefRefPtr<CefBrowser>, PaintElementType type, const RectList 
   /* Software OSR (shared_texture off / GPU failure): pixels → SHM. */
   if (type != PET_VIEW || !buffer)
     return;
+  render_pending_ = false;
   if (!connected_ || !visible_ || pending_)
     return;
   if (width <= 0 || height <= 0)
@@ -109,6 +112,7 @@ void View::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType type, cons
                               const CefAcceleratedPaintInfo &info) {
   if (type != PET_VIEW)
     return; /* popups not composited (v1) */
+  render_pending_ = false;
   if (!connected_ || !visible_ || pending_)
     return;
   if (use_dmabuf_ && !dmabuf_failed_)
@@ -147,8 +151,7 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
     if (idk_producer_send_dma_buf(&fd, &hdr) == 0) {
       pending_ = true;
       send_time_ms_ = now_ms();
-      IDK_LOG("webview-cef", "dmabuf sent: %dx%d stride=%u mod=0x%llx t=%d\n", w, h, stride,
-              (unsigned long long)modifier, send_time_ms_);
+      rate_sent_++;
     }
     return;
   }
@@ -248,7 +251,7 @@ void View::SendShmPixels(const uint8_t *px, int w, int h) {
   if (idk_producer_send_frame(fd, &hdr) == 0) {
     pending_ = true;
     send_time_ms_ = now_ms();
-    IDK_LOG("webview-cef", "shm sent: %dx%d t=%d\n", w, h, send_time_ms_);
+    rate_sent_++;
   }
   /* idk_tp_send closed fd on success; on failure it did too (io.c). */
 }
@@ -288,18 +291,22 @@ void View::ConnectTask() {
     }
   }
 
+  /* 1s diagnostics: game request/ack rate vs our send rate. */
+  if (connected_)
+    IDK_LOG("webview-cef", "rate: sent=%d req=%d ack=%d (last 1s)\n", rate_sent_, rate_req_, rate_ack_);
+  rate_sent_ = rate_req_ = rate_ack_ = 0;
+
   PostToUIDelayed([self = CefRefPtr<View>(this)] { self->ConnectTask(); }, 1000);
 }
 
-/* ACK/REQUEST drain (called by the main loop when the socket is ready).
- * Sends are ACK-gated in OnAcceleratedPaint; REQUEST is just a nudge. */
+/* ACK/REQUEST drain (called by the main loop when the socket is ready). */
 void View::PollSocket() {
   if (!connected_ || !visible_)
     return;
   if (pending_) {
     idk_ack_msg_t ack;
     if (idk_producer_wait_ack(&ack, 0) == 0) {
-      IDK_LOG("webview-cef", "ack t=%d ack=%d w=%d h=%d\n", now_ms(), ack.ack, ack.w, ack.h);
+      rate_ack_++;
       ProcessAck(ack);
     } else if ((now_ms() - send_time_ms_) > 100) {
       /* Lost ACK (compositor busy/restarted) — unlock like the Qt backend. */
@@ -315,10 +322,34 @@ void View::PollSocket() {
         quit_.store(true);
         return;
       }
-      /* NEXT_FRAME is a nudge only — the internal begin-frame timer keeps
-       * the page rendering; sends are ACK-gated in OnAcceleratedPaint. */
+      rate_req_++;
+      /* Game asks for the next frame → render exactly one. */
+      if (!render_pending_)
+        NudgeFrame();
     }
   }
+}
+
+/* Issue one external begin frame. SendExternalBeginFrame is ignored while
+ * a previous begin frame is pending, so NudgeRetry keeps re-issuing until
+ * a paint actually arrives (OnAcceleratedPaint clears render_pending_). */
+void View::NudgeFrame() {
+  if (!browser_ || !page_ready_)
+    return;
+  render_pending_ = true;
+  browser_->GetHost()->Invalidate(PET_VIEW);
+  browser_->GetHost()->SendExternalBeginFrame();
+  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->NudgeRetry(); }, 25);
+}
+
+void View::NudgeRetry() {
+  if (quit_.load() || !render_pending_)
+    return;
+  if (browser_) {
+    browser_->GetHost()->Invalidate(PET_VIEW);
+    browser_->GetHost()->SendExternalBeginFrame();
+  }
+  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->NudgeRetry(); }, 25);
 }
 
 void View::ProcessAck(const idk_ack_msg_t &ack) {
@@ -394,8 +425,8 @@ void View::SetOverlayVisible(bool v) {
     return;
   visible_ = v;
   FireVisibleEvents(v);
-  /* The page keeps rendering (internal timer); paints are dropped while
-   * hidden, so the next paint after show is sent automatically. */
+  if (v)
+    NudgeFrame(); /* fresh frame after show */
 }
 
 /* ── JS events (mirror the Qt webview: window CustomEvents) ─────────── */

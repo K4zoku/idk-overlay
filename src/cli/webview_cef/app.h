@@ -12,6 +12,9 @@ public:
     cl->AppendSwitch("no-sandbox");
     cl->AppendSwitch("disable-gpu-sandbox");
     cl->AppendSwitch("disable-crash-reporter");
+    /* Chromium's Linux stack-guard fork mode crashes CEF utility
+     * subprocesses with stack smashing on affected kernels. */
+    cl->AppendSwitchWithValue("change-stack-guard-on-fork", "disable");
     /* OSR pages must keep rendering/animating even if Chromium considers
      * them backgrounded — otherwise rAF/CSS animations throttle to 1fps. */
     cl->AppendSwitch("disable-renderer-backgrounding");

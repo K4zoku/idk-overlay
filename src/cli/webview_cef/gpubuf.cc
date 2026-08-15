@@ -39,6 +39,11 @@ typedef void (*PFN_GL_BLIT_FRAMEBUFFER)(GLint, GLint, GLint, GLint, GLint, GLint
 typedef void (*PFN_GL_DELETE_FRAMEBUFFERS)(GLsizei, const GLuint *);
 typedef GLenum (*PFN_GL_GET_ERROR)(void);
 typedef void (*PFN_GL_IMAGE_TARGET_TEXTURE2D)(GLenum, void *);
+typedef GLsync (*PFN_GL_FENCE_SYNC)(GLenum, GLbitfield);
+typedef GLenum (*PFN_GL_CLIENT_WAIT_SYNC)(GLsync, GLbitfield, GLuint64);
+typedef void (*PFN_GL_DELETE_SYNC)(GLsync);
+typedef void (*PFN_GL_FLUSH)(void);
+typedef void (*PFN_GL_FINISH)(void);
 
 /* Mesa EGL candidate paths (glvnd). The first that dlopens wins. */
 static const char *const kEglCandidates[] = {
@@ -101,6 +106,11 @@ bool GpuBuf::Init() {
   fn_delete_framebuffers_ = GPA("glDeleteFramebuffers");
   fn_gl_get_error_ = GPA("glGetError");
   fn_image_target_texture2d_ = GPA("glEGLImageTargetTexture2DOES");
+  fn_fence_sync_ = GPA("glFenceSync");
+  fn_client_wait_sync_ = GPA("glClientWaitSync");
+  fn_delete_sync_ = GPA("glDeleteSync");
+  fn_flush_ = GPA("glFlush");
+  fn_finish_ = GPA("glFinish");
   if (!fn_get_platform_display_ || !fn_initialize_ || !fn_bind_api_ || !fn_choose_config_ || !fn_create_context_ ||
       !fn_make_current_ || !fn_create_image_ || !fn_destroy_image_ || !fn_gen_textures_ || !fn_bind_texture_ ||
       !fn_framebuffer_texture2d_ || !fn_blit_framebuffer_) {
@@ -289,6 +299,21 @@ bool GpuBuf::EnsureBo(int w, int h) {
   return true;
 }
 
+bool GpuBuf::WaitForGpu() {
+  if (fn_fence_sync_ && fn_client_wait_sync_ && fn_delete_sync_) {
+    GLsync fence = ((PFN_GL_FENCE_SYNC)fn_fence_sync_)(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (fence) {
+      ((PFN_GL_FLUSH)fn_flush_)();
+      GLenum result = ((PFN_GL_CLIENT_WAIT_SYNC)fn_client_wait_sync_)(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+      ((PFN_GL_DELETE_SYNC)fn_delete_sync_)(fence);
+      return result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED;
+    }
+  }
+  if (fn_finish_)
+    ((PFN_GL_FINISH)fn_finish_)();
+  return fn_finish_ != nullptr;
+}
+
 int GpuBuf::BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h, uint32_t *stride, uint32_t *fourcc,
                           uint64_t *modifier, uint16_t *buf_id) {
   if (info.plane_count < 1)
@@ -313,6 +338,8 @@ int GpuBuf::BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h, uin
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_DRAW_FRAMEBUFFER, fbo_);
   ((PFN_GL_BLIT_FRAMEBUFFER)fn_blit_framebuffer_)(0, 0, w, h, 0, h, w, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_FRAMEBUFFER, 0);
+  if (!WaitForGpu())
+    return -1;
 
   *stride = bo_stride_;
   *fourcc = GBM_FORMAT_ABGR8888;

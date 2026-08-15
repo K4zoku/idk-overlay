@@ -198,7 +198,10 @@ int main(int argc, char *argv[]) {
   CefString(&settings.resources_dir_path).FromASCII(resources.c_str());
   CefString(&settings.locales_dir_path).FromASCII((resources + "/locales").c_str());
   const char *rt = getenv("XDG_RUNTIME_DIR");
-  std::string cache = std::string(rt && *rt ? rt : "/tmp") + "/idk-webview-cef-cache";
+  /* Per-pid cache: CEF's process-singleton locks the cache dir, so a
+   * lingering webview (crashed game, leftover child) would block the
+   * next one. An overlay needs no persistent profile. */
+  std::string cache = std::string(rt && *rt ? rt : "/tmp") + "/idk-webview-cef-cache-" + std::to_string((long)getpid());
   CefString(&settings.cache_path).FromASCII(cache.c_str());
   const char *dbg = getenv("IDK_CEF_DEBUG_PORT");
   if (dbg && *dbg)
@@ -217,15 +220,17 @@ int main(int argc, char *argv[]) {
   CefWindowInfo wi;
   wi.SetAsWindowless(0);
   wi.shared_texture_enabled = true; /* dmabuf planes via OnAcceleratedPaint */
+  /* Game-driven rendering: each compositor REQUEST issues an external
+   * begin frame → CEF renders exactly when the game asks, saving machine
+   * resources. NudgeRetry() covers dropped begin frames (a new
+   * SendExternalBeginFrame is ignored while one is pending). */
+  wi.external_begin_frame_enabled = true;
 
   CefBrowserSettings bs; /* wrapper ctor sets size */
   bs.background_color = 0;
-  /* CEF's internal begin-frame timer at a high rate: the page renders
-   * whenever it has damage (rAF/CSS/socket updates), so content is always
-   * fresh. Sends stay ACK-gated — the game receives exactly one frame per
-   * its own frame. External begin frames were tried first but drop
-   * REQUESTs while a begin frame is pending (begin_frame_pending_). */
-  bs.windowless_frame_rate = 1000;
+  /* CEF defaults windowless OSR to 30 fps. External begin frames still pass
+   * through this cap, so leave headroom for high-refresh game requests. */
+  bs.windowless_frame_rate = 240;
 
   CefRefPtr<CefBrowser> browser = CefBrowserHost::CreateBrowserSync(wi, view, "about:blank", bs, nullptr, nullptr);
   if (!browser) {

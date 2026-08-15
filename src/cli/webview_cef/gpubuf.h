@@ -45,6 +45,7 @@ private:
   void DestroyBo();
   /* Import a dmabuf as a GL texture (destroys the previous import). */
   uint32_t ImportTexture(int fd, int w, int h, uint32_t stride, uint32_t fourcc, uint64_t modifier);
+  bool WaitForGpu();
 
   /* dlopen'd handles (Mesa, second copy) */
   void *egl_handle_ = nullptr;
@@ -77,6 +78,11 @@ private:
   void *fn_blit_framebuffer_ = nullptr;
   void *fn_delete_framebuffers_ = nullptr;
   void *fn_gl_get_error_ = nullptr;
+  void *fn_fence_sync_ = nullptr;
+  void *fn_client_wait_sync_ = nullptr;
+  void *fn_delete_sync_ = nullptr;
+  void *fn_flush_ = nullptr;
+  void *fn_finish_ = nullptr;
   void *fn_image_target_texture2d_ = nullptr;
 
   /* staging buffer (cached) */
