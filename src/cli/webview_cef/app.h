@@ -20,6 +20,7 @@ public:
     cl->AppendSwitch("disable-renderer-backgrounding");
     cl->AppendSwitch("disable-background-timer-throttling");
     cl->AppendSwitch("disable-backgrounding-occluded-windows");
+    cl->AppendSwitch("enable-unsafe-webgpu");
   }
 
   IMPLEMENT_REFCOUNTING(App);
