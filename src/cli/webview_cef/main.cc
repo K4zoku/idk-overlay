@@ -230,7 +230,7 @@ int main(int argc, char *argv[]) {
   bs.background_color = 0;
   /* CEF defaults windowless OSR to 30 fps. External begin frames still pass
    * through this cap, so leave headroom for high-refresh game requests. */
-  bs.windowless_frame_rate = 240;
+  bs.windowless_frame_rate = 1000;
 
   CefRefPtr<CefBrowser> browser = CefBrowserHost::CreateBrowserSync(wi, view, "about:blank", bs, nullptr, nullptr);
   if (!browser) {
