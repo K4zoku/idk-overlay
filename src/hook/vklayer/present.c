@@ -6,12 +6,15 @@
 #include "core/compositor_vk.h"
 #include "core/log.h"
 #include "internal.h"
+extern void idk_input_cursor_dispatch(void) __attribute__((weak));
 
 IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   static int s_present_count = 0;
   s_present_count++;
   if (s_present_count % 300 == 1)
     IDK_LOG("vk-layer", "QueuePresentKHR (count=%d)\n", s_present_count);
+  if (idk_input_cursor_dispatch)
+    idk_input_cursor_dispatch();
 
   idk_vk_compositor_render();
 

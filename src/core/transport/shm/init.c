@@ -90,6 +90,8 @@ void tp_shm_disconnect_client(idk_transport_t *tp) {
     *shm_i32(ptr, SHM_O_DMABUF_NFD) = 0;
     atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
     atomic_store(shm_atom(ptr, SHM_O_REQ_SEQ), 0);
+    atomic_store(shm_atom(ptr, SHM_O_CURSOR_SEQ), 0);
+    tp->_cursor_seq = 0;
 
     if (tp->_client_fd >= 0) {
       close(tp->_client_fd);

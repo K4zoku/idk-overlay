@@ -106,10 +106,7 @@ void idk_x11_input_shutdown(void) {
     fn_XUngrabPointer(g_game_display, 0);
     g_cursor_grabbed = 0;
   }
-  if (g_blank_cursor && g_game_display && fn_XFreeCursor) {
-    fn_XFreeCursor(g_game_display, g_blank_cursor);
-    g_blank_cursor = 0;
-  }
+  idk_x11_cursor_shutdown();
 
   if (g_input_listen_fd >= 0) {
     teardown_input_socket();

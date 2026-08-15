@@ -31,7 +31,7 @@ endforeach
 # Tests needing compositor/transport symbols
 foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
                'test_abstract_socket.c', 'test_compositor_path.c',
-               'test_compositor_api.c']
+               'test_compositor_api.c', 'test_cursor_transport.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,

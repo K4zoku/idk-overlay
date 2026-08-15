@@ -17,12 +17,10 @@
  * (default hotkey: F8), keyboard/mouse events are swallowed from the
  * game and forwarded to the webview via this protocol.
  *
- * Socket direction:
- *   - Game listens on $XDG_RUNTIME_DIR/idk-overlay-<pid>-input (server)
- *     (or /tmp/idk-overlay-<pid>-input if XDG_RUNTIME_DIR is unset)
- *   - Webview connects to it (client)
- *   - Game writes idk_input_event_t messages
- *   - Webview reads them in its event loop
+ * The channel is bidirectional:
+ *   - The game writes idk_input_event_t messages to the webview.
+ *   - The webview writes idk_cursor_update_t plus optional BGRA pixels
+ *     back to the game.
  */
 #ifndef IDK_INPUT_H
 #define IDK_INPUT_H
@@ -53,6 +51,52 @@ enum idk_input_type {
 #define IDK_MOD_SHIFT 0x02
 #define IDK_MOD_ALT 0x04
 #define IDK_MOD_SUPER 0x08
+
+#define IDK_CURSOR_MAGIC 0x52554B49u
+#define IDK_CURSOR_VERSION 1u
+#define IDK_CURSOR_MAX_DIM 256u
+#define IDK_CURSOR_MAX_BYTES (IDK_CURSOR_MAX_DIM * IDK_CURSOR_MAX_DIM * 4u)
+#define IDK_CURSOR_SCALE_BASE 100u
+
+enum idk_cursor_shape {
+  IDK_CURSOR_DEFAULT = 1,
+  IDK_CURSOR_CONTEXT_MENU = 2,
+  IDK_CURSOR_HELP = 3,
+  IDK_CURSOR_POINTER = 4,
+  IDK_CURSOR_PROGRESS = 5,
+  IDK_CURSOR_WAIT = 6,
+  IDK_CURSOR_CELL = 7,
+  IDK_CURSOR_CROSSHAIR = 8,
+  IDK_CURSOR_TEXT = 9,
+  IDK_CURSOR_VERTICAL_TEXT = 10,
+  IDK_CURSOR_ALIAS = 11,
+  IDK_CURSOR_COPY = 12,
+  IDK_CURSOR_MOVE = 13,
+  IDK_CURSOR_NO_DROP = 14,
+  IDK_CURSOR_NOT_ALLOWED = 15,
+  IDK_CURSOR_GRAB = 16,
+  IDK_CURSOR_GRABBING = 17,
+  IDK_CURSOR_E_RESIZE = 18,
+  IDK_CURSOR_N_RESIZE = 19,
+  IDK_CURSOR_NE_RESIZE = 20,
+  IDK_CURSOR_NW_RESIZE = 21,
+  IDK_CURSOR_S_RESIZE = 22,
+  IDK_CURSOR_SE_RESIZE = 23,
+  IDK_CURSOR_SW_RESIZE = 24,
+  IDK_CURSOR_W_RESIZE = 25,
+  IDK_CURSOR_EW_RESIZE = 26,
+  IDK_CURSOR_NS_RESIZE = 27,
+  IDK_CURSOR_NESW_RESIZE = 28,
+  IDK_CURSOR_NWSE_RESIZE = 29,
+  IDK_CURSOR_COL_RESIZE = 30,
+  IDK_CURSOR_ROW_RESIZE = 31,
+  IDK_CURSOR_ALL_SCROLL = 32,
+  IDK_CURSOR_ZOOM_IN = 33,
+  IDK_CURSOR_ZOOM_OUT = 34,
+  IDK_CURSOR_DND_ASK = 35,
+  IDK_CURSOR_ALL_RESIZE = 36,
+  IDK_CURSOR_CUSTOM = 255,
+};
 
 #pragma pack(push, 1)
 typedef struct idk_input_event {
@@ -94,10 +138,29 @@ typedef struct idk_input_event {
 } idk_input_event_t; /* total 20 bytes                                       */
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+typedef struct idk_cursor_update {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t visible;
+  uint8_t shape;
+  uint8_t _pad0;
+  uint16_t width;
+  uint16_t height;
+  int16_t hotspot_x;
+  int16_t hotspot_y;
+  uint16_t scale;
+  uint16_t _pad1;
+  uint32_t data_size;
+} idk_cursor_update_t;
+#pragma pack(pop)
+
 #ifdef __cplusplus
 static_assert(sizeof(idk_input_event_t) == 20, "idk_input_event_t must be 20 bytes");
+static_assert(sizeof(idk_cursor_update_t) == 24, "idk_cursor_update_t must be 24 bytes");
 #else
 _Static_assert(sizeof(idk_input_event_t) == 20, "idk_input_event_t must be 20 bytes");
+_Static_assert(sizeof(idk_cursor_update_t) == 24, "idk_cursor_update_t must be 24 bytes");
 #endif
 
 #ifdef __cplusplus

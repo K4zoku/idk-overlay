@@ -1,7 +1,9 @@
 #pragma once
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "core/transport.h"
 
@@ -18,10 +20,12 @@ public:
 
   void Start();
   void Stop();
+  void QueueCursor(const idk_cursor_update_t &cursor, std::vector<uint8_t> pixels);
 
 private:
   void Run();
   bool Connect();
+  bool FlushCursor();
   void HandleEvent(const idk_input_event_t &ev);
   void ArmRepeat(uint32_t keycode, uint32_t keysym, uint16_t mods);
   void DisarmRepeat();
@@ -35,6 +39,11 @@ private:
   idk_transport_t tp_{};
   int watch_fd_ = -1; /* input fd or SHM wake eventfd */
   int wake_fd_ = -1;
+  int command_fd_ = -1;
+  std::mutex cursor_mutex_;
+  idk_cursor_update_t cursor_{};
+  std::vector<uint8_t> cursor_pixels_;
+  bool cursor_pending_ = false;
 
   int repeat_fd_ = -1; /* timerfd */
   uint32_t repeat_rate_ = 25;

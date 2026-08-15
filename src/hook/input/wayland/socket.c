@@ -1,5 +1,6 @@
 #include "core/compositor.h"
 #include "core/transport.h"
+#include "hook/input_backend.h"
 #include "hook/wayland_internal.h"
 
 extern _Atomic int g_webview_dead;
@@ -9,33 +10,88 @@ static pthread_t g_accept_thread;
 static pthread_mutex_t g_input_tp_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_input_inited = 0;
 static _Atomic int g_accept_stop = 0;
+static pthread_mutex_t g_cursor_lock = PTHREAD_MUTEX_INITIALIZER;
+static idk_cursor_update_t g_cursor;
+static uint8_t g_cursor_pixels[IDK_CURSOR_MAX_BYTES];
+static _Atomic uint32_t g_cursor_generation = 0;
 
 int g_input_listen_fd = -1;
 int g_client_fd = -1;
 int g_accept_thread_started = 0;
 
+static void publish_cursor(const idk_cursor_update_t *cursor, const uint8_t *pixels) {
+  pthread_mutex_lock(&g_cursor_lock);
+  g_cursor = *cursor;
+  if (cursor->data_size > 0)
+    memcpy(g_cursor_pixels, pixels, cursor->data_size);
+  uint32_t generation = atomic_load_explicit(&g_cursor_generation, memory_order_relaxed) + 1;
+  if (generation == 0)
+    generation = 1;
+  atomic_store_explicit(&g_cursor_generation, generation, memory_order_release);
+  pthread_mutex_unlock(&g_cursor_lock);
+}
+
+int idk_input_cursor_snapshot(uint32_t known_generation, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity,
+                              uint32_t *generation) {
+  uint32_t current = atomic_load_explicit(&g_cursor_generation, memory_order_acquire);
+  if (current == 0 || current == known_generation)
+    return 0;
+  pthread_mutex_lock(&g_cursor_lock);
+  current = atomic_load_explicit(&g_cursor_generation, memory_order_relaxed);
+  if (current == 0 || current == known_generation || g_cursor.data_size > capacity ||
+      (g_cursor.data_size > 0 && !pixels)) {
+    pthread_mutex_unlock(&g_cursor_lock);
+    return 0;
+  }
+  *cursor = g_cursor;
+  if (g_cursor.data_size > 0)
+    memcpy(pixels, g_cursor_pixels, g_cursor.data_size);
+  *generation = current;
+  pthread_mutex_unlock(&g_cursor_lock);
+  return 1;
+}
+
+extern void idk_wayland_cursor_dispatch(void);
+extern void idk_x11_cursor_dispatch(void);
+
+void idk_input_cursor_dispatch(void) {
+  idk_wayland_cursor_dispatch();
+  idk_x11_cursor_dispatch();
+}
+
 static void *accept_thread_main(void *arg) {
   (void)arg;
+  uint8_t *pixels = malloc(IDK_CURSOR_MAX_BYTES);
+  if (!pixels)
+    return NULL;
   while (!atomic_load(&g_accept_stop)) {
+    int rc = 0;
+    int connected = 0;
     pthread_mutex_lock(&g_input_tp_lock);
+    if (!g_input_tp.ready)
+      connected = idk_tp_accept(&g_input_tp);
     if (g_input_tp.ready) {
-      pthread_mutex_unlock(&g_input_tp_lock);
-      break;
+      idk_cursor_update_t cursor;
+      rc = idk_tp_recv_cursor(&g_input_tp, &cursor, pixels, IDK_CURSOR_MAX_BYTES);
+      if (rc < 0) {
+        int save_errno = errno;
+        idk_tp_disconnect_client(&g_input_tp);
+        WLOG("cursor receive disconnected (errno=%d)", save_errno);
+      } else if (rc == 1) {
+        publish_cursor(&cursor, pixels);
+      }
     }
-    int rc = idk_tp_accept(&g_input_tp);
     pthread_mutex_unlock(&g_input_tp_lock);
-
-    if (rc < 0) {
+    if (connected == 1)
+      WLOG("webview connected to input transport");
+    if (connected < 0) {
       WLOG("accept_thread_main: idk_tp_accept fatal - input thread exiting");
       break;
     }
-    if (rc == 1) {
-      WLOG("webview connected to input transport");
-      break;
-    }
-    for (int i = 0; i < 100 && !atomic_load(&g_accept_stop); i++)
+    for (int i = 0; i < 20 && !atomic_load(&g_accept_stop); i++)
       usleep(100);
   }
+  free(pixels);
   return NULL;
 }
 
@@ -160,5 +216,6 @@ void teardown_input_socket(void) {
   idk_tp_destroy(&g_input_tp);
   g_input_inited = 0;
   g_input_listen_fd = -1;
+  atomic_store_explicit(&g_cursor_generation, 0, memory_order_release);
   pthread_mutex_unlock(&g_input_tp_lock);
 }

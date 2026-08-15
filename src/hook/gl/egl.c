@@ -15,6 +15,7 @@
 #include "hook/graphic_hooks.h"
 #include "hook/hook_plugin.h"
 #include "hook/hook_util.h"
+#include "hook/input_backend.h"
 #include "hook/syringe_hook.h"
 #include "hook/wayland_input.h"
 
@@ -39,6 +40,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     orig_eglSwapBuffers = (EGLBoolean (*)(EGLDisplay, EGLSurface))hook_orig("eglSwapBuffers");
 
   idk_wayland_input_sidecar_dispatch();
+  idk_input_cursor_dispatch();
 
   if (!g_gl_resources_ready) {
     if (idk_compositor_egl_init_gl() == 0)

@@ -26,6 +26,7 @@ void idk_wayland_input_set_capture(int enable) {
 
   if (idk_vk_layer_is_active()) {
     WLOG("set_capture(%s): skipping cursor ops (Vulkan layer mode)", new_state ? "ON" : "OFF");
+    idk_wayland_cursor_capture_changed(new_state);
     send_capture_state((uint32_t)new_state);
     if (new_state)
       send_repeat_info();
@@ -73,6 +74,9 @@ void idk_wayland_input_set_capture(int enable) {
   } else if (!new_state) {
     WLOG("set_capture(OFF): no game pointer proxy - cursor unchanged");
   }
+  idk_wayland_cursor_capture_changed(new_state);
+  if (new_state)
+    idk_wayland_cursor_dispatch();
 
   WLOG("input capture %s", new_state ? "ENABLED" : "DISABLED");
   send_capture_state((uint32_t)new_state);
@@ -149,11 +153,14 @@ void idk_wayland_input_shutdown(void) {
     return;
 
   g_hook_installed = 0;
+  idk_wayland_cursor_shutdown();
   g_sidecar_initialized = 0;
   g_sidecar_display = NULL;
   g_sidecar_keyboard = NULL;
   g_sidecar_seat = NULL;
   g_sidecar_cursor_shape_manager = NULL;
+  g_sidecar_compositor = NULL;
+  g_sidecar_shm = NULL;
   g_sidecar_queue = NULL;
 
   g_cursor_shape_device = NULL;

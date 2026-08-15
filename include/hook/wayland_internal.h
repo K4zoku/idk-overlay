@@ -73,6 +73,8 @@ extern struct wl_seat *g_sidecar_seat;
 extern struct wl_keyboard *g_sidecar_keyboard;
 extern struct wl_pointer *g_sidecar_pointer;
 extern struct wl_proxy *g_sidecar_cursor_shape_manager;
+extern struct wl_proxy *g_sidecar_compositor;
+extern struct wl_proxy *g_sidecar_shm;
 extern int g_sidecar_initialized;
 extern int g_sidecar_ready;
 extern struct wl_proxy *g_cursor_shape_device;
@@ -81,6 +83,9 @@ extern uint32_t g_sidecar_pointer_enter_serial;
 extern void *g_sidecar_surface;
 extern wl_fixed_t g_sidecar_sx;
 extern wl_fixed_t g_sidecar_sy;
+void idk_wayland_cursor_dispatch(void);
+void idk_wayland_cursor_shutdown(void);
+void idk_wayland_cursor_capture_changed(int captured);
 
 /* Socket globals */
 extern int g_input_listen_fd;

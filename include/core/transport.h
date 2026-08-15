@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "public/idk_ipc.h"
 
@@ -13,51 +13,50 @@ extern "C" {
 #define IDK_TP_PATH_MAX 108
 
 typedef enum {
-    IDK_TP_CONSUMER,  /* creates endpoint, waits for producer */
-    IDK_TP_PRODUCER,  /* connects to consumer's endpoint */
+  IDK_TP_CONSUMER, /* creates endpoint, waits for producer */
+  IDK_TP_PRODUCER, /* connects to consumer's endpoint */
 } idk_tp_role_t;
 
 #define IDK_TP_SOCKET 0
-#define IDK_TP_SHM    1
+#define IDK_TP_SHM 1
 
 typedef struct idk_transport {
-    idk_tp_role_t role;
-    uint8_t       backend;      /* 0 = socket, 1 = SHM */
-    bool          ready;
+  idk_tp_role_t role;
+  uint8_t backend; /* 0 = socket, 1 = SHM */
+  bool ready;
 
-    /* backend-internal */
-    int           _server_fd;
-    int           _client_fd;
-    uint8_t       _rsv[56];
+  /* backend-internal */
+  int _server_fd;
+  int _client_fd;
+  uint32_t _cursor_seq;
+  uint8_t _rsv[56];
 } idk_transport_t;
 
 #ifdef __cplusplus
-static_assert(sizeof(idk_transport_t) == 72,
-              "idk_transport_t must be 72 bytes");
+static_assert(sizeof(idk_transport_t) == 76, "idk_transport_t must be 76 bytes");
 #else
-_Static_assert(sizeof(idk_transport_t) == 72,
-               "idk_transport_t must be 72 bytes");
+_Static_assert(sizeof(idk_transport_t) == 76, "idk_transport_t must be 76 bytes");
 #endif
 
-int  idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name);
+int idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name);
 void idk_tp_destroy(idk_transport_t *tp);
 void idk_tp_disconnect_client(idk_transport_t *tp);
 
-int  idk_tp_accept(idk_transport_t *tp);
-int  idk_tp_poll(idk_transport_t *tp);
-int  idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
-                 int fds[4], int *nfd);
-int  idk_tp_drop_frame(idk_transport_t *tp);
+int idk_tp_accept(idk_transport_t *tp);
+int idk_tp_poll(idk_transport_t *tp);
+int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd);
+int idk_tp_drop_frame(idk_transport_t *tp);
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
 
-int  idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
-                 const int *fds, int nfd);
-int  idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
+int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd);
+int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
 
-int  idk_tp_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
-int  idk_tp_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
+int idk_tp_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
+int idk_tp_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
+int idk_tp_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels);
+int idk_tp_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity);
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,11 @@ const struct wl_interface *g_wl_seat_interface = NULL;
 const struct wl_interface *g_wl_keyboard_interface = NULL;
 const struct wl_interface *g_wl_registry_interface = NULL;
 const struct wl_interface *g_wl_pointer_interface = NULL;
+const struct wl_interface *g_wl_buffer_interface = NULL;
+const struct wl_interface *g_wl_compositor_interface = NULL;
+const struct wl_interface *g_wl_shm_interface = NULL;
+const struct wl_interface *g_wl_shm_pool_interface = NULL;
+const struct wl_interface *g_wl_surface_interface = NULL;
 
 void *g_wl_handle = NULL;
 
@@ -47,6 +52,11 @@ int resolve_wayland_symbols(void) {
   g_wl_keyboard_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_keyboard_interface");
   g_wl_registry_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_registry_interface");
   g_wl_pointer_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_pointer_interface");
+  g_wl_buffer_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_buffer_interface");
+  g_wl_compositor_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_compositor_interface");
+  g_wl_shm_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_shm_interface");
+  g_wl_shm_pool_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_shm_pool_interface");
+  g_wl_surface_interface = (const struct wl_interface *)dlsym(g_wl_handle, "wl_surface_interface");
 
   WLOG("libwayland-client resolved: add_listener=%p get_class=%p sidecar=%s", (void *)real_wl_proxy_add_listener,
        (void *)real_wl_proxy_get_class, (real_wl_display_create_queue && g_wl_seat_interface) ? "OK" : "MISSING");

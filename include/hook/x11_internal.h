@@ -48,9 +48,8 @@ extern void *g_x11_handle; /* dlopen handle for libX11.so.6 */
 extern int g_hook_installed;
 extern Display *g_game_display; /* cached display from first XNextEvent */
 extern Window g_game_window;    /* cached window from first X event */
-extern Cursor g_blank_cursor;   /* 1x1 transparent cursor for capture */
-extern Cursor g_saved_cursor;   /* cursor to restore on release */
-extern int g_cursor_grabbed;    /* XGrabPointer active */
+extern Cursor g_overlay_cursor;
+extern int g_cursor_grabbed; /* XGrabPointer active */
 
 /* Input socket (shared with wayland_socket.c structure) */
 extern int g_input_listen_fd;
@@ -63,6 +62,8 @@ void send_event_to_webview(const idk_input_event_t *ev);
 void send_capture_state(uint32_t capture);
 void send_overlay_state(uint8_t visible);
 void send_repeat_info(void);
+void idk_x11_cursor_dispatch(void);
+void idk_x11_cursor_shutdown(void);
 
 /* Hotkey */
 void configure_hotkey(void);

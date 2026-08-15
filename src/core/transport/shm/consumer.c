@@ -31,6 +31,7 @@ int shm_init_consumer(idk_transport_t *tp, const char *name) {
   *shm_i32(ptr, SHM_O_PROD_PID) = 0;
   atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
   atomic_store(shm_atom(ptr, SHM_O_FRAME_SEQ), 0);
+  atomic_store(shm_atom(ptr, SHM_O_CURSOR_SEQ), 0);
 
   const char *efd_env = getenv("IDK_INPUT_EVENTFD");
   int efd = efd_env ? atoi(efd_env) : 0;

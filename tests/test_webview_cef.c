@@ -183,6 +183,84 @@ TEST(cef_webview_shm_fallback) {
   unlink(SOCK_PATH);
 }
 
+TEST(cef_webview_cursor_visibility) {
+  unlink(SOCK_PATH);
+  char input_path[128];
+  snprintf(input_path, sizeof(input_path), "%s-input", SOCK_PATH);
+  unlink(input_path);
+  char html_path[128];
+  snprintf(html_path, sizeof(html_path), "/tmp/idk-cef-cursor-%d.html", (int)getpid());
+  FILE *html = fopen(html_path, "w");
+  ASSERT_TRUE(html != NULL);
+  fputs("<!doctype html><style>html,body{width:100%;height:100%;margin:0}</style>"
+        "<script>setTimeout(()=>document.body.style.cursor='none',1000)</script>",
+        html);
+  fclose(html);
+  char url[160];
+  snprintf(url, sizeof(url), "file://%s", html_path);
+
+  idk_transport_t comp = {0};
+  idk_transport_t input = {0};
+  ASSERT_EQ(idk_tp_init(&comp, IDK_TP_CONSUMER, SOCK_PATH), 0);
+  ASSERT_EQ(idk_tp_init(&input, IDK_TP_CONSUMER, input_path), 0);
+  pid_t pid = fork();
+  ASSERT_TRUE(pid >= 0);
+  if (pid == 0) {
+    execl(argv_bin, argv_bin, "--socket", SOCK_PATH, "--url", url, (char *)NULL);
+    _exit(127);
+  }
+  ASSERT_EQ(wait_accept(&comp, ACCEPT_TIMEOUT_MS), 0);
+  ASSERT_EQ(wait_accept(&input, ACCEPT_TIMEOUT_MS), 0);
+
+  idk_input_event_t capture = {.type = IDK_INPUT_STATE, .flags = IDK_INPUT_FLAG_CAPTURE};
+  idk_input_event_t motion = {.type = IDK_INPUT_MOTION, .u.motion = {.x = 20, .y = 20}};
+  ASSERT_EQ(idk_tp_send_input(&input, &capture), 0);
+  ASSERT_EQ(idk_tp_send_input(&input, &motion), 0);
+
+  int hidden_seen = 0;
+  uint8_t pixels[IDK_CURSOR_MAX_BYTES];
+  for (int waited = 0; waited < 7000 && !hidden_seen; waited += 100) {
+    if (waited % 500 == 0) {
+      motion.u.motion.x = 20 + ((waited / 500) & 1);
+      ASSERT_EQ(idk_tp_send_input(&input, &motion), 0);
+    }
+    if (!wait_readable(input._client_fd, 100))
+      continue;
+    idk_cursor_update_t cursor;
+    int rc = idk_tp_recv_cursor(&input, &cursor, pixels, sizeof(pixels));
+    if (rc != 1)
+      continue;
+    if (!cursor.visible) {
+      ASSERT_EQ(cursor.data_size, 0);
+      hidden_seen = 1;
+    }
+  }
+  int hidden_result = hidden_seen;
+  if (wait_readable(comp._client_fd, 1000)) {
+    idk_frame_header_t frame;
+    int fds[4] = {-1, -1, -1, -1};
+    int nfd = 0;
+    if (idk_tp_recv(&comp, &frame, fds, &nfd) == 1) {
+      for (int i = 0; i < nfd; i++)
+        close(fds[i]);
+      idk_ack_msg_t ack = {.ack = 0};
+      idk_tp_send_ack(&comp, &ack);
+    }
+  }
+
+  idk_request_msg_t shutdown = {.type = IDK_REQUEST_SHUTDOWN};
+  ASSERT_EQ(idk_tp_send_request(&comp, &shutdown), 0);
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  ASSERT_TRUE(WIFEXITED(status) || WIFSIGNALED(status));
+  idk_tp_destroy(&input);
+  idk_tp_destroy(&comp);
+  unlink(input_path);
+  unlink(SOCK_PATH);
+  ASSERT_TRUE(hidden_result);
+  unlink(html_path);
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     fprintf(stderr, "usage: %s <idk-webview-cef binary>\n", argv[0]);
@@ -191,5 +269,6 @@ int main(int argc, char **argv) {
   argv_bin = argv[1];
   RUN(cef_webview_frame_flow);
   RUN(cef_webview_shm_fallback);
+  RUN(cef_webview_cursor_visibility);
   return 0;
 }

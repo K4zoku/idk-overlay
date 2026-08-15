@@ -15,6 +15,7 @@
 #include "hook/dlsym_shim.h"
 #include "hook/hook_plugin.h"
 #include "hook/hook_util.h"
+#include "hook/input_backend.h"
 #include "hook/overlay.h"
 #include "hook/syringe_hook.h"
 
@@ -53,6 +54,7 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
     orig_glXSwapBuffers = resolve_real_glXSwapBuffers();
   if (!orig_glXSwapBuffers || orig_glXSwapBuffers == (GlXSwapBuffersFn)(void *)glXSwapBuffers)
     return;
+  idk_input_cursor_dispatch();
 
   if (!g_gl_resources_ready) {
     if (idk_compositor_egl_init_gl() == 0)

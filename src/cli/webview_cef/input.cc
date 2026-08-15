@@ -30,12 +30,63 @@ InputThread::InputThread(View *view, const std::string &frame_socket) : view_(vi
 
 InputThread::~InputThread() { Stop(); }
 
-void InputThread::Start() { thread_ = std::thread(&InputThread::Run, this); }
+void InputThread::Start() {
+  command_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  thread_ = std::thread(&InputThread::Run, this);
+}
 
 void InputThread::Stop() {
   stop_.store(true);
+  if (command_fd_ >= 0) {
+    eventfd_t value = 1;
+    eventfd_write(command_fd_, value);
+  }
   if (thread_.joinable())
     thread_.join();
+  if (repeat_fd_ >= 0) {
+    close(repeat_fd_);
+    repeat_fd_ = -1;
+  }
+  if (command_fd_ >= 0) {
+    close(command_fd_);
+    command_fd_ = -1;
+  }
+}
+
+void InputThread::QueueCursor(const idk_cursor_update_t &cursor, std::vector<uint8_t> pixels) {
+  {
+    std::lock_guard<std::mutex> lock(cursor_mutex_);
+    cursor_ = cursor;
+    cursor_pixels_ = std::move(pixels);
+    cursor_pending_ = true;
+  }
+  if (command_fd_ >= 0) {
+    eventfd_t value = 1;
+    eventfd_write(command_fd_, value);
+  }
+}
+
+bool InputThread::FlushCursor() {
+  idk_cursor_update_t cursor;
+  std::vector<uint8_t> pixels;
+  {
+    std::lock_guard<std::mutex> lock(cursor_mutex_);
+    if (!cursor_pending_)
+      return true;
+    cursor = cursor_;
+    pixels = cursor_pixels_;
+    cursor_pending_ = false;
+  }
+  const uint8_t *data = pixels.empty() ? nullptr : pixels.data();
+  if (idk_tp_send_cursor(&tp_, &cursor, data) == 0)
+    return true;
+  std::lock_guard<std::mutex> lock(cursor_mutex_);
+  if (!cursor_pending_) {
+    cursor_ = cursor;
+    cursor_pixels_ = std::move(pixels);
+    cursor_pending_ = true;
+  }
+  return false;
 }
 
 bool InputThread::Connect() {
@@ -76,27 +127,35 @@ void InputThread::Run() {
         retries = 0;
         IDK_LOG("input-cef", "input connected to %s%s\n", name_[0] == '\0' ? "\\0" : "",
                 name_[0] == '\0' ? name_.c_str() + 1 : name_.c_str());
+        if (!FlushCursor()) {
+          idk_tp_disconnect_client(&tp_);
+          connected = false;
+          continue;
+        }
       } else {
         retries++;
         if (retries == INPUT_MAX_RETRIES)
-          IDK_LOG("input-cef",
-                  "giving up after %d tries - game may not be a "
-                  "wayland client\n",
-                  retries);
-        struct pollfd pf = {.fd = -1, .events = 0, .revents = 0};
-        poll(&pf, 0, INPUT_RETRY_MS); /* sleep, interruptible-ish */
+          IDK_LOG("input-cef", "giving up after %d tries - game may not be a wayland client\n", retries);
+        struct pollfd command = {.fd = command_fd_, .events = POLLIN, .revents = 0};
+        poll(&command, command_fd_ >= 0 ? 1 : 0, INPUT_RETRY_MS);
+        if (command.revents & POLLIN) {
+          eventfd_t value;
+          while (eventfd_read(command_fd_, &value) == 0) {
+          }
+        }
         continue;
       }
     }
 
-    struct pollfd fds[2];
+    struct pollfd fds[3];
     fds[0] = {.fd = watch_fd_, .events = POLLIN, .revents = 0};
-    int nfds = 1;
+    fds[1] = {.fd = command_fd_, .events = POLLIN, .revents = 0};
+    int nfds = 2;
     if (repeat_armed_) {
-      fds[1] = {.fd = repeat_fd_, .events = POLLIN, .revents = 0};
-      nfds = 2;
+      fds[2] = {.fd = repeat_fd_, .events = POLLIN, .revents = 0};
+      nfds = 3;
     }
-    int rc = poll(fds, nfds, 100); /* heartbeat for stop */
+    int rc = poll(fds, nfds, 100);
     if (rc < 0) {
       if (errno == EINTR)
         continue;
@@ -107,8 +166,8 @@ void InputThread::Run() {
 
     if (fds[0].revents & POLLIN) {
       if (wake_fd_ >= 0) {
-        eventfd_t val;
-        while (eventfd_read(wake_fd_, &val) == 0) {
+        eventfd_t value;
+        while (eventfd_read(wake_fd_, &value) == 0) {
         }
       }
       idk_input_event_t ev;
@@ -126,7 +185,18 @@ void InputThread::Run() {
       }
     }
 
-    if (repeat_armed_ && (fds[1].revents & POLLIN))
+    if (connected && (fds[1].revents & POLLIN)) {
+      eventfd_t value;
+      while (eventfd_read(command_fd_, &value) == 0) {
+      }
+      if (!FlushCursor()) {
+        idk_tp_disconnect_client(&tp_);
+        connected = false;
+        IDK_LOG("input-cef", "cursor send disconnected input transport\n");
+      }
+    }
+
+    if (repeat_armed_ && nfds == 3 && (fds[2].revents & POLLIN))
       HandleRepeat();
   }
 

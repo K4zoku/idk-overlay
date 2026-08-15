@@ -4,149 +4,162 @@
 
 #include "core/transport.h"
 
-extern int  tp_socket_init(idk_transport_t *tp, const char *name);
+extern int tp_socket_init(idk_transport_t *tp, const char *name);
 extern void tp_socket_destroy(idk_transport_t *tp);
 extern void tp_socket_disconnect_client(idk_transport_t *tp);
-extern int  tp_socket_accept(idk_transport_t *tp);
-extern int  tp_socket_poll(idk_transport_t *tp);
-extern int  tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
-                           int fds[4], int *nfd);
-extern int  tp_socket_drop_frame(idk_transport_t *tp);
+extern int tp_socket_accept(idk_transport_t *tp);
+extern int tp_socket_poll(idk_transport_t *tp);
+extern int tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd);
+extern int tp_socket_drop_frame(idk_transport_t *tp);
 extern void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
-extern int  tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
-                           const int *fds, int nfd);
-extern int  tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack,
-                                int timeout_ms);
-extern int  tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
-extern int  tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
-                                    int timeout_ms);
-extern int  tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
-extern int  tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
+extern int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd);
+extern int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
+extern int tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
+extern int tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
+extern int tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
+extern int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
+extern int tp_socket_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels);
+extern int tp_socket_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity);
 
-extern int  tp_shm_init(idk_transport_t *tp, const char *name);
+extern int tp_shm_init(idk_transport_t *tp, const char *name);
 extern void tp_shm_destroy(idk_transport_t *tp);
 extern void tp_shm_disconnect_client(idk_transport_t *tp);
-extern int  tp_shm_accept(idk_transport_t *tp);
-extern int  tp_shm_poll(idk_transport_t *tp);
-extern int  tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
-                        int fds[4], int *nfd);
-extern int  tp_shm_drop_frame(idk_transport_t *tp);
+extern int tp_shm_accept(idk_transport_t *tp);
+extern int tp_shm_poll(idk_transport_t *tp);
+extern int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd);
+extern int tp_shm_drop_frame(idk_transport_t *tp);
 extern void tp_shm_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
-extern int  tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
-                        const int *fds, int nfd);
-extern int  tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack,
-                             int timeout_ms);
-extern int  tp_shm_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
-extern int  tp_shm_recv_request(idk_transport_t *tp, idk_request_msg_t *req,
-                                 int timeout_ms);
-extern int  tp_shm_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
-extern int  tp_shm_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
+extern int tp_shm_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd);
+extern int tp_shm_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
+extern int tp_shm_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
+extern int tp_shm_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
+extern int tp_shm_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
+extern int tp_shm_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
+extern int tp_shm_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels);
+extern int tp_shm_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity);
 
 static int resolve_backend(void) {
-    const char *env = getenv("IDK_TP_BACKEND");
-    if (env && strcasecmp(env, "shm") == 0)
-        return IDK_TP_SHM;
-    return IDK_TP_SOCKET;
+  const char *env = getenv("IDK_TP_BACKEND");
+  if (env && strcasecmp(env, "shm") == 0)
+    return IDK_TP_SHM;
+  return IDK_TP_SOCKET;
 }
 
 typedef struct {
-    int  (*init)(idk_transport_t *, const char *);
-    void (*destroy)(idk_transport_t *);
-    void (*disconnect_client)(idk_transport_t *);
-    int  (*accept)(idk_transport_t *);
-    int  (*poll)(idk_transport_t *);
-    int  (*recv)(idk_transport_t *, idk_frame_header_t *, int[4], int *);
-    int  (*drop_frame)(idk_transport_t *);
-    void (*send_ack)(idk_transport_t *, const idk_ack_msg_t *);
-    int  (*send)(idk_transport_t *, const idk_frame_header_t *, const int *, int);
-    int  (*wait_ack)(idk_transport_t *, idk_ack_msg_t *, int);
-    int  (*send_request)(idk_transport_t *, const idk_request_msg_t *);
-    int  (*recv_request)(idk_transport_t *, idk_request_msg_t *, int);
-    int  (*send_input)(idk_transport_t *, const idk_input_event_t *);
-    int  (*recv_input)(idk_transport_t *, idk_input_event_t *);
+  int (*init)(idk_transport_t *, const char *);
+  void (*destroy)(idk_transport_t *);
+  void (*disconnect_client)(idk_transport_t *);
+  int (*accept)(idk_transport_t *);
+  int (*poll)(idk_transport_t *);
+  int (*recv)(idk_transport_t *, idk_frame_header_t *, int[4], int *);
+  int (*drop_frame)(idk_transport_t *);
+  void (*send_ack)(idk_transport_t *, const idk_ack_msg_t *);
+  int (*send)(idk_transport_t *, const idk_frame_header_t *, const int *, int);
+  int (*wait_ack)(idk_transport_t *, idk_ack_msg_t *, int);
+  int (*send_request)(idk_transport_t *, const idk_request_msg_t *);
+  int (*recv_request)(idk_transport_t *, idk_request_msg_t *, int);
+  int (*send_input)(idk_transport_t *, const idk_input_event_t *);
+  int (*recv_input)(idk_transport_t *, idk_input_event_t *);
+  int (*send_cursor)(idk_transport_t *, const idk_cursor_update_t *, const uint8_t *);
+  int (*recv_cursor)(idk_transport_t *, idk_cursor_update_t *, uint8_t *, size_t);
 } idk_tp_backend_t;
 
 static const idk_tp_backend_t tp_backends[2] = {
-    [IDK_TP_SOCKET] = {
-        .init = tp_socket_init, .destroy = tp_socket_destroy,
-        .disconnect_client = tp_socket_disconnect_client,
-        .accept = tp_socket_accept, .poll = tp_socket_poll,
-        .recv = tp_socket_recv, .drop_frame = tp_socket_drop_frame, .send_ack = tp_socket_send_ack,
-        .send = tp_socket_send, .wait_ack = tp_socket_wait_ack,
-        .send_request = tp_socket_send_request, .recv_request = tp_socket_recv_request,
-        .send_input = tp_socket_send_input, .recv_input = tp_socket_recv_input,
-    },
-    [IDK_TP_SHM] = {
-        .init = tp_shm_init, .destroy = tp_shm_destroy,
-        .disconnect_client = tp_shm_disconnect_client,
-        .accept = tp_shm_accept, .poll = tp_shm_poll,
-        .recv = tp_shm_recv, .drop_frame = tp_shm_drop_frame, .send_ack = tp_shm_send_ack,
-        .send = tp_shm_send, .wait_ack = tp_shm_wait_ack,
-        .send_request = tp_shm_send_request, .recv_request = tp_shm_recv_request,
-        .send_input = tp_shm_send_input, .recv_input = tp_shm_recv_input,
-    },
+    [IDK_TP_SOCKET] =
+        {
+            .init = tp_socket_init,
+            .destroy = tp_socket_destroy,
+            .disconnect_client = tp_socket_disconnect_client,
+            .accept = tp_socket_accept,
+            .poll = tp_socket_poll,
+            .recv = tp_socket_recv,
+            .drop_frame = tp_socket_drop_frame,
+            .send_ack = tp_socket_send_ack,
+            .send = tp_socket_send,
+            .wait_ack = tp_socket_wait_ack,
+            .send_request = tp_socket_send_request,
+            .recv_request = tp_socket_recv_request,
+            .send_input = tp_socket_send_input,
+            .recv_input = tp_socket_recv_input,
+            .send_cursor = tp_socket_send_cursor,
+            .recv_cursor = tp_socket_recv_cursor,
+        },
+    [IDK_TP_SHM] =
+        {
+            .init = tp_shm_init,
+            .destroy = tp_shm_destroy,
+            .disconnect_client = tp_shm_disconnect_client,
+            .accept = tp_shm_accept,
+            .poll = tp_shm_poll,
+            .recv = tp_shm_recv,
+            .drop_frame = tp_shm_drop_frame,
+            .send_ack = tp_shm_send_ack,
+            .send = tp_shm_send,
+            .wait_ack = tp_shm_wait_ack,
+            .send_request = tp_shm_send_request,
+            .recv_request = tp_shm_recv_request,
+            .send_input = tp_shm_send_input,
+            .recv_input = tp_shm_recv_input,
+            .send_cursor = tp_shm_send_cursor,
+            .recv_cursor = tp_shm_recv_cursor,
+        },
 };
 
 int idk_tp_init(idk_transport_t *tp, idk_tp_role_t role, const char *name) {
-    tp->role = role;
-    tp->ready = false;
-    tp->_client_fd = -1;
-    tp->_server_fd = -1;
-    tp->backend = (uint8_t)resolve_backend();
-    memset(tp->_rsv, 0, sizeof(tp->_rsv));
-    return tp_backends[tp->backend].init(tp, name);
+  tp->role = role;
+  tp->ready = false;
+  tp->_client_fd = -1;
+  tp->_server_fd = -1;
+  tp->backend = (uint8_t)resolve_backend();
+  memset(tp->_rsv, 0, sizeof(tp->_rsv));
+  tp->_cursor_seq = 0;
+  return tp_backends[tp->backend].init(tp, name);
 }
 
-void idk_tp_destroy(idk_transport_t *tp) {
-    tp_backends[tp->backend].destroy(tp);
+void idk_tp_destroy(idk_transport_t *tp) { tp_backends[tp->backend].destroy(tp); }
+
+void idk_tp_disconnect_client(idk_transport_t *tp) { tp_backends[tp->backend].disconnect_client(tp); }
+
+int idk_tp_accept(idk_transport_t *tp) { return tp_backends[tp->backend].accept(tp); }
+
+int idk_tp_poll(idk_transport_t *tp) { return tp_backends[tp->backend].poll(tp); }
+
+int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd) {
+  return tp_backends[tp->backend].recv(tp, hdr, fds, nfd);
 }
 
-void idk_tp_disconnect_client(idk_transport_t *tp) {
-    tp_backends[tp->backend].disconnect_client(tp);
-}
+int idk_tp_drop_frame(idk_transport_t *tp) { return tp_backends[tp->backend].drop_frame(tp); }
 
-int idk_tp_accept(idk_transport_t *tp) {
-    return tp_backends[tp->backend].accept(tp);
-}
+void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) { tp_backends[tp->backend].send_ack(tp, ack); }
 
-int idk_tp_poll(idk_transport_t *tp) {
-    return tp_backends[tp->backend].poll(tp);
-}
-
-int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr,
-                int fds[4], int *nfd) {
-    return tp_backends[tp->backend].recv(tp, hdr, fds, nfd);
-}
-
-int idk_tp_drop_frame(idk_transport_t *tp) {
-    return tp_backends[tp->backend].drop_frame(tp);
-}
-
-void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
-    tp_backends[tp->backend].send_ack(tp, ack);
-}
-
-int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr,
-                const int *fds, int nfd) {
-    return tp_backends[tp->backend].send(tp, hdr, fds, nfd);
+int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd) {
+  return tp_backends[tp->backend].send(tp, hdr, fds, nfd);
 }
 
 int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
-    return tp_backends[tp->backend].wait_ack(tp, ack, timeout_ms);
+  return tp_backends[tp->backend].wait_ack(tp, ack, timeout_ms);
 }
 
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
-    return tp_backends[tp->backend].send_request(tp, req);
+  return tp_backends[tp->backend].send_request(tp, req);
 }
 
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
-    return tp_backends[tp->backend].recv_request(tp, req, timeout_ms);
+  return tp_backends[tp->backend].recv_request(tp, req, timeout_ms);
 }
 
 int idk_tp_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
-    return tp_backends[tp->backend].send_input(tp, ev);
+  return tp_backends[tp->backend].send_input(tp, ev);
 }
 
 int idk_tp_recv_input(idk_transport_t *tp, idk_input_event_t *ev) {
-    return tp_backends[tp->backend].recv_input(tp, ev);
+  return tp_backends[tp->backend].recv_input(tp, ev);
+}
+
+int idk_tp_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels) {
+  return tp_backends[tp->backend].send_cursor(tp, cursor, pixels);
+}
+
+int idk_tp_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity) {
+  return tp_backends[tp->backend].recv_cursor(tp, cursor, pixels, capacity);
 }

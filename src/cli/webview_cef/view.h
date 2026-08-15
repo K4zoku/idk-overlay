@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "include/cef_client.h"
+#include "include/cef_display_handler.h"
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_render_handler.h"
@@ -24,7 +25,11 @@ class InputThread;
  * The input socket lives on a dedicated thread (input.cc) that posts
  * CefKeyEvent/CefMouseEvent work here.
  */
-class View : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefLoadHandler {
+class View : public CefClient,
+             public CefRenderHandler,
+             public CefLifeSpanHandler,
+             public CefLoadHandler,
+             public CefDisplayHandler {
 public:
   /* |sock_path| is the producer socket path; |sock_abstract| marks an
    * abstract-namespace socket (IDK_TP_ABSTRACT, broker mode). */
@@ -54,6 +59,7 @@ private:
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+  CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
 
   /* CefRenderHandler */
   void GetViewRect(CefRefPtr<CefBrowser>, CefRect &rect) override;
@@ -71,6 +77,9 @@ private:
 
   /* CefLoadHandler */
   void OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, int) override;
+
+  /* CefDisplayHandler */
+  bool OnCursorChange(CefRefPtr<CefBrowser>, CefCursorHandle, cef_cursor_type_t, const CefCursorInfo &) override;
 
   /* Producer lifecycle + pacing (UI thread). */
   void ConnectTask();

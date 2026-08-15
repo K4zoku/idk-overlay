@@ -38,6 +38,10 @@ struct wl_display;
 struct wl_seat;
 struct wl_registry;
 struct wl_event_queue;
+struct wl_buffer;
+struct wl_compositor;
+struct wl_shm;
+struct wl_shm_pool;
 
 /* wl_message - from wayland-util.h, needed for manual protocol interface
  * construction (wp_cursor_shape_manager_v1, wp_cursor_shape_device_v1). */
@@ -108,6 +112,10 @@ struct wl_seat_listener {
 struct wl_registry_listener {
   void (*global)(void *data, struct wl_registry *wl_registry, uint32_t name, const char *interface, uint32_t version);
   void (*global_remove)(void *data, struct wl_registry *wl_registry, uint32_t name);
+};
+
+struct wl_buffer_listener {
+  void (*release)(void *data, struct wl_buffer *buffer);
 };
 
 /* Enum constants (subset, only what we use) */

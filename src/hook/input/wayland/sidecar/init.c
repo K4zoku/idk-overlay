@@ -9,6 +9,8 @@ struct wl_seat *g_sidecar_seat = NULL;
 struct wl_keyboard *g_sidecar_keyboard = NULL;
 struct wl_pointer *g_sidecar_pointer = NULL;
 struct wl_proxy *g_sidecar_cursor_shape_manager = NULL;
+struct wl_proxy *g_sidecar_compositor = NULL;
+struct wl_proxy *g_sidecar_shm = NULL;
 int g_sidecar_initialized = 0;
 int g_sidecar_ready = 0;
 
@@ -102,6 +104,13 @@ static void sidecar_registry_global(void *d, struct wl_registry *reg, uint32_t n
     WLOG("sidecar: wl_seat bound → %p", (void *)g_sidecar_seat);
     if (g_sidecar_seat && real_wl_proxy_add_listener)
       real_wl_proxy_add_listener((struct wl_proxy *)g_sidecar_seat, (void (**)(void))&g_sidecar_seat_listener, NULL);
+  } else if (strcmp(iface, "wl_compositor") == 0 && !g_sidecar_compositor && g_wl_compositor_interface) {
+    uint32_t bind_ver = ver < 4 ? ver : 4;
+    g_sidecar_compositor = my_wl_registry_bind(reg, name, g_wl_compositor_interface, bind_ver);
+    WLOG("sidecar: wl_compositor bound → %p (ver=%u)", (void *)g_sidecar_compositor, bind_ver);
+  } else if (strcmp(iface, "wl_shm") == 0 && !g_sidecar_shm && g_wl_shm_interface) {
+    g_sidecar_shm = my_wl_registry_bind(reg, name, g_wl_shm_interface, 1);
+    WLOG("sidecar: wl_shm bound → %p", (void *)g_sidecar_shm);
   } else if (strcmp(iface, "wp_cursor_shape_manager_v1") == 0 && !g_sidecar_cursor_shape_manager) {
     if (idk_vk_layer_is_active()) {
       WLOG("sidecar: skipping wp_cursor_shape_manager_v1 (Vulkan layer mode)");

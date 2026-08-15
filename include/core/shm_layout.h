@@ -1,7 +1,7 @@
 /*
  * shm_layout.h - Shared-memory transport wire layout (single protocol spec)
  *
- * 4096-byte page shared between consumer (overlay/compositor) and producer
+ * 65 pages shared between consumer (overlay/compositor) and producer
  * (webview). Offsets are fixed ABI - do not change.
  *
  *  offset  size  field
@@ -21,12 +21,14 @@
  *  84      4     FRAME_SEQ    monotonically increasing frame counter
  *  88      4     REQ_SEQ      request counter (consumer -> producer)
  *  92      4     EVENTFD      eventfd number for input notify (0 = none)
- *  96      4000  reserved
+ *  96      4     CURSOR_SEQ   reverse cursor seqlock (odd=writer active)
+ *  100     24    CURSOR_HDR   idk_cursor_update_t
+ *  124     262144 CURSOR_DATA custom cursor BGRA pixels
  */
 #ifndef IDK_SHM_LAYOUT_H
 #define IDK_SHM_LAYOUT_H
 
-#define SHM_SIZE 4096
+#define SHM_SIZE 266240
 
 #define SHM_O_MAGIC 0
 #define SHM_O_PROD_STATE 4
@@ -41,8 +43,12 @@
 #define SHM_O_FRAME_SEQ 84
 #define SHM_O_REQ_SEQ 88
 #define SHM_O_EVENTFD 92
+#define SHM_O_CURSOR_SEQ 96
+#define SHM_O_CURSOR_HDR 100
+#define SHM_O_CURSOR_DATA 124
+#define SHM_CURSOR_CAPACITY 262144
 
-_Static_assert(SHM_O_EVENTFD + 4 <= SHM_SIZE, "SHM layout exceeds page size");
+_Static_assert(SHM_O_CURSOR_DATA + SHM_CURSOR_CAPACITY <= SHM_SIZE, "SHM layout exceeds mapping size");
 
 #define SHM_MAGIC_VAL 0x4D485349
 

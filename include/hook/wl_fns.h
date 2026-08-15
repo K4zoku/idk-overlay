@@ -39,6 +39,11 @@ extern const struct wl_interface *g_wl_seat_interface;
 extern const struct wl_interface *g_wl_keyboard_interface;
 extern const struct wl_interface *g_wl_registry_interface;
 extern const struct wl_interface *g_wl_pointer_interface;
+extern const struct wl_interface *g_wl_buffer_interface;
+extern const struct wl_interface *g_wl_compositor_interface;
+extern const struct wl_interface *g_wl_shm_interface;
+extern const struct wl_interface *g_wl_shm_pool_interface;
+extern const struct wl_interface *g_wl_surface_interface;
 
 extern void *g_wl_handle;
 

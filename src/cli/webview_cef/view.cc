@@ -33,7 +33,11 @@ std::string View::SockName() const { return sock_abstract_ ? std::string(1, '\0'
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
-void View::Start() { ConnectTask(); /* init producer + chained reconnect */ }
+void View::Start() {
+  input_ = new InputThread(this, sock_path_);
+  input_->Start();
+  ConnectTask();
+}
 
 void View::Stop() {
   if (input_) {
@@ -92,6 +96,121 @@ void View::GetViewRect(CefRefPtr<CefBrowser>, CefRect &rect) { rect = CefRect(0,
 bool View::GetScreenInfo(CefRefPtr<CefBrowser>, CefScreenInfo &si) {
   si.device_scale_factor = 1.0f;
   si.rect = CefRect(0, 0, render_w_, render_h_);
+  return true;
+}
+
+static uint8_t cefCursorShape(cef_cursor_type_t type) {
+  switch (type) {
+  case CT_HAND:
+    return IDK_CURSOR_POINTER;
+  case CT_CROSS:
+    return IDK_CURSOR_CROSSHAIR;
+  case CT_IBEAM:
+    return IDK_CURSOR_TEXT;
+  case CT_WAIT:
+    return IDK_CURSOR_WAIT;
+  case CT_HELP:
+    return IDK_CURSOR_HELP;
+  case CT_EASTRESIZE:
+    return IDK_CURSOR_E_RESIZE;
+  case CT_NORTHRESIZE:
+    return IDK_CURSOR_N_RESIZE;
+  case CT_NORTHEASTRESIZE:
+    return IDK_CURSOR_NE_RESIZE;
+  case CT_NORTHWESTRESIZE:
+    return IDK_CURSOR_NW_RESIZE;
+  case CT_SOUTHRESIZE:
+    return IDK_CURSOR_S_RESIZE;
+  case CT_SOUTHEASTRESIZE:
+    return IDK_CURSOR_SE_RESIZE;
+  case CT_SOUTHWESTRESIZE:
+    return IDK_CURSOR_SW_RESIZE;
+  case CT_WESTRESIZE:
+    return IDK_CURSOR_W_RESIZE;
+  case CT_NORTHSOUTHRESIZE:
+    return IDK_CURSOR_NS_RESIZE;
+  case CT_EASTWESTRESIZE:
+    return IDK_CURSOR_EW_RESIZE;
+  case CT_NORTHEASTSOUTHWESTRESIZE:
+    return IDK_CURSOR_NESW_RESIZE;
+  case CT_NORTHWESTSOUTHEASTRESIZE:
+    return IDK_CURSOR_NWSE_RESIZE;
+  case CT_COLUMNRESIZE:
+    return IDK_CURSOR_COL_RESIZE;
+  case CT_ROWRESIZE:
+    return IDK_CURSOR_ROW_RESIZE;
+  case CT_MOVE:
+  case CT_DND_MOVE:
+    return IDK_CURSOR_MOVE;
+  case CT_VERTICALTEXT:
+    return IDK_CURSOR_VERTICAL_TEXT;
+  case CT_CELL:
+    return IDK_CURSOR_CELL;
+  case CT_CONTEXTMENU:
+    return IDK_CURSOR_CONTEXT_MENU;
+  case CT_ALIAS:
+  case CT_DND_LINK:
+    return IDK_CURSOR_ALIAS;
+  case CT_PROGRESS:
+    return IDK_CURSOR_PROGRESS;
+  case CT_NODROP:
+  case CT_DND_NONE:
+    return IDK_CURSOR_NO_DROP;
+  case CT_COPY:
+  case CT_DND_COPY:
+    return IDK_CURSOR_COPY;
+  case CT_NOTALLOWED:
+    return IDK_CURSOR_NOT_ALLOWED;
+  case CT_ZOOMIN:
+    return IDK_CURSOR_ZOOM_IN;
+  case CT_ZOOMOUT:
+    return IDK_CURSOR_ZOOM_OUT;
+  case CT_GRAB:
+    return IDK_CURSOR_GRAB;
+  case CT_GRABBING:
+    return IDK_CURSOR_GRABBING;
+  case CT_MIDDLEPANNING:
+  case CT_EASTPANNING:
+  case CT_NORTHPANNING:
+  case CT_NORTHEASTPANNING:
+  case CT_NORTHWESTPANNING:
+  case CT_SOUTHPANNING:
+  case CT_SOUTHEASTPANNING:
+  case CT_SOUTHWESTPANNING:
+  case CT_WESTPANNING:
+  case CT_MIDDLE_PANNING_VERTICAL:
+  case CT_MIDDLE_PANNING_HORIZONTAL:
+    return IDK_CURSOR_ALL_SCROLL;
+  default:
+    return IDK_CURSOR_DEFAULT;
+  }
+}
+
+bool View::OnCursorChange(CefRefPtr<CefBrowser>, CefCursorHandle, cef_cursor_type_t type, const CefCursorInfo &custom) {
+  idk_cursor_update_t cursor = {};
+  cursor.magic = IDK_CURSOR_MAGIC;
+  cursor.version = IDK_CURSOR_VERSION;
+  cursor.visible = type == CT_NONE ? 0 : 1;
+  cursor.shape = cefCursorShape(type);
+  cursor.scale = IDK_CURSOR_SCALE_BASE;
+  std::vector<uint8_t> pixels;
+  if (type == CT_CUSTOM && custom.buffer && custom.size.width > 0 && custom.size.height > 0 &&
+      custom.size.width <= (int)IDK_CURSOR_MAX_DIM && custom.size.height <= (int)IDK_CURSOR_MAX_DIM) {
+    cursor.shape = IDK_CURSOR_CUSTOM;
+    cursor.width = (uint16_t)custom.size.width;
+    cursor.height = (uint16_t)custom.size.height;
+    cursor.hotspot_x = (int16_t)custom.hotspot.x;
+    cursor.hotspot_y = (int16_t)custom.hotspot.y;
+    float scale = custom.image_scale_factor > 0.0f ? custom.image_scale_factor : 1.0f;
+    cursor.scale = (uint16_t)(scale * IDK_CURSOR_SCALE_BASE + 0.5f);
+    cursor.data_size = (uint32_t)cursor.width * cursor.height * 4u;
+    const uint8_t *data = static_cast<const uint8_t *>(custom.buffer);
+    pixels.assign(data, data + cursor.data_size);
+  } else if (type == CT_CUSTOM) {
+    cursor.shape = IDK_CURSOR_DEFAULT;
+  }
+  if (input_)
+    input_->QueueCursor(cursor, std::move(pixels));
   return true;
 }
 
