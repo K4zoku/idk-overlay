@@ -10,16 +10,15 @@ int x11_dispatch_event(XEventStorage *ev) {
     return 0;
   int type = ev->xany.type;
 
-  if (!g_game_display && ev->xany.display)
+  if (type >= KeyPress && type <= MotionNotify && ev->xany.display && ev->xany.window) {
     g_game_display = ev->xany.display;
-  if (!g_game_window && ev->xany.window)
     g_game_window = ev->xany.window;
-
-  x11_retroactive_masks();
+  }
 
   switch (type) {
   case KeyPress:
   case KeyRelease:
+    x11_ensure_event_masks(ev->xany.display, ev->xany.window);
     return x11_handle_key_event(ev);
 
   case ButtonPress:

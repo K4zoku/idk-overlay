@@ -93,7 +93,7 @@ IDK_INTERNAL int hook_XWindowEvent(Display *, Window, long, XEventStorage *);
 IDK_INTERNAL int hook_XIfEvent(Display *, XEventStorage *, void *, void *);
 IDK_INTERNAL int hook_XCheckIfEvent(Display *, XEventStorage *, void *, void *);
 IDK_INTERNAL int hook_XSelectInput(Display *, Window, long);
+IDK_INTERNAL void x11_ensure_event_masks(Display *, Window);
 IDK_INTERNAL void fill_noexpose(XEventStorage *ev, Display *dpy);
-IDK_INTERNAL void x11_retroactive_masks(void);
 
 #endif /* IDK_X11_INTERNAL_H */

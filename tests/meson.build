@@ -28,6 +28,14 @@ foreach src : ['test_wire_protocol.c', 'test_input.c', 'test_ack.c']
     test(name, test_exe)
 endforeach
 
+# X11 hook contract tests with a fake XSelectInput implementation.
+test_x11_select_exe = executable('test_x11_select',
+    ['test_x11_select.c', '../src/hook/input/x11/select.c'],
+    c_args: test_c_args,
+    include_directories: inc,
+)
+test('test_x11_select', test_x11_select_exe)
+
 # Tests needing compositor/transport symbols
 foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
                'test_abstract_socket.c', 'test_compositor_path.c',

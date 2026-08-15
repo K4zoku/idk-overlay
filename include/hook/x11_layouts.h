@@ -43,6 +43,34 @@ typedef union {
   uint8_t raw[X11_EVENT_BUFFER_SIZE];
 } XEventStorage;
 
+typedef struct {
+  int x, y;
+  int width, height;
+  int border_width;
+  int depth;
+  void *visual;
+  Window root;
+  int class;
+  int bit_gravity;
+  int win_gravity;
+  int backing_store;
+  unsigned long backing_planes;
+  unsigned long backing_pixel;
+  Bool save_under;
+  XID colormap;
+  Bool map_installed;
+  int map_state;
+  long all_event_masks;
+  long your_event_mask;
+  long do_not_propagate_mask;
+  Bool override_redirect;
+  void *screen;
+} XWindowAttributesLayout;
+
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(XWindowAttributesLayout) == 136, "XWindowAttributes layout mismatch");
+#endif
+
 /* X event type constants (from X.h) */
 #define KeyPress 2
 #define KeyRelease 3

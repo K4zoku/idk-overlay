@@ -1,32 +1,57 @@
-/* X11 input backend - event mask injection (select + retroactive). */
+/* X11 input backend - event mask injection. */
 #include "hook/x11_internal.h"
 
-/* XSelectInput hook - inject pointer event masks so we receive mouse events
- * even if the game didn't request them (e.g. glxgears only selects KeyPress).
- * We OR-in ButtonPressMask | ButtonReleaseMask | PointerMotionMask so that
- * ButtonPress/ButtonRelease/MotionNotify events flow into the X event queue
- * where our XNextEvent-family hooks can intercept them when captured. */
-int hook_XSelectInput(Display *dpy, Window w, long mask) {
+#define CAPTURE_EVENT_MASKS (KeyReleaseMask | ButtonReleaseMask | PointerMotionMask)
+
+static pthread_mutex_t g_select_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int select_capture_masks(Display *dpy, Window window, long requested, bool preserve_current, bool *applied) {
+  *applied = false;
   if (!orig_XSelectInput)
     orig_XSelectInput = (XSelectInput_fn)hook_orig("XSelectInput");
-  if (!g_game_display)
-    g_game_display = dpy;
-  if (!g_game_window && w)
-    g_game_window = w;
+  if (!orig_XSelectInput || !dpy || !window)
+    return 0;
 
-  mask |= ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyReleaseMask;
+  pthread_mutex_lock(&g_select_mutex);
+  if (fn_XSync)
+    fn_XSync(dpy, False);
+  XWindowAttributesLayout attrs = {0};
+  bool have_attrs = fn_XGetWindowAttributes && fn_XGetWindowAttributes(dpy, window, &attrs);
+  if (preserve_current && !have_attrs) {
+    pthread_mutex_unlock(&g_select_mutex);
+    return 0;
+  }
 
-  return orig_XSelectInput(dpy, w, mask);
+  long mask = requested | CAPTURE_EVENT_MASKS;
+  if (preserve_current)
+    mask |= attrs.your_event_mask;
+  if (!(mask & ButtonPressMask) && have_attrs &&
+      ((attrs.your_event_mask & ButtonPressMask) || !(attrs.all_event_masks & ButtonPressMask)))
+    mask |= ButtonPressMask;
+
+  int result = orig_XSelectInput(dpy, window, mask);
+  if (fn_XSync)
+    fn_XSync(dpy, False);
+  pthread_mutex_unlock(&g_select_mutex);
+  *applied = true;
+  return result;
 }
 
-/* Retroactively inject pointer + key release masks on the game window.
- * Done once per process (g_masks_injected flag). */
-void x11_retroactive_masks(void) {
-  static int g_masks_injected = 0;
-  if (!g_masks_injected && g_game_display && g_game_window && orig_XSelectInput) {
-    g_masks_injected = 1;
-    long extra = ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyReleaseMask;
-    orig_XSelectInput(g_game_display, g_game_window, extra);
-    XLOG("retroactively set event masks: 0x%lx on window 0x%lx", extra, (unsigned long)g_game_window);
+int hook_XSelectInput(Display *dpy, Window window, long mask) {
+  bool applied;
+  return select_capture_masks(dpy, window, mask, false, &applied);
+}
+
+void x11_ensure_event_masks(Display *dpy, Window window) {
+  static _Thread_local Display *last_display;
+  static _Thread_local Window last_window;
+  if (!dpy || !window || (dpy == last_display && window == last_window))
+    return;
+
+  bool applied;
+  select_capture_masks(dpy, window, NoEventMask, true, &applied);
+  if (applied) {
+    last_display = dpy;
+    last_window = window;
   }
 }
