@@ -15,7 +15,7 @@
 
 /* Internal state */
 
-static idk_transport_t g_tp;
+static idk_transport_t g_tp = {.backend = IDK_TP_SOCKET, ._server_fd = -1, ._client_fd = -1};
 
 /* SHM helper - copy pixels into a memfd for sending. */
 static int copy_to_shm(const void *src, size_t size) {

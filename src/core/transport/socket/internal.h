@@ -29,6 +29,7 @@ IDK_INTERNAL socklen_t abstract_addrlen(const char *name);
 IDK_INTERNAL int consumer_init(idk_transport_t *tp, const char *path);
 IDK_INTERNAL int producer_init(idk_transport_t *tp, const char *path);
 
+IDK_INTERNAL void tp_socket_disconnect_client(idk_transport_t *tp);
 IDK_INTERNAL int scm_recv_fds(int fd, void *buf, size_t len, int fds[4], int *nfd);
 IDK_INTERNAL ssize_t scm_send_fds(int fd, const void *buf, size_t len, const int *fds, int nfd);
 

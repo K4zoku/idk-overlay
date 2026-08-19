@@ -60,6 +60,13 @@ int producer_init(idk_transport_t *tp, const char *path) {
   tp->_server_fd = -1;
   tp->_client_fd = fd;
   TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+  TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
+  TP_S_ABSTRACT(tp->_rsv) = abstr ? 1 : 0;
+  size_t cap = TP_S_PATH_CAP - (abstr ? 0 : 1);
+  size_t cplen = name_len < cap ? name_len : cap;
+  memcpy(tp->_rsv + 8, path, cplen);
+  if (!abstr)
+    tp->_rsv[8 + cplen] = '\0';
   tp->ready = true;
   IDK_LOG("tp", "socket: connected to %s (fd=%d)\n", path, fd);
   return 0;
@@ -92,6 +99,8 @@ int tp_socket_poll(idk_transport_t *tp) {
       if (connect(fd, (struct sockaddr *)&addr, addrlen) == 0) {
         tp->_client_fd = fd;
         tp->ready = true;
+        TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+        TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
         IDK_LOG("tp", "socket: connected to %s%s (fd=%d)\n", abstr ? "\\0" : "", abstr ? path + 1 : path, fd);
         return 0;
       }
@@ -101,10 +110,13 @@ int tp_socket_poll(idk_transport_t *tp) {
     }
     return -1;
   }
-
   struct pollfd pfd = {.fd = tp->_client_fd, .events = POLLIN};
   int rc = poll(&pfd, 1, 0);
   if (rc < 0)
     return -1;
+  if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+    tp_socket_disconnect_client(tp);
+    return -1;
+  }
   return (pfd.revents & POLLIN) ? 1 : 0;
 }

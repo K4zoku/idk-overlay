@@ -14,7 +14,7 @@ pthread_cond_t g_broker_cond = PTHREAD_COND_INITIALIZER;
 
 /* ===== idk_compositor_t singleton ===== */
 
-idk_compositor_t g_comp = {0};
+idk_compositor_t g_comp = {.dmabuf_fd = {-1, -1, -1, -1}};
 
 /* ===== Shared compositor API ===== */
 
@@ -45,6 +45,9 @@ int idk_compositor_init(void) {
 int idk_compositor_has_frame(void) { return g_comp.has_frame ? 1 : 0; }
 
 void idk_compositor_shutdown(void) {
+  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+  g_comp.has_frame = false;
+  g_comp.dmabuf_cache_id = 0;
   if (g_comp.inited) {
     idk_tp_destroy(&g_comp.tp);
     g_comp.inited = false;

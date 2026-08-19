@@ -6,6 +6,25 @@
 
 /* ===== Shared compositor API ===== */
 
+void idk_compositor_close_frame_fds(int fds[4], int *nfd) {
+  if (!fds || !nfd)
+    return;
+  for (int i = 0; i < 4; i++) {
+    if (fds[i] >= 0) {
+      close(fds[i]);
+      fds[i] = -1;
+    }
+  }
+  *nfd = 0;
+}
+
+static void disconnect_client(void) {
+  idk_tp_disconnect_client(&g_comp.tp);
+  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+  g_comp.has_frame = false;
+  g_comp.dmabuf_cache_id = 0;
+}
+
 /* Ensure transport is inited and connected. Returns -1 on init failure,
  * 0 if not ready, 1 if ready. */
 static int recv_accept(void) {
@@ -20,46 +39,42 @@ static void drain_hidden(void) {
   while (1) {
     int rc = idk_tp_drop_frame(&g_comp.tp);
     if (rc <= 0) {
-      if (rc < 0) {
-        g_comp.dmabuf_cache_id = 0;
-        idk_tp_disconnect_client(&g_comp.tp);
-      }
+      if (rc < 0)
+        disconnect_client();
       break;
     }
   }
   g_comp.was_hidden = true;
 }
 
-/* Recv loop: keep the first frame of the batch, close surplus dmabuf fds. */
+/* Recv loop: keep the first frame of the batch and close all surplus FDs. */
 static int keep_last_frame(void) {
   int processed = 0;
   while (1) {
     idk_frame_header_t hdr;
-    int fds[4], nfd = 0;
+    int fds[4] = {-1, -1, -1, -1};
+    int nfd = 0;
     int rc = idk_tp_recv(&g_comp.tp, &hdr, fds, &nfd);
     if (rc <= 0) {
-      if (rc < 0) {
-        idk_tp_disconnect_client(&g_comp.tp);
-        g_comp.dmabuf_cache_id = 0;
-      }
+      if (rc < 0)
+        disconnect_client();
       break;
     }
 
-    int dmabuf_fd = (nfd > 0) ? fds[0] : -1;
-
-    if (processed > 0) {
-      if (dmabuf_fd >= 0)
-        close(dmabuf_fd);
+    if (nfd < 1 || nfd > 4 || hdr.width == 0 || hdr.height == 0) {
+      idk_compositor_close_frame_fds(fds, &nfd);
       continue;
     }
 
-    if (g_comp.dmabuf_fd[0] >= 0) {
-      close(g_comp.dmabuf_fd[0]);
-      g_comp.dmabuf_fd[0] = -1;
+    if (processed > 0) {
+      idk_compositor_close_frame_fds(fds, &nfd);
+      continue;
     }
 
+    idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
     g_comp.hdr = hdr;
-    g_comp.dmabuf_fd[0] = dmabuf_fd;
+    for (int i = 0; i < nfd; i++)
+      g_comp.dmabuf_fd[i] = fds[i];
     g_comp.nfd = nfd;
     g_comp.frame_w = hdr.width;
     g_comp.frame_h = hdr.height;

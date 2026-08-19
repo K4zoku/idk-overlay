@@ -32,10 +32,7 @@ int tp_socket_init(idk_transport_t *tp, const char *name) {
 }
 
 void tp_socket_destroy(idk_transport_t *tp) {
-  if (tp->_client_fd >= 0) {
-    close(tp->_client_fd);
-    tp->_client_fd = -1;
-  }
+  tp_socket_disconnect_client(tp);
   if (tp->_server_fd >= 0) {
     close(tp->_server_fd);
     tp->_server_fd = -1;
@@ -49,4 +46,5 @@ void tp_socket_disconnect_client(idk_transport_t *tp) {
     tp->_client_fd = -1;
   }
   tp->ready = false;
+  TP_S_STATE(tp->_rsv) = (tp->role == IDK_TP_CONSUMER) ? TP_STATE_LISTEN : TP_STATE_INIT;
 }

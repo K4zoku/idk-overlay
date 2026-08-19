@@ -68,6 +68,7 @@ int idk_vk_compositor_render(void) {
             (unsigned long)hdr->modifier);
   }
 
+  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
   if (processed)
     vk_send_ack(processed);
   return 0;

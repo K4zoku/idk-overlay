@@ -43,6 +43,8 @@ void idk_producer_shutdown(void);
 /**
  * Send a frame (fd + metadata) to the overlay socket.
  *
+ * FDs are borrowed. The caller retains ownership and may close them after this returns.
+ *
  * @param fd         File descriptor carrying pixel data (SHM or dmabuf).
  * @param frame      Frame metadata (caller fills width/height/stride/flags/etc).
  */
@@ -82,6 +84,8 @@ bool idk_producer_is_connected(void);
 /**
  * Send DMA-BUF fds directly (no SHM copy - for GPU-rendered content).
  * Sets IDK_FRAME_FLAG_DMABUF bit in frame->flags.
+ *
+ * FDs are borrowed. The caller retains ownership and may close them after this returns.
  *
  * @param dma_buf_fds  Array of DMA-BUF fds from GPU (Qt RHI, EGL, etc.).
  * @param frame        Frame metadata (nfd must match array size, max 4).

@@ -58,6 +58,7 @@ static inline void idk_shm_cache_init(idk_shm_cache_t *c) {
 void *idk_shm_cache_map(idk_shm_cache_t *c, int fd);
 
 void idk_shm_cache_cleanup(idk_shm_cache_t *c);
+void idk_compositor_close_frame_fds(int fds[4], int *nfd);
 
 #define IDK_DRM_MOD_VENDOR(mod) (((mod) >> 56) & 0xFF)
 #define IDK_DRM_FORMAT_MOD_INVALID 0x00FFFFFFFFFFFFFFULL

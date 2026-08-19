@@ -9,6 +9,16 @@
 
 #include "internal.h"
 
+static void close_frame_fds(int fds[4], int *nfd) {
+  for (int i = 0; i < 4; i++) {
+    if (fds[i] >= 0) {
+      close(fds[i]);
+      fds[i] = -1;
+    }
+  }
+  *nfd = 0;
+}
+
 int shm_init_consumer(idk_transport_t *tp, const char *name) {
   char shm_name[64];
   make_shm_name(name, shm_name, sizeof(shm_name));
@@ -99,9 +109,12 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *n
     return -1;
   }
 
-  if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1) {
+  for (int i = 0; i < 4; i++)
+    fds[i] = -1;
+  *nfd = 0;
+
+  if (atomic_load(shm_atom(ptr, SHM_O_PROD_STATE)) == -1)
     return -1;
-  }
 
   int prod_pid = *shm_i32(ptr, SHM_O_PROD_PID);
   if (prod_pid > 0 && kill(prod_pid, 0) < 0 && errno == ESRCH) {
@@ -109,27 +122,29 @@ int tp_shm_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *n
     return -1;
   }
 
-  if (atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE)) != SLOT_FRAME) {
+  if (atomic_load(shm_atom(ptr, SHM_O_SLOT_STATE)) != SLOT_FRAME)
     return 0;
-  }
 
   memcpy(hdr, shm_ptr(ptr, SHM_O_HDR), sizeof(*hdr));
-  *nfd = *shm_i32(ptr, SHM_O_DMABUF_NFD);
-  if (*nfd < 0)
-    *nfd = 0;
-  if (*nfd > 4)
-    *nfd = 4;
-  for (int i = 0; i < *nfd; i++) {
+  int count = *shm_i32(ptr, SHM_O_DMABUF_NFD);
+  if (count < 1 || count > 4) {
+    atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_EMPTY);
+    futex_wake(shm_atom(ptr, SHM_O_SLOT_STATE));
+    errno = EPROTO;
+    return -1;
+  }
+
+  for (int i = 0; i < count; i++) {
     int target_fd = shm_i32(ptr, SHM_O_DMABUF_FDS)[i];
     fds[i] = shm_steal_fd(tp, ptr, target_fd, i, fds);
     if (fds[i] < 0) {
-      *nfd = 0;
+      close_frame_fds(fds, nfd);
       return -1;
     }
+    *nfd = i + 1;
   }
 
   atomic_store(shm_atom(ptr, SHM_O_SLOT_STATE), SLOT_CONSUMED);
-
   return 1;
 }
 

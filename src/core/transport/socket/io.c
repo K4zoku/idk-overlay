@@ -16,12 +16,16 @@ int tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int
 
 int tp_socket_drop_frame(idk_transport_t *tp) {
   idk_frame_header_t hdr;
-  int fds[4], nfd = 0;
+  int fds[4] = {-1, -1, -1, -1};
+  int nfd = 0;
   int rc = tp_socket_recv(tp, &hdr, fds, &nfd);
   if (rc <= 0)
     return rc;
-  for (int i = 0; i < nfd; i++)
-    close(fds[i]);
+  for (int i = 0; i < 4; i++) {
+    if (fds[i] >= 0)
+      close(fds[i]);
+    fds[i] = -1;
+  }
   return 1;
 }
 
@@ -36,17 +40,15 @@ int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int
     if (errno == EAGAIN || errno == EWOULDBLOCK)
       return -1;
     if (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF) {
-      if (tp->ready) {
-        tp->ready = false;
-        close(tp->_client_fd);
-        tp->_client_fd = -1;
-      }
+      tp_socket_disconnect_client(tp);
       return -1;
     }
     IDK_ERR("tp", "sendmsg failed: %s\n", strerror(errno));
     return -1;
   }
-  if ((size_t)n != sizeof(*hdr))
+  if ((size_t)n != sizeof(*hdr)) {
+    tp_socket_disconnect_client(tp);
     return -1;
+  }
   return 0;
 }

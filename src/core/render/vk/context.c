@@ -10,6 +10,8 @@
 
 /* Single instance of the Vulkan compositor state (context.h). */
 static vk_context_t s_vk_ctx = {
+    .staging = {.vk_shm_fd = -1},
+    .dmabuf = {.vk_dmabuf_fd = -1, .vk_dmabuf_pending_fd = -1},
     .flags =
         {
             .vk_render_lock = PTHREAD_MUTEX_INITIALIZER,

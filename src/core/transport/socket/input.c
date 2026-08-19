@@ -4,7 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "core/transport.h"
+#include "internal.h"
 
 static int cursor_valid(const idk_cursor_update_t *cursor, size_t capacity) {
   if (!cursor || cursor->magic != IDK_CURSOR_MAGIC || cursor->version != IDK_CURSOR_VERSION || cursor->visible > 1 ||
@@ -72,14 +72,15 @@ int tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return -1;
     }
-    if (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF) {
-      tp->ready = false;
-      close(tp->_client_fd);
-      tp->_client_fd = -1;
-    }
+    if (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF)
+      tp_socket_disconnect_client(tp);
     return -1;
   }
-  return ((size_t)n == sizeof(*ev)) ? 0 : -1;
+  if ((size_t)n != sizeof(*ev)) {
+    tp_socket_disconnect_client(tp);
+    return -1;
+  }
+  return 0;
 }
 
 int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev) {
@@ -100,22 +101,16 @@ int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev) {
   if (n < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK)
       return 0;
-    if (errno == EPIPE || errno == ECONNRESET) {
-      tp->ready = false;
-      close(tp->_client_fd);
-      tp->_client_fd = -1;
-      return -1;
-    }
+    tp_socket_disconnect_client(tp);
     return -1;
   }
   if (n == 0) {
-    tp->ready = false;
-    close(tp->_client_fd);
-    tp->_client_fd = -1;
+    tp_socket_disconnect_client(tp);
     return -1;
   }
   if ((size_t)n != sizeof(*ev)) {
-    return 0;
+    tp_socket_disconnect_client(tp);
+    return -1;
   }
   return 1;
 }
@@ -127,8 +122,10 @@ int tp_socket_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor
     return -1;
   }
   if (send_all(tp->_client_fd, cursor, sizeof(*cursor)) != 0 ||
-      (cursor->data_size > 0 && send_all(tp->_client_fd, pixels, cursor->data_size) != 0))
+      (cursor->data_size > 0 && send_all(tp->_client_fd, pixels, cursor->data_size) != 0)) {
+    tp_socket_disconnect_client(tp);
     return -1;
+  }
   return 0;
 }
 
@@ -139,10 +136,15 @@ int tp_socket_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint
   }
   idk_cursor_update_t peek;
   ssize_t n = recv(tp->_client_fd, &peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT);
-  if (n < 0)
-    return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+  if (n < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      return 0;
+    tp_socket_disconnect_client(tp);
+    return -1;
+  }
   if (n == 0) {
     errno = ECONNRESET;
+    tp_socket_disconnect_client(tp);
     return -1;
   }
   if ((size_t)n < sizeof(peek))
@@ -150,16 +152,21 @@ int tp_socket_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint
   if (!cursor_valid(&peek, capacity) || (peek.data_size > 0 && !pixels)) {
     recv(tp->_client_fd, cursor, sizeof(*cursor), MSG_DONTWAIT);
     errno = EBADMSG;
+    tp_socket_disconnect_client(tp);
     return -1;
   }
   int available = 0;
-  if (ioctl(tp->_client_fd, FIONREAD, &available) != 0)
+  if (ioctl(tp->_client_fd, FIONREAD, &available) != 0) {
+    tp_socket_disconnect_client(tp);
     return -1;
+  }
   size_t total = sizeof(peek) + peek.data_size;
   if (available < 0 || (size_t)available < total)
     return 0;
   if (recv_all_nonblock(tp->_client_fd, cursor, sizeof(*cursor)) != 0 ||
-      (cursor->data_size > 0 && recv_all_nonblock(tp->_client_fd, pixels, cursor->data_size) != 0))
+      (cursor->data_size > 0 && recv_all_nonblock(tp->_client_fd, pixels, cursor->data_size) != 0)) {
+    tp_socket_disconnect_client(tp);
     return -1;
+  }
   return 1;
 }

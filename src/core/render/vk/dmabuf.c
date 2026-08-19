@@ -1,5 +1,7 @@
 /* render/vk dmabuf.c - zero-copy dmabuf import as a sampled VkImage */
 
+#include <unistd.h>
+
 #include "context.h"
 #include "core/compositor.h"
 #include "core/log.h"
@@ -70,10 +72,7 @@ static int dmabuf_create_image(uint32_t w, uint32_t h, uint32_t stride, uint32_t
   return 0;
 }
 
-/* Allocate device memory and import the dmabuf fd into it.
- * On success the ICD takes ownership of the fd - we must NOT close it (the
- * caller tracks it in vk_dmabuf_fd). On failure the fd is not consumed and
- * the caller will close it. */
+/* Import a duplicate so every failure path keeps ownership of the caller's fd. */
 static int dmabuf_import(int fd, VkImage img, uint32_t mem_type, VkDeviceSize size, VkDeviceMemory *out_mem) {
   vk_context_t *ctx = vk_ctx();
   VkDevice dev = ctx->device.vk_dev;
@@ -82,11 +81,17 @@ static int dmabuf_import(int fd, VkImage img, uint32_t mem_type, VkDeviceSize si
   VK_LOAD(vkBindImageMemory);
   VK_LOAD(vkDestroyImage);
 
+  int import_fd = dup(fd);
+  if (import_fd < 0) {
+    ctx->flags.vk_dmabuf_failed_this_frame = 1;
+    return -1;
+  }
+
   VkImportMemoryFdInfoKHR import_info = {
       .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
       .pNext = NULL,
       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-      .fd = fd,
+      .fd = import_fd,
   };
   VkMemoryAllocateInfo mai = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -96,6 +101,7 @@ static int dmabuf_import(int fd, VkImage img, uint32_t mem_type, VkDeviceSize si
   };
   r = vkAllocateMemory(dev, &mai, NULL, out_mem);
   if (r != VK_SUCCESS) {
+    close(import_fd);
     IDK_ERR("comp-vk", "dmabuf: AllocateMemory(import) failed: %d - frame rejected\n", r);
     vkDestroyImage(dev, img, NULL);
     ctx->dmabuf.vk_dmabuf_img = VK_NULL_HANDLE;
@@ -108,10 +114,8 @@ static int dmabuf_import(int fd, VkImage img, uint32_t mem_type, VkDeviceSize si
 }
 
 /* Import a dmabuf fd as a VkImage and create a sampled view.
- * Returns 0 on success, -1 on failure. The fd is owned by the caller -
- * the imported VkImage holds its own reference (the underlying memory
- * remains valid as long as either the fd OR the VkImage is alive), but
- * we MUST keep the fd open (vk_dmabuf_fd tracking). */
+ * Returns 0 on success, -1 on failure. The caller retains ownership of fd;
+ * the ICD imports a duplicate and the original is tracked for cache lifetime. */
 int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride, uint32_t fourcc, uint64_t modifier,
                      uint16_t buf_id, VkCommandBuffer cmd) {
   vk_context_t *ctx = vk_ctx();
@@ -133,8 +137,12 @@ int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride, uint32_t f
 
     VkDeviceSize mem_size = 0;
     uint32_t mem_type = dmabuf_bind_memory(fd, img, &mem_size);
-    if (mem_type == 0xFFFFFFFF)
+    if (mem_type == 0xFFFFFFFF) {
+      vkDestroyImage(dev, img, NULL);
+      ctx->dmabuf.vk_dmabuf_img = VK_NULL_HANDLE;
+      ctx->flags.vk_dmabuf_failed_this_frame = 1;
       return -1;
+    }
 
     VkDeviceMemory mem = VK_NULL_HANDLE;
     if (dmabuf_import(fd, img, mem_type, mem_size, &mem) != 0)

@@ -41,6 +41,8 @@ int dmabuf_check_cache(int fd, uint32_t w, uint32_t h, uint32_t stride, uint32_t
     vkFreeMemory(ctx->device.vk_dev, ctx->dmabuf.vk_dmabuf_img_mem, NULL);
     ctx->dmabuf.vk_dmabuf_img_mem = VK_NULL_HANDLE;
   }
+  if (ctx->dmabuf.vk_dmabuf_fd >= 0)
+    close(ctx->dmabuf.vk_dmabuf_fd);
   ctx->dmabuf.vk_dmabuf_fd = -1;
   ctx->dmabuf.vk_dmabuf_cache_id = 0;
   return 0;
@@ -154,10 +156,9 @@ int overlay_upload(VkCommandBuffer cmd) {
                          ctx->dmabuf.vk_dmabuf_pending_stride, ctx->dmabuf.vk_dmabuf_pending_fourcc,
                          ctx->dmabuf.vk_dmabuf_pending_modifier, ctx->dmabuf.vk_dmabuf_pending_buf_id, cmd) != 0) {
       IDK_ERR("comp-vk", "render_overlay: dmabuf import failed (fd=%d)\n", pending_fd);
-      if (ctx->dmabuf.vk_dmabuf_fd == pending_fd) {
-        close(pending_fd);
+      close(pending_fd);
+      if (ctx->dmabuf.vk_dmabuf_fd == pending_fd)
         ctx->dmabuf.vk_dmabuf_fd = -1;
-      }
       return -1;
     }
   } else if (ctx->staging.vk_shm_fd >= 0) {

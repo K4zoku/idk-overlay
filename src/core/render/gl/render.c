@@ -26,25 +26,28 @@ int idk_compositor_egl_render(void) {
   if (!idk_frame_is_dmabuf(hdr)) {
     uint32_t pixel_size = hdr->width * hdr->height * 4;
     GLuint tex = shm_to_texture(fd, hdr->width, hdr->height, pixel_size, 0, 1);
-    if (tex == 0) {
+    if (tex == 0)
       ack = 1;
-      goto done;
-    }
-    g_dmabuf_cache_id = 0;
-  } else if (hdr->buf_id != 0 && hdr->buf_id == g_dmabuf_cache_id) {
-    if (fd >= 0) {
+    else
+      g_dmabuf_cache_id = 0;
+    if (fd >= 0)
       close(fd);
-      g_comp.dmabuf_fd[0] = -1;
-    }
+    g_comp.dmabuf_fd[0] = -1;
+  } else if (hdr->buf_id != 0 && hdr->buf_id == g_dmabuf_cache_id) {
+    if (fd >= 0)
+      close(fd);
+    g_comp.dmabuf_fd[0] = -1;
     g_comp.has_frame = true;
     g_comp.frame_premultiplied = true;
     g_draw_err_count = 0;
   } else {
     ack = gl_import_frame(hdr, fd);
-    if (ack)
-      goto done;
+    g_comp.dmabuf_fd[0] = -1;
   }
-  g_comp.dmabuf_fd[0] = -1;
+
+  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+  if (ack)
+    goto done;
 
 done:
   idk_compositor_send_ack(ack);

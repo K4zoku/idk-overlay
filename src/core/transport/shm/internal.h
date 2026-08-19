@@ -43,8 +43,7 @@ IDK_INTERNAL void shm_start_health_thread(idk_transport_t *tp);
 IDK_INTERNAL void shm_stop_health_thread(idk_transport_t *tp);
 
 /* Steal producer-side fd `i` via pidfd_getfd (fd 0 cached + re-dup'd).
- * Returns the new fd, or -1. On pidfd_getfd/dup failure closes fds[0..i-1];
- * on pidfd_open failure leaves them open. */
+ * Returns the new fd, or -1. On any failure, closes fds[0..i-1]. */
 IDK_INTERNAL int shm_steal_fd(idk_transport_t *tp, void *ptr, int target_fd, int i, int *fds);
 
 #endif

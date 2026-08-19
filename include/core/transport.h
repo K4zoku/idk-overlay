@@ -44,12 +44,13 @@ void idk_tp_disconnect_client(idk_transport_t *tp);
 
 int idk_tp_accept(idk_transport_t *tp);
 int idk_tp_poll(idk_transport_t *tp);
+/* On success, returned FDs are owned by the caller and must be closed or transferred. */
 int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd);
 int idk_tp_drop_frame(idk_transport_t *tp);
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
-
+/* FDs are borrowed; the caller retains ownership after this call returns. */
 int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd);
 int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
 

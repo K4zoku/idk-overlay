@@ -267,17 +267,17 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
     hdr.flags = IDK_FRAME_FLAG_VISIBLE;
     hdr.nfd = 1;
     hdr.buf_id = buf_id;
-    if (idk_producer_send_dma_buf(&fd, &hdr) == 0) {
+    int rc = idk_producer_send_dma_buf(&fd, &hdr);
+    close(fd);
+    if (rc == 0) {
       pending_ = true;
       send_time_ms_ = now_ms();
       rate_sent_++;
     }
     return;
   }
-
-  /* Fallback: forward CEF's own pooled buffer (dup — idk_tp_send closes
-   * the fds it is handed). Only correct when the compositor imports
-   * linear buffers as-is. */
+  /* Fallback: forward CEF's own pooled buffer (dup). Only correct when the
+   * compositor imports linear buffers as-is. */
   static bool s_warned = false;
   if (!s_warned) {
     IDK_LOG("webview-cef", "staging blit unavailable - forwarding CEF buffer directly\n");
@@ -285,14 +285,15 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
   }
   if (info.plane_count < 1 || info.plane_count > 4)
     return;
-  int fds[4];
+  int fds[4] = {-1, -1, -1, -1};
   for (int i = 0; i < info.plane_count; i++)
     fds[i] = dup(info.planes[i].fd);
   for (int i = 0; i < info.plane_count; i++) {
     if (fds[i] < 0) {
-      for (int j = 0; j < info.plane_count; j++)
+      for (int j = 0; j < info.plane_count; j++) {
         if (fds[j] >= 0)
           close(fds[j]);
+      }
       return;
     }
   }
@@ -307,7 +308,10 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
   hdr.nfd = info.plane_count;
   hdr.buf_id = 0;
 
-  if (idk_producer_send_dma_buf(fds, &hdr) == 0) {
+  int rc = idk_producer_send_dma_buf(fds, &hdr);
+  for (int i = 0; i < info.plane_count; i++)
+    close(fds[i]);
+  if (rc == 0) {
     pending_ = true;
     send_time_ms_ = now_ms();
   }
@@ -367,12 +371,13 @@ void View::SendShmPixels(const uint8_t *px, int w, int h) {
   hdr.nfd = 1;
   hdr.buf_id = 0;
 
-  if (idk_producer_send_frame(fd, &hdr) == 0) {
+  int rc = idk_producer_send_frame(fd, &hdr);
+  close(fd);
+  if (rc == 0) {
     pending_ = true;
     send_time_ms_ = now_ms();
     rate_sent_++;
   }
-  /* idk_tp_send closed fd on success; on failure it did too (io.c). */
 }
 
 /* ── Producer connect + pacing ─────────────────────────────────────── */

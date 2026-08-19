@@ -7,12 +7,20 @@
 
 #include "internal.h"
 
+static void close_previous_fds(int fds[4], int count) {
+  for (int j = 0; j < count; j++) {
+    if (fds[j] >= 0) {
+      close(fds[j]);
+      fds[j] = -1;
+    }
+  }
+}
+
 int shm_steal_fd(idk_transport_t *tp, void *ptr, int target_fd, int i, int *fds) {
   if (i == 0 && target_fd == TP_SH_CACHED_WV_FD(tp->_rsv) && TP_SH_CACHED_FD(tp->_rsv) >= 0) {
     int fd = dup(TP_SH_CACHED_FD(tp->_rsv));
     if (fd < 0) {
-      for (int j = 0; j < i; j++)
-        close(fds[j]);
+      close_previous_fds(fds, i);
       return -1;
     }
     return fd;
@@ -23,6 +31,7 @@ int shm_steal_fd(idk_transport_t *tp, void *ptr, int target_fd, int i, int *fds)
     int pidfd = (int)syscall(__NR_pidfd_open, prod_pid, 0);
     if (pidfd < 0) {
       IDK_ERR("tp", "shm: pidfd_open(%d) failed: %s\n", prod_pid, strerror(errno));
+      close_previous_fds(fds, i);
       return -1;
     }
     tp->_client_fd = pidfd;
@@ -31,8 +40,7 @@ int shm_steal_fd(idk_transport_t *tp, void *ptr, int target_fd, int i, int *fds)
   int stolen = (int)syscall(__NR_pidfd_getfd, tp->_client_fd, target_fd, 0);
   if (stolen < 0) {
     IDK_ERR("tp", "shm: pidfd_getfd(%d) failed: %s\n", target_fd, strerror(errno));
-    for (int j = 0; j < i; j++)
-      close(fds[j]);
+    close_previous_fds(fds, i);
     return -1;
   }
 
@@ -43,8 +51,10 @@ int shm_steal_fd(idk_transport_t *tp, void *ptr, int target_fd, int i, int *fds)
     TP_SH_CACHED_WV_FD(tp->_rsv) = target_fd;
     int fd = dup(stolen);
     if (fd < 0) {
-      for (int j = 0; j < i; j++)
-        close(fds[j]);
+      close_previous_fds(fds, i);
+      close(stolen);
+      TP_SH_CACHED_FD(tp->_rsv) = -1;
+      TP_SH_CACHED_WV_FD(tp->_rsv) = 0;
       return -1;
     }
     return fd;
