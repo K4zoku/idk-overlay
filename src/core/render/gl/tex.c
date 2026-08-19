@@ -95,13 +95,9 @@ GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, u
     return 0;
   }
   static idk_shm_cache_t s_shm_cache;
-  static int s_cached_fd = -1;
 
-  if (shm_fd != s_cached_fd) {
-    idk_shm_cache_map(&s_shm_cache, shm_fd);
-    if (s_cached_fd >= 0)
-      close(s_cached_fd);
-    s_cached_fd = shm_fd;
+  if (!idk_shm_cache_map(&s_shm_cache, shm_fd)) {
+      return 0;
   }
 
   uint32_t buf_size = pixel_size;
