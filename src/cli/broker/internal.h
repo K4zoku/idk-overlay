@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 
 #include "public/idk_ipc.h"
 
@@ -20,7 +21,9 @@ bool peercred_ok(int fd);
 ssize_t recv_full(int fd, void *buf, size_t len);
 int validate_handshake(const idk_cp_handshake_t *hs);
 pid_t spawn_webview(const idk_cp_handshake_t *hs, int *exec_err_fd);
-void reap_webview(pid_t pid);
+int broker_pidfd_open(pid_t pid);
+int broker_pidfd_send_signal(int pidfd, int signal);
+void reap_webview(pid_t pid, int pidfd);
 void *session_thread(void *arg);
 
 #endif /* IDK_BROKER_INTERNAL_H */

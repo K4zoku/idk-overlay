@@ -32,24 +32,39 @@ static void handle_session(int cfd) {
     send_ack(cfd, ACK_ERROR);
     return;
   }
+  int pidfd = broker_pidfd_open(wv);
+  if (pidfd < 0 && errno != ENOSYS && errno != EINVAL && errno != EPERM)
+    fprintf(stderr, "idk-broker: pidfd_open failed: %s\n", strerror(errno));
 
-  /* Wait briefly for exec confirmation. A successful exec closes
-   * the pipe end (CLOEXEC) → read returns 0 (EOF). Failure writes
-   * an errno int before _exit(127). */
-  struct pollfd pfd = {.fd = exec_err_fd, .events = POLLIN};
-  int erc = poll(&pfd, 1, 5000);
-  if (erc < 0) {
+  /* A successful exec closes the CLOEXEC pipe; failure writes errno. */
+  struct pollfd startup[2] = {
+      {.fd = exec_err_fd, .events = POLLIN | POLLHUP, .revents = 0},
+      {.fd = pidfd, .events = POLLIN | POLLHUP, .revents = 0},
+  };
+  int erc;
+  do {
+    erc = poll(startup, pidfd >= 0 ? 2 : 1, 5000);
+  } while (erc < 0 && errno == EINTR);
+  if (erc <= 0) {
     send_ack(cfd, ACK_ERROR);
-    reap_webview(wv);
+    reap_webview(wv, pidfd);
     close(exec_err_fd);
     return;
   }
-  if (erc == 1 && (pfd.revents & POLLIN)) {
+  if (startup[0].revents & (POLLIN | POLLHUP)) {
     int errc = 0;
-    if (read(exec_err_fd, &errc, sizeof(errc)) > 0)
-      fprintf(stderr, "idk-broker: webview exec failed: %s\n", strerror(errc));
+    ssize_t n = read(exec_err_fd, &errc, sizeof(errc));
+    if (n > 0 || (pidfd >= 0 && (startup[1].revents & (POLLIN | POLLHUP)))) {
+      if (n > 0)
+        fprintf(stderr, "idk-broker: webview exec failed: %s\n", strerror(errc));
+      send_ack(cfd, ACK_ERROR);
+      reap_webview(wv, pidfd);
+      close(exec_err_fd);
+      return;
+    }
+  } else if (pidfd >= 0 && (startup[1].revents & (POLLIN | POLLHUP))) {
     send_ack(cfd, ACK_ERROR);
-    reap_webview(wv);
+    reap_webview(wv, pidfd);
     close(exec_err_fd);
     return;
   }
@@ -60,19 +75,34 @@ static void handle_session(int cfd) {
           hs.input_socket);
 
   for (;;) {
-    struct pollfd pf = {.fd = cfd, .events = POLLIN | POLLHUP | POLLERR};
-    if (poll(&pf, 1, 60000) <= 0) {
-      if (pf.revents & (POLLHUP | POLLERR | POLLNVAL))
-        break;
-      continue;
+    struct pollfd pfds[2] = {
+        {.fd = cfd, .events = POLLIN | POLLHUP | POLLERR, .revents = 0},
+        {.fd = pidfd, .events = POLLIN | POLLHUP | POLLERR, .revents = 0},
+    };
+    int nfds = pidfd >= 0 ? 2 : 1;
+    int rc;
+    do {
+      rc = poll(pfds, nfds, 60000);
+    } while (rc < 0 && errno == EINTR);
+    if (rc < 0)
+      break;
+    if (pidfd >= 0 && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+      reap_webview(wv, pidfd);
+      pidfd = -1;
+      break;
     }
+    if (rc == 0)
+      continue;
+    if (pfds[0].revents & (POLLHUP | POLLERR | POLLNVAL))
+      break;
     char tmp[16];
     ssize_t n = read(cfd, tmp, sizeof(tmp));
     if (n <= 0)
       break;
   }
 
-  reap_webview(wv);
+  if (pidfd >= 0)
+    reap_webview(wv, pidfd);
   fprintf(stderr, "idk-broker: session end (webview pid=%d)\n", (int)wv);
 }
 
