@@ -56,7 +56,8 @@ static int phase2_broker_decision(void) {
       pthread_cond_signal(&g_broker_cond);
       IDK_ERR("overlay", "IDK_BROKER forced but broker unreachable — overlay disabled\n");
       webview_disable();
-      close(g_broker_fd);
+      if (g_broker_fd >= 0)
+        close(g_broker_fd);
       g_broker_fd = -1;
       return 0;
     } else {

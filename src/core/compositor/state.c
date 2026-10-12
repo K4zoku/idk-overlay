@@ -31,7 +31,10 @@ int idk_compositor_init(void) {
     if (rc == ETIMEDOUT)
       break;
   }
+  const int broker_state = atomic_load(&g_broker_state);
   pthread_mutex_unlock(&g_broker_lock);
+  if (broker_state == 3)
+    return -1;
 
   char path[512];
   idk_comp_get_path(path, sizeof(path));
