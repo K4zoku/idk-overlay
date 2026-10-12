@@ -1,13 +1,11 @@
 /* Frame sender library (client side of compositor). */
 
 #include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
+#include <stdint.h>
 #include <unistd.h>
+#include <string.h>
 
+#include "../core/linux/fd.h"
 #include "core/log.h"
 #include "core/transport.h"
 #include "public/idk_ipc.h"
@@ -17,38 +15,11 @@
 
 static idk_transport_t g_tp = {.backend = IDK_TP_SOCKET, ._server_fd = -1, ._client_fd = -1};
 
-/* SHM helper - copy pixels into a memfd for sending. */
+/* SHM helper - copy pixels into an anonymous, size-sealed snapshot. */
 static int copy_to_shm(const void *src, size_t size) {
-  char shm_name[64];
-  snprintf(shm_name, sizeof(shm_name), "/idk-producer-%d", (int)getpid());
-
-  /* Use 0600 (owner read/write only) instead of 0666 (world r/w).
-   * With 0600, only the owning user can access it. The umask may
-   * further restrict but never widen these perms. */
-  int fd = shm_open(shm_name, O_RDWR | O_CREAT, 0600);
-  if (fd < 0) {
-    IDK_ERR("producer", "shm_open failed: %s\n", strerror(errno));
-    return -1;
-  }
-
-  if (ftruncate(fd, size) < 0) {
-    IDK_ERR("producer", "ftruncate failed: %s\n", strerror(errno));
-    close(fd);
-    shm_unlink(shm_name);
-    return -1;
-  }
-
-  void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (map == MAP_FAILED) {
-    IDK_ERR("producer", "mmap failed: %s\n", strerror(errno));
-    close(fd);
-    shm_unlink(shm_name);
-    return -1;
-  }
-
-  memcpy(map, src, size);
-  munmap(map, size);
-
+  int fd = idk_memfd_copy(src, size, "idk-frame");
+  if (fd < 0)
+    IDK_ERR("producer", "frame snapshot allocation failed: %s\n", strerror(errno));
   return fd;
 }
 
