@@ -49,14 +49,38 @@ int main(void) {
   idk_tp_destroy(&game);
   idk_tp_destroy(&web);
 
-  /* A late ACK after timeout must not block a newer REQUEST. */
+  /* Pending ACK must never be consumed as a stale record when polling control. */
   peers(&game, &web);
   ack.ack = 0;
   idk_tp_send_ack(&game, &ack);
   req.type = IDK_REQUEST_NEXT_FRAME;
   assert(idk_tp_send_request(&game, &req) == 0);
+  assert(idk_tp_recv_request_preserving_ack(&web, &incoming, 0) != 0);
+  assert(idk_tp_wait_ack(&web, &got, 0) == 0);
+  assert(got.ack == IDK_ACK_ACCEPTED);
   assert(idk_tp_recv_request(&web, &incoming, 0) == 0);
   assert(incoming.type == IDK_REQUEST_NEXT_FRAME);
+  idk_tp_destroy(&game);
+  idk_tp_destroy(&web);
+
+  /* Paused game: shutdown before ACK remains actionable without a timeout. */
+  peers(&game, &web);
+  req.type = IDK_REQUEST_NEXT_FRAME;
+  assert(idk_tp_send_request(&game, &req) == 0);
+  req.type = IDK_REQUEST_SHUTDOWN;
+  assert(idk_tp_send_request(&game, &req) == 0);
+  assert(idk_tp_wait_ack(&web, &got, 0) != 0);
+  assert(idk_tp_recv_request_preserving_ack(&web, &incoming, 0) == 0);
+  assert(incoming.type == IDK_REQUEST_SHUTDOWN);
+  idk_tp_destroy(&game);
+  idk_tp_destroy(&web);
+
+  /* Discard ACK has its own status; it is not a DMA-BUF rejection. */
+  peers(&game, &web);
+  ack = (idk_ack_msg_t){.ack = IDK_ACK_DISCARDED};
+  idk_tp_send_ack(&game, &ack);
+  assert(idk_tp_wait_ack(&web, &got, 0) == 0);
+  assert(got.ack == IDK_ACK_DISCARDED);
   idk_tp_destroy(&game);
   idk_tp_destroy(&web);
   return 0;

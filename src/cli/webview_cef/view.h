@@ -13,6 +13,7 @@
 #include "config.h"
 #include "gpubuf.h"
 #include "public/idk_frames.h"
+#include "public/idk_shm_delta.h"
 
 class InputThread;
 
@@ -94,7 +95,8 @@ private:
    * of the callback, so each path copies/dups before returning. */
   void SendFrameDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &dirty_rects, bool full_update);
   void SendShmFromDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &dirty_rects);
-  void SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_rects = nullptr);
+  void SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_rects = nullptr,
+                     const idk_shm_delta_t *verified_roi = nullptr);
 
   void InjectScripts();
   void LoadUrl();
@@ -134,6 +136,8 @@ private:
   GpuBuf deferred_gpu_; /* second staging buffer: never write the in-flight buffer */
   GpuBuf *deferred_gpu_ptr_ = nullptr;
   GpuBuf *gpu_inflight_ = nullptr;
+  GpuBuf *gpu_last_acked_ = nullptr;
+  int gpu_last_w_ = 0, gpu_last_h_ = 0;
   bool dropped_since_send_ = false;
   int sent_w_ = 0, sent_h_ = 0;
   bool shm_roi_enabled_ = false; /* explicit opt-in until both consumers are upgraded */
@@ -146,7 +150,6 @@ private:
   bool capture_ = false;
   bool js_capture_ = false; /* last capture state seen by JS (edge events) */
   bool js_visible_ = true;  /* last visibility state seen by JS */
-  int send_time_ms_ = 0;
 
   int rate_sent_ = 0; /* 1s diagnostics counters */
   int rate_req_ = 0;

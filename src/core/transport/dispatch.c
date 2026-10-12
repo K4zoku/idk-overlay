@@ -16,6 +16,7 @@ extern int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr, co
 extern int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
 extern int tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
 extern int tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
+extern int tp_socket_recv_request_preserving_ack(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
 extern int tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
 extern int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
 extern int tp_socket_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels);
@@ -162,4 +163,12 @@ int idk_tp_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, c
 
 int idk_tp_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity) {
   return tp_backends[tp->backend].recv_cursor(tp, cursor, pixels, capacity);
+}
+
+/* When the producer still awaits ACK, never eat that ACK as a stale record.
+ * This lets SHUTDOWN bypass a paused game without corrupting the stream. */
+int idk_tp_recv_request_preserving_ack(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
+  if (tp->backend == IDK_TP_SOCKET)
+    return tp_socket_recv_request_preserving_ack(tp, req, timeout_ms);
+  return idk_tp_recv_request(tp, req, timeout_ms);
 }

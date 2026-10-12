@@ -50,6 +50,7 @@ int idk_tp_drop_frame(idk_transport_t *tp);
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req);
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
+int idk_tp_recv_request_preserving_ack(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms);
 /* FDs are borrowed; the caller retains ownership after this call returns. */
 int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd);
 int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);

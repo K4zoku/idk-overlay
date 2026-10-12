@@ -51,8 +51,13 @@ _Static_assert(sizeof(idk_frame_header_t) == 28, "idk_frame_header_t must be 28 
 
 /* ACK (16 bytes — deliberately NOT packed, natural C alignment) */
 
+#define IDK_ACK_ACCEPTED 0
+#define IDK_ACK_REJECTED 1
+#define IDK_ACK_DISCARDED 2
+
+
 typedef struct idk_ack_msg {
-  uint8_t ack;     /* 0 = accepted, 1 = rejected (DMABUF not supported) */
+  uint8_t ack;     /* IDK_ACK_*: accepted, rejected, or discarded while hidden */
   int32_t w;       /* game width (0 = no resize) */
   int32_t h;       /* game height (0 = no resize) */
   uint8_t _pad[3]; /* reserved */

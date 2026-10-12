@@ -54,7 +54,7 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
         *queued = type + 1;
       continue;
     }
-    if (first > 1) {
+    if (first > IDK_ACK_DISCARDED) {
       tp_socket_disconnect_client(tp);
       return -1;
     }

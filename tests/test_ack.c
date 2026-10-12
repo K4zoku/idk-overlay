@@ -24,6 +24,12 @@ TEST(ack_reject_value) {
     ASSERT_EQ(msg.ack, 1);
 }
 
+TEST(ack_discard_value) {
+    struct idk_ack_msg msg = { .ack = IDK_ACK_DISCARDED, .w = 0, .h = 0 };
+    ASSERT_EQ(msg.ack, 2);
+    ASSERT_EQ(IDK_ACK_REJECTED, 1);
+}
+
 TEST(ack_with_resize_info) {
     struct idk_ack_msg msg = { .ack = 0, .w = 1920, .h = 1080 };
     ASSERT_EQ(msg.w, 1920);
@@ -35,6 +41,7 @@ int main(void) {
     RUN(ack_msg_offsets);
     RUN(ack_accept_value);
     RUN(ack_reject_value);
+    RUN(ack_discard_value);
     RUN(ack_with_resize_info);
     return 0;
 }

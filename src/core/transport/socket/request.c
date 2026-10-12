@@ -38,7 +38,7 @@ static int take_queued(idk_transport_t *tp, idk_request_msg_t *req) {
   return 0;
 }
 
-int tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
+static int recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms, bool preserve_ack) {
   if (tp->_client_fd < 0 || !req) {
     errno = EINVAL;
     return -1;
@@ -74,8 +74,12 @@ int tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int time
       }
       return 0;
     }
-    if (first > 1) {
+    if (first > IDK_ACK_DISCARDED) {
       tp_socket_disconnect_client(tp);
+      return -1;
+    }
+    if (preserve_ack) {
+      errno = EAGAIN;
       return -1;
     }
     idk_ack_msg_t stale;
@@ -87,4 +91,12 @@ int tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int time
     }
   }
   return -1;
+}
+
+int tp_socket_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
+  return recv_request(tp, req, timeout_ms, false);
+}
+
+int tp_socket_recv_request_preserving_ack(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {
+  return recv_request(tp, req, timeout_ms, true);
 }

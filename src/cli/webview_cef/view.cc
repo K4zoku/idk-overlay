@@ -14,6 +14,7 @@
 #include "include/cef_app.h"
 #include "input.h"
 #include "shm_format.h"
+#include "shm_diff.h"
 #include "public/idk_producer.h"
 #include "public/idk_shm_delta.h"
 #include "tasks.h"
@@ -305,6 +306,8 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &
   uint64_t modifier = 0;
   uint16_t buf_id = 0;
   GpuBuf &target = gpu_inflight_ == &gpu_ ? deferred_gpu_ : gpu_;
+  if (&target == gpu_last_acked_)
+    gpu_last_acked_ = nullptr;
   if (target.Init() && target.BlitAndExport(info, w, h, dirty_rects, full_update,
                                            &stride, &fourcc, &modifier, &buf_id) == 0) {
     int fd = dup(target.Fd());
@@ -323,7 +326,6 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &
     close(fd);
     if (rc == 0) {
       pending_ = true;
-      send_time_ms_ = now_ms();
       rate_sent_++;
       staged_send_ = true;
       last_sent_shm_ = false;
@@ -375,7 +377,6 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &
     pending_ = true;
     last_sent_shm_ = false;
     sent_w_ = w; sent_h_ = h;
-    send_time_ms_ = now_ms();
     rate_sent_++;
   }
 }
@@ -440,14 +441,23 @@ static bool choose_shm_roi(const View::RectList &dirty, int w, int h, idk_shm_de
   return true;
 }
 
-void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_rects) {
+void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_rects,
+                         const idk_shm_delta_t *verified_roi) {
   if (w <= 0 || h <= 0 || (uint64_t)w * h * 4 > SIZE_MAX)
     return;
   /* Never send an ROI until the consumer has acknowledged the full baseline.
    * On the next callback after a dropped frame we deliberately send full. */
   idk_shm_delta_t roi{};
-  bool partial = shm_roi_enabled_ && shm_baseline_valid_ && !needs_full_update_ && dirty_rects &&
-                 choose_shm_roi(*dirty_rects, w, h, roi);
+  bool partial = false;
+  if (shm_roi_enabled_ && shm_baseline_valid_) {
+    if (verified_roi && idk_shm_delta_validate(verified_roi, w, h,
+                                              sizeof(*verified_roi) + (size_t)verified_roi->width * verified_roi->height * 4)) {
+      roi = *verified_roi;
+      partial = true;
+    } else if (!needs_full_update_ && dirty_rects) {
+      partial = choose_shm_roi(*dirty_rects, w, h, roi);
+    }
+  }
   size_t payload = partial ? (size_t)roi.width * roi.height * 4 + sizeof(roi) : (size_t)w * h * 4;
   int fd = memfd_create("idk-webview-cef", MFD_CLOEXEC);
   if (fd < 0)
@@ -494,7 +504,6 @@ void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_
     request_credit_ = false;
     last_sent_shm_ = true;
     sent_w_ = w; sent_h_ = h;
-    send_time_ms_ = now_ms();
     rate_sent_++;
     bytes_shm_sent_ += payload;
     if (partial) rate_shm_roi_++;
@@ -525,6 +534,8 @@ void View::CacheDeferredGpu(const CefAcceleratedPaintInfo &info) {
   uint32_t stride = 0, fourcc = 0;
   uint64_t modifier = 0;
   uint16_t id = 0;
+  if (&target == gpu_last_acked_)
+    gpu_last_acked_ = nullptr;
   if (target.Init() && target.BlitAndExport(info, w, h, {}, true, &stride, &fourcc, &modifier, &id) == 0) {
     deferred_gpu_ptr_ = &target;
     deferred_w_ = w;
@@ -584,7 +595,6 @@ bool View::SendOwnedGpu(GpuBuf &buffer, int w, int h) {
   staged_send_ = true;
   gpu_inflight_ = &buffer;
   sent_w_ = w; sent_h_ = h;
-  send_time_ms_ = now_ms();
   ++rate_sent_;
   ++rate_deferred_;
   return true;
@@ -608,7 +618,26 @@ void View::MaybeSendDeferred() {
      * a fresh Chromium capture. SHM conversion needs an explicit readback. */
   }
   if (!sent && deferred_kind_ == DeferredKind::Pixels && !deferred_pixels_.empty()) {
-    SendShmPixels(deferred_pixels_.data(), deferred_w_, deferred_h_);
+    idk_shm_delta_t delta{};
+    const idk_shm_delta_t *verified_roi = nullptr;
+    if (shm_roi_enabled_ && shm_baseline_valid_ &&
+        deferred_w_ == shm_shadow_w_ && deferred_h_ == shm_shadow_h_ &&
+        deferred_pixels_.size() == shm_shadow_.size()) {
+      auto result = idk_cef_shm::FindDelta(deferred_pixels_.data(), shm_shadow_.data(),
+                                            deferred_w_, deferred_h_, delta);
+      if (result == idk_cef_shm::DeltaResult::Unchanged) {
+        deferred_kind_ = DeferredKind::None;
+        deferred_pixels_.clear();
+        request_credit_ = false;
+        needs_full_update_ = false;
+        dropped_since_send_ = false;
+        ++rate_unchanged_;
+        return;
+      }
+      if (result == idk_cef_shm::DeltaResult::Partial)
+        verified_roi = &delta;
+    }
+    SendShmPixels(deferred_pixels_.data(), deferred_w_, deferred_h_, nullptr, verified_roi);
     sent = pending_;
     if (sent) ++rate_deferred_;
   }
@@ -632,6 +661,7 @@ void View::ConnectTask() {
     connect_attempts_ = 0;
     deferred_kind_ = DeferredKind::None;
     gpu_inflight_ = nullptr;
+    gpu_last_acked_ = nullptr;
     shm_shadow_.clear();
     needs_full_update_ = true;
     shm_baseline_valid_ = false;
@@ -646,6 +676,7 @@ void View::ConnectTask() {
     deferred_kind_ = DeferredKind::None;
     deferred_pixels_.clear();
     gpu_inflight_ = nullptr;
+    gpu_last_acked_ = nullptr;
     shm_shadow_.clear();
     shm_baseline_valid_ = false;
     pending_ = false;
@@ -659,6 +690,7 @@ void View::ConnectTask() {
       connect_attempts_ = 0;
       deferred_kind_ = DeferredKind::None;
       gpu_inflight_ = nullptr;
+      gpu_last_acked_ = nullptr;
       shm_shadow_.clear();
       needs_full_update_ = true;
       shm_baseline_valid_ = false;
@@ -692,54 +724,45 @@ void View::ConnectTask() {
  * A REQUEST therefore grants permission to submit one frame; it must not
  * create a pending capture or require a corresponding OnPaint to finish. */
 void View::PollSocket() {
-  if (!connected_ || !visible_)
+  if (!connected_)
     return;
+
   if (pending_) {
     idk_ack_msg_t ack;
     if (idk_producer_wait_ack(&ack, 0) == 0) {
-      rate_ack_++;
+      ++rate_ack_;
       ProcessAck(ack);
-    } else if ((now_ms() - send_time_ms_) > 100) {
-      if (deferred_kind_ == DeferredKind::None) {
-        if (gpu_inflight_) {
-          deferred_kind_ = DeferredKind::Gpu;
-          deferred_gpu_ptr_ = gpu_inflight_;
-          deferred_w_ = sent_w_; deferred_h_ = sent_h_;
-        } else if (last_sent_shm_ && !shm_shadow_.empty()) {
-          deferred_kind_ = DeferredKind::Pixels;
-          deferred_pixels_ = shm_shadow_;
-          deferred_w_ = shm_shadow_w_; deferred_h_ = shm_shadow_h_;
-        }
-      }
-      pending_ = false;
-      gpu_inflight_ = nullptr;
-      shm_baseline_valid_ = false;
-      needs_full_update_ = true;
-      IDK_LOG("webview-cef", "ACK timeout - retain latest snapshot\n");
     }
   }
-  if (pending_)
-    return;
 
+  // Always process SHUTDOWN, even when a frame is waiting for game ACK.
+  // While pending, the socket path must not consume the incomplete/late ACK.
   bool requested = false;
   idk_request_msg_t req;
-  for (int i = 0; i < 256 && idk_producer_recv_request(&req, 0) == 0; ++i) {
+  for (int i = 0; i < 256; ++i) {
+    int rc = pending_ ? idk_producer_recv_request_preserving_ack(&req, 0)
+                      : idk_producer_recv_request(&req, 0);
+    if (rc != 0)
+      break;
     if (req.type == IDK_REQUEST_SHUTDOWN) {
       quit_.store(true);
       return;
     }
     if (req.type == IDK_REQUEST_NEXT_FRAME) {
-      rate_req_++;
+      ++rate_req_;
       requested = true;
     }
   }
-  if (requested) {
+  if (!idk_producer_is_connected())
+    return;
+  if (!visible_)
+    return;
+  if (requested)
     request_credit_ = true;
-    if (page_ready_) {
-      MaybeSendDeferred();
-      if (!pending_ && deferred_kind_ == DeferredKind::None)
-        NudgeFrame();
-    }
+  if (!pending_ && request_credit_ && page_ready_) {
+    MaybeSendDeferred();
+    if (!pending_ && deferred_kind_ == DeferredKind::None)
+      NudgeFrame();
   }
 }
 
@@ -749,14 +772,36 @@ void View::NudgeFrame() {
 }
 
 void View::ProcessAck(const idk_ack_msg_t &ack) {
-  const bool accepted = ack.ack == 0;
-  shm_baseline_valid_ = accepted && last_sent_shm_;
-  if (accepted && !dropped_since_send_ && deferred_kind_ == DeferredKind::None)
+  const bool accepted = ack.ack == IDK_ACK_ACCEPTED;
+  if (accepted) {
+    if (!last_sent_shm_ && gpu_inflight_) {
+      gpu_last_acked_ = gpu_inflight_;
+      gpu_last_w_ = sent_w_;
+      gpu_last_h_ = sent_h_;
+    } else if (last_sent_shm_) {
+      gpu_last_acked_ = nullptr;
+    }
+  }
+  if (accepted && !visible_ && deferred_kind_ == DeferredKind::None) {
+    if (last_sent_shm_ && !shm_shadow_.empty()) {
+      deferred_pixels_ = shm_shadow_;
+      deferred_w_ = shm_shadow_w_;
+      deferred_h_ = shm_shadow_h_;
+      deferred_kind_ = DeferredKind::Pixels;
+    } else if (gpu_last_acked_) {
+      deferred_gpu_ptr_ = gpu_last_acked_;
+      deferred_w_ = gpu_last_w_;
+      deferred_h_ = gpu_last_h_;
+      deferred_kind_ = DeferredKind::Gpu;
+    }
+  }
+  shm_baseline_valid_ = accepted && last_sent_shm_ && visible_;
+  if (accepted && visible_ && !dropped_since_send_ && deferred_kind_ == DeferredKind::None)
     needs_full_update_ = false;
   if (!accepted) {
     needs_full_update_ = true;
     capture_counter_valid_ = false;
-    if (ack.ack == 1 && use_dmabuf_ && !dmabuf_failed_) {
+    if (ack.ack == IDK_ACK_REJECTED && use_dmabuf_ && !dmabuf_failed_) {
       ++dmabuf_reject_count_;
       if (dmabuf_reject_count_ >= DMABUF_REJECT_LIMIT) {
         dmabuf_failed_ = true;
@@ -796,6 +841,7 @@ void View::ProcessAck(const idk_ack_msg_t &ack) {
     deferred_pixels_.clear();
     deferred_gpu_ptr_ = nullptr;
     shm_shadow_.clear();
+    gpu_last_acked_ = nullptr;
     dmabuf_failed_ = false;
     dmabuf_reject_count_ = 0;
     IDK_LOG("webview-cef", "game resize: %dx%d\n", render_w_, render_h_);
@@ -855,9 +901,23 @@ void View::SetOverlayVisible(bool v) {
     return;
   visible_ = v;
   request_credit_ = false;
-  deferred_kind_ = DeferredKind::None;
-  deferred_pixels_.clear();
-  shm_shadow_.clear();
+  if (!v && deferred_kind_ == DeferredKind::None && pending_ && gpu_inflight_) {
+    deferred_gpu_ptr_ = gpu_inflight_;
+    deferred_w_ = sent_w_;
+    deferred_h_ = sent_h_;
+    deferred_kind_ = DeferredKind::Gpu;
+  } else if (!v && deferred_kind_ == DeferredKind::None && !shm_shadow_.empty() && last_sent_shm_) {
+    deferred_pixels_ = shm_shadow_;
+    deferred_w_ = shm_shadow_w_;
+    deferred_h_ = shm_shadow_h_;
+    deferred_gpu_ptr_ = nullptr;
+    deferred_kind_ = DeferredKind::Pixels;
+  } else if (!v && deferred_kind_ == DeferredKind::None && gpu_last_acked_) {
+    deferred_gpu_ptr_ = gpu_last_acked_;
+    deferred_w_ = gpu_last_w_;
+    deferred_h_ = gpu_last_h_;
+    deferred_kind_ = DeferredKind::Gpu;
+  }
   needs_full_update_ = true;
   shm_baseline_valid_ = false;
   capture_counter_valid_ = false;

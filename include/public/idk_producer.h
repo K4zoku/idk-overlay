@@ -69,6 +69,7 @@ int idk_producer_wait_ack(idk_ack_msg_t *ack, int timeout_ms);
  * @param timeout_ms Timeout in milliseconds (0 = non-blocking).
  */
 int idk_producer_recv_request(idk_request_msg_t *req, int timeout_ms);
+int idk_producer_recv_request_preserving_ack(idk_request_msg_t *req, int timeout_ms);
 
 /**
  * Socket fd carrying ACK/REQUEST data, for event-loop integration.

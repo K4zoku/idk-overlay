@@ -40,7 +40,7 @@ test('test_x11_select', test_x11_select_exe)
 foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
                'test_abstract_socket.c', 'test_compositor_path.c',
                'test_compositor_api.c', 'test_cursor_transport.c',
-               'test_fd_leaks.c', 'test_socket_controls.c']
+               'test_fd_leaks.c', 'test_socket_controls.c', 'test_hidden_discard.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,
@@ -106,3 +106,7 @@ test('test_webview_cef_args', cef_args_test)
 cef_shm_format_test = executable('test_cef_shm_format', 'test_cef_shm_format.cc',
     cpp_args: ['-std=c++20'], include_directories: inc)
 test('test_cef_shm_format', cef_shm_format_test)
+
+cef_shm_diff_test = executable('test_cef_shm_diff', 'test_cef_shm_diff.cc',
+                                include_directories: inc, cpp_args: ['-std=c++20'])
+test('test_cef_shm_diff', cef_shm_diff_test)

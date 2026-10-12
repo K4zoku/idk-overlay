@@ -43,6 +43,8 @@ static void drain_hidden(void) {
         disconnect_client();
       break;
     }
+    idk_ack_msg_t ack = {.ack = IDK_ACK_DISCARDED};
+    idk_tp_send_ack(&g_comp.tp, &ack);
   }
   g_comp.was_hidden = true;
 }
