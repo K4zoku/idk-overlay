@@ -8,16 +8,20 @@
  *   IDK_TP_ABSTRACT     abstract producer socket (set by broker)
  *   IDK_INPUT_ABSTRACT  abstract input socket (set by broker)
  *   IDK_SOCKET          filesystem producer socket fallback
+ *   IDK_TP_SOCKET       seqpacket transport opt-in (must match compositor)
+ *   IDK_GPU_SYNC        Vulkan DMA-BUF release synchronization opt-in
  *   IDK_MATCH           process name (when not given via --match)
  *   IDK_CEF_DIR         CEF dist root (default: compiled-in CEF_DIST_DIR)
  *   IDK_CEF_DEBUG_PORT  enable DevTools on this port (optional)
  */
-#include <cstdio>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <fstream>
 #include <poll.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -184,8 +188,6 @@ int main(int argc, char *argv[]) {
   CefSettings settings; /* wrapper ctor sets size; do NOT memset */
   settings.no_sandbox = true;
   settings.windowless_rendering_enabled = true;
-  /* The main loop polls the producer socket directly (game-rate ACK/REQUEST
-   * with no 16ms timer cap) and drives CEF via CefDoMessageLoopWork. */
   settings.external_message_pump = true;
   settings.background_color = 0; /* fully transparent painting */
   settings.log_severity = LOGSEVERITY_WARNING;
@@ -200,6 +202,13 @@ int main(int argc, char *argv[]) {
   const char *dbg = getenv("IDK_CEF_DEBUG_PORT");
   if (dbg && *dbg)
     settings.remote_debugging_port = atoi(dbg);
+
+  CefPump pump;
+  if (!pump.Valid()) {
+    IDK_LOG("webview-cef", "CEF message pump initialization failed\n");
+    return 1;
+  }
+  g_cef_pump.store(&pump, std::memory_order_release);
 
   if (!CefInitialize(main_args, settings, app, nullptr)) {
     IDK_LOG("webview-cef", "CefInitialize failed\n");
@@ -234,17 +243,36 @@ int main(int argc, char *argv[]) {
 
   view->Start(); /* producer connect + input thread */
 
-  /* External message pump: block on the producer socket (game-rate
-   * ACK/REQUEST wakeups), then pump CEF work. */
+  pump.Schedule(0);
   for (;;) {
     if (view->QuitRequested())
       break;
-    int fd = idk_producer_poll_fd();
-    struct pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
-    int rc = poll(&pfd, fd >= 0 ? 1 : 0, 8);
-    if (fd >= 0 && rc > 0 && (pfd.revents & (POLLIN | POLLHUP)))
+
+    pump.Reconcile();
+    const int producer_fd = idk_producer_poll_fd();
+    struct pollfd pfds[3] = {
+        {.fd = producer_fd, .events = producer_fd >= 0 ? POLLIN : 0, .revents = 0},
+        {.fd = pump.WakeFd(), .events = POLLIN, .revents = 0},
+        {.fd = pump.TimerFd(), .events = POLLIN, .revents = 0},
+    };
+    int rc = poll(pfds, 3, -1);
+    if (rc < 0) {
+      if (errno == EINTR)
+        continue;
+      break;
+    }
+    if (pfds[1].revents & POLLIN) {
+      pump.DrainWake();
+      pump.Reconcile();
+    }
+    if (pfds[2].revents & POLLIN) {
+      pump.DrainTimer();
+      pump.Reconcile();
+    }
+    if (producer_fd >= 0 && pfds[0].revents & (POLLIN | POLLHUP | POLLERR))
       view->PollSocket();
-    CefDoMessageLoopWork();
+    if (pump.TakeDue())
+      CefDoMessageLoopWork();
   }
   view->Stop(); /* join the input thread */
   view = nullptr;

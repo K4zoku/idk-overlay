@@ -1,11 +1,26 @@
 #pragma once
+
+#include <atomic>
+
 #include "include/cef_app.h"
+#include "include/cef_browser_process_handler.h"
+#include "pump.h"
+
+inline std::atomic<CefPump *> g_cef_pump{nullptr};
 
 /* Shared by the browser process and all subprocesses (CefExecuteProcess
  * uses the same CefApp). Command-line switches must be identical across
  * processes, which is why they are applied here. */
-class App : public CefApp {
+class App : public CefApp, public CefBrowserProcessHandler {
 public:
+  CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
+
+  void OnScheduleMessagePumpWork(int64_t delay_ms) override {
+    CefPump *pump = g_cef_pump.load(std::memory_order_acquire);
+    if (pump)
+      pump->Schedule(delay_ms);
+  }
+
   void OnBeforeCommandLineProcessing(const CefString &, CefRefPtr<CefCommandLine> cl) override {
     /* The overlay webview runs unprivileged inside a game session; the
      * setuid sandbox would need root. */
