@@ -1,3 +1,5 @@
+#include <poll.h>
+#include <sys/eventfd.h>
 #include "core/compositor.h"
 #include "core/transport.h"
 #include "hook/input_backend.h"
@@ -10,6 +12,7 @@ static pthread_t g_accept_thread;
 static pthread_mutex_t g_input_tp_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_input_inited = 0;
 static _Atomic int g_accept_stop = 0;
+static int g_accept_wake_fd = -1;
 static pthread_mutex_t g_cursor_lock = PTHREAD_MUTEX_INITIALIZER;
 static idk_cursor_update_t g_cursor;
 static uint8_t g_cursor_pixels[IDK_CURSOR_MAX_BYTES];
@@ -65,31 +68,56 @@ static void *accept_thread_main(void *arg) {
   if (!pixels)
     return NULL;
   while (!atomic_load(&g_accept_stop)) {
-    int rc = 0;
-    int connected = 0;
+    struct pollfd fds[3] = {};
+    int nfds = 1;
+    fds[0].fd = g_accept_wake_fd;
+    fds[0].events = POLLIN;
     pthread_mutex_lock(&g_input_tp_lock);
-    if (!g_input_tp.ready)
-      connected = idk_tp_accept(&g_input_tp);
-    if (g_input_tp.ready) {
+    if (g_input_tp.ready || g_input_tp._client_fd >= 0) {
+      fds[nfds].fd = g_input_tp._client_fd;
+      fds[nfds].events = POLLIN;
+      nfds++;
+    } else if (g_input_tp._server_fd >= 0) {
+      fds[nfds].fd = g_input_tp._server_fd;
+      fds[nfds].events = POLLIN;
+      nfds++;
+    }
+    pthread_mutex_unlock(&g_input_tp_lock);
+    int rc;
+    do {
+      rc = poll(fds, nfds, -1);
+    } while (rc < 0 && errno == EINTR);
+    if (rc < 0)
+      break;
+    if (fds[0].revents & POLLIN)
+      break;
+    if (nfds < 2)
+      continue;
+    pthread_mutex_lock(&g_input_tp_lock);
+    if (fds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+      idk_tp_disconnect_client(&g_input_tp);
+      pthread_mutex_unlock(&g_input_tp_lock);
+      continue;
+    }
+    if (!g_input_tp.ready && g_input_tp._client_fd < 0 && fds[1].revents & POLLIN) {
+      if (idk_tp_accept(&g_input_tp) == 1)
+        WLOG("webview connected to input transport");
+    }
+    if (!g_input_tp.ready && g_input_tp._client_fd >= 0 && fds[1].revents & POLLIN)
+      idk_tp_poll(&g_input_tp);
+    if (g_input_tp.ready && fds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
       idk_cursor_update_t cursor;
-      rc = idk_tp_recv_cursor(&g_input_tp, &cursor, pixels, IDK_CURSOR_MAX_BYTES);
-      if (rc < 0) {
-        int save_errno = errno;
-        idk_tp_disconnect_client(&g_input_tp);
-        WLOG("cursor receive disconnected (errno=%d)", save_errno);
-      } else if (rc == 1) {
+      for (;;) {
+        int received = idk_tp_recv_cursor(&g_input_tp, &cursor, pixels, IDK_CURSOR_MAX_BYTES);
+        if (received <= 0) {
+          if (received < 0)
+            idk_tp_disconnect_client(&g_input_tp);
+          break;
+        }
         publish_cursor(&cursor, pixels);
       }
     }
     pthread_mutex_unlock(&g_input_tp_lock);
-    if (connected == 1)
-      WLOG("webview connected to input transport");
-    if (connected < 0) {
-      WLOG("accept_thread_main: idk_tp_accept fatal - input thread exiting");
-      break;
-    }
-    for (int i = 0; i < 20 && !atomic_load(&g_accept_stop); i++)
-      usleep(100);
   }
   free(pixels);
   return NULL;
@@ -130,6 +158,11 @@ int init_input_socket(void) {
     WERR("input transport init failed for %s", path);
     return -1;
   }
+  g_accept_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  if (g_accept_wake_fd < 0) {
+    idk_tp_destroy(&g_input_tp);
+    return -1;
+  }
 
   g_input_inited = 1;
   g_input_listen_fd = 0;
@@ -141,6 +174,8 @@ int init_input_socket(void) {
     g_input_inited = 0;
     g_input_listen_fd = -1;
     g_accept_thread_started = 0;
+    close(g_accept_wake_fd);
+    g_accept_wake_fd = -1;
     return -1;
   }
 
@@ -204,6 +239,7 @@ void send_repeat_info(void) {
 void teardown_input_socket(void) {
   if (g_accept_thread_started) {
     atomic_store(&g_accept_stop, 1);
+    eventfd_write(g_accept_wake_fd, 1);
     pthread_mutex_lock(&g_input_tp_lock);
     idk_tp_disconnect_client(&g_input_tp);
     pthread_mutex_unlock(&g_input_tp_lock);

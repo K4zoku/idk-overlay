@@ -19,8 +19,8 @@
 #define TP_STATE_LISTEN 1
 #define TP_STATE_BOUND 2
 #define TP_STATE_READY 3
+#define TP_STATE_HANDSHAKE 4
 #define TP_S_PATH_CAP 40
-/* Producer-side queued REQUEST while awaiting a 16-byte ACK. */
 #define TP_S_QUEUED_REQ(rsv) ((rsv)[48])
 #define TP_S_REQUEST_TAG 0x80u
 #define TP_S_SEQPACKET(rsv) ((rsv)[49])

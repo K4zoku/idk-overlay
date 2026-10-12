@@ -84,8 +84,8 @@ int tp_socket_accept(idk_transport_t *tp) {
   }
   set_nonblock(c);
   tp->_client_fd = c;
-  tp->ready = true;
+  tp->ready = !TP_S_SEQPACKET(tp->_rsv);
+  TP_S_STATE(tp->_rsv) = TP_S_SEQPACKET(tp->_rsv) ? TP_STATE_HANDSHAKE : TP_STATE_READY;
   TP_S_QUEUED_REQ(tp->_rsv) = 0;
-  IDK_LOG("tp", "socket: client connected (fd=%d)\n", c);
   return 1;
 }

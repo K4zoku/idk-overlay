@@ -8,6 +8,16 @@
 #include "core/log.h"
 #include "internal.h"
 
+static int begin_producer_handshake(idk_transport_t *tp, int fd) {
+  if (!TP_S_SEQPACKET(tp->_rsv))
+    return 0;
+  if (socket_v2_send_hello(fd) < 0)
+    return -1;
+  TP_S_STATE(tp->_rsv) = TP_STATE_HANDSHAKE;
+  tp->ready = false;
+  return 0;
+}
+
 int producer_init(idk_transport_t *tp, const char *path) {
   int fd = socket(AF_UNIX, TP_SOCKET_TYPE(tp), 0);
   if (fd < 0)
@@ -59,7 +69,7 @@ int producer_init(idk_transport_t *tp, const char *path) {
 
   tp->_server_fd = -1;
   tp->_client_fd = fd;
-  TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+  TP_S_STATE(tp->_rsv) = TP_S_SEQPACKET(tp->_rsv) ? TP_STATE_HANDSHAKE : TP_STATE_READY;
   TP_S_QUEUED_REQ(tp->_rsv) = 0;
   TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
   TP_S_ABSTRACT(tp->_rsv) = abstr ? 1 : 0;
@@ -68,7 +78,12 @@ int producer_init(idk_transport_t *tp, const char *path) {
   memcpy(tp->_rsv + 8, path, cplen);
   if (!abstr)
     tp->_rsv[8 + cplen] = '\0';
-  tp->ready = true;
+  tp->ready = !TP_S_SEQPACKET(tp->_rsv);
+  if (begin_producer_handshake(tp, fd) < 0) {
+    close(fd);
+    tp->_client_fd = -1;
+    return -1;
+  }
   IDK_LOG("tp", "socket: connected to %s (fd=%d)\n", path, fd);
   return 0;
 }
@@ -99,10 +114,15 @@ int tp_socket_poll(idk_transport_t *tp) {
       }
       if (connect(fd, (struct sockaddr *)&addr, addrlen) == 0) {
         tp->_client_fd = fd;
-        tp->ready = true;
-        TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+        tp->ready = !TP_S_SEQPACKET(tp->_rsv);
+        TP_S_STATE(tp->_rsv) = TP_S_SEQPACKET(tp->_rsv) ? TP_STATE_HANDSHAKE : TP_STATE_READY;
         TP_S_QUEUED_REQ(tp->_rsv) = 0;
         TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
+        if (begin_producer_handshake(tp, fd) < 0) {
+          close(fd);
+          tp->_client_fd = -1;
+          return -1;
+        }
         IDK_LOG("tp", "socket: connected to %s%s (fd=%d)\n", abstr ? "\\0" : "", abstr ? path + 1 : path, fd);
         return 0;
       }
@@ -111,6 +131,22 @@ int tp_socket_poll(idk_transport_t *tp) {
       return 0;
     }
     return -1;
+  }
+  if (TP_S_SEQPACKET(tp->_rsv) && !tp->ready) {
+    uint32_t features = 0;
+    int handshake = tp->role == IDK_TP_CONSUMER ? socket_v2_server_handshake(tp->_client_fd, &features)
+                                                 : socket_v2_client_handshake(tp->_client_fd, &features);
+    if (handshake < 0) {
+      tp_socket_disconnect_client(tp);
+      return -1;
+    }
+    if (handshake == 1) {
+      TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+      tp->ready = true;
+      IDK_LOG("tp", "socket: negotiated seqpacket features=0x%x\n", features);
+      return 1;
+    }
+    return 0;
   }
   struct pollfd pfd = {.fd = tp->_client_fd, .events = POLLIN};
   int rc = poll(&pfd, 1, 0);

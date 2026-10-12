@@ -7,6 +7,10 @@
 #define IDK_SOCKET_V2_MAGIC 0x324B4449u
 #define IDK_SOCKET_V2_MAJOR 2u
 #define IDK_SOCKET_V2_MAX_PAYLOAD (16u * 1024u * 1024u)
+#define IDK_SOCKET_FEATURE_SEQPACKET (1u << 0)
+#define IDK_SOCKET_FEATURE_ROI (1u << 1)
+#define IDK_SOCKET_FEATURE_DMABUF (1u << 2)
+#define IDK_SOCKET_FEATURE_SYNC_FILE (1u << 3)
 
 enum idk_socket_v2_type {
   IDK_SOCKET_V2_FRAME = 1,
@@ -14,8 +18,23 @@ enum idk_socket_v2_type {
   IDK_SOCKET_V2_REQUEST = 3,
   IDK_SOCKET_V2_INPUT = 4,
   IDK_SOCKET_V2_CURSOR = 5,
+  IDK_SOCKET_V2_HELLO = 6,
+  IDK_SOCKET_V2_FEATURES = 7,
 };
 
+#pragma pack(push, 1)
+typedef struct idk_socket_features {
+  uint32_t features;
+  uint16_t max_fds;
+  uint16_t reserved;
+} idk_socket_features_t;
+#pragma pack(pop)
+
+_Static_assert(sizeof(idk_socket_features_t) == 8, "idk_socket_features_t must be 8 bytes");
+
+int socket_v2_send_hello(int fd);
+int socket_v2_server_handshake(int fd, uint32_t *features);
+int socket_v2_client_handshake(int fd, uint32_t *features);
 int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_bytes, const int *fds, int nfd);
 int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload_capacity, int fds[4], int *nfd);
 int socket_v2_peek_type(int fd, uint16_t *type);

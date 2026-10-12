@@ -98,9 +98,19 @@ bool InputThread::Connect() {
     IDK_LOG("input-cef", "transport init failed for %s\n", name_.c_str());
     return false;
   }
-  if (!tp_.ready) {
+  if (tp_._client_fd < 0) {
     idk_tp_destroy(&tp_);
     return false;
+  }
+  while (!tp_.ready) {
+    struct pollfd handshake = {.fd = tp_._client_fd, .events = POLLIN, .revents = 0};
+    int rc = poll(&handshake, 1, -1);
+    if (rc < 0 && errno == EINTR)
+      continue;
+    if (rc <= 0 || handshake.revents & (POLLHUP | POLLERR | POLLNVAL) || idk_tp_poll(&tp_) < 0) {
+      idk_tp_destroy(&tp_);
+      return false;
+    }
   }
 
   watch_fd_ = tp_._client_fd;
@@ -155,15 +165,19 @@ void InputThread::Run() {
       fds[2] = {.fd = repeat_fd_, .events = POLLIN, .revents = 0};
       nfds = 3;
     }
-    int rc = poll(fds, nfds, 100);
+    int rc = poll(fds, nfds, -1);
     if (rc < 0) {
       if (errno == EINTR)
         continue;
       break;
     }
+    if (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+      idk_tp_disconnect_client(&tp_);
+      connected = false;
+      continue;
+    }
     if (rc == 0)
       continue;
-
     if (fds[0].revents & POLLIN) {
       if (wake_fd_ >= 0) {
         eventfd_t value;
