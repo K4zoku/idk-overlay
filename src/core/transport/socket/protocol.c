@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#define IDK_SOCKET_LOCAL_FEATURES (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF)
 
 #pragma pack(push, 1)
 typedef struct socket_v2_header {
@@ -65,7 +66,7 @@ static int collect_fds(struct msghdr *msg, int fds[4], int *nfd) {
 }
 int socket_v2_send_hello(int fd) {
   const idk_socket_features_t hello = {
-      .features = IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF,
+      .features = IDK_SOCKET_LOCAL_FEATURES,
       .max_fds = 4,
       .reserved = 0,
   };
@@ -81,13 +82,16 @@ int socket_v2_server_handshake(int fd, uint32_t *features) {
     close(fds[i]);
   if (rc <= 0)
     return rc;
+  if (nfd != 0) {
+    errno = EBADMSG;
+    return -1;
+  }
   if (hello.max_fds == 0 || !(hello.features & IDK_SOCKET_FEATURE_SEQPACKET)) {
     errno = EPROTONOSUPPORT;
     return -1;
   }
   idk_socket_features_t selected = {
-      .features = hello.features & (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI |
-                                    IDK_SOCKET_FEATURE_DMABUF | IDK_SOCKET_FEATURE_SYNC_FILE),
+      .features = hello.features & IDK_SOCKET_LOCAL_FEATURES,
       .max_fds = hello.max_fds < 4 ? hello.max_fds : 4,
       .reserved = 0,
   };
@@ -107,7 +111,7 @@ int socket_v2_client_handshake(int fd, uint32_t *features) {
     close(fds[i]);
   if (rc <= 0)
     return rc;
-  if (selected.max_fds == 0 || !(selected.features & IDK_SOCKET_FEATURE_SEQPACKET)) {
+  if (nfd != 0 || selected.max_fds == 0 || !(selected.features & IDK_SOCKET_FEATURE_SEQPACKET)) {
     errno = EPROTONOSUPPORT;
     return -1;
   }

@@ -41,8 +41,23 @@ TEST(reject_wrong_type) {
   close(sockets[1]);
 }
 
+TEST(hello_features_negotiate_without_fds) {
+  int sockets[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
+  ASSERT_EQ(socket_v2_send_hello(sockets[0]), 0);
+  uint32_t server_features = 0;
+  ASSERT_EQ(socket_v2_server_handshake(sockets[1], &server_features), 1);
+  uint32_t client_features = 0;
+  ASSERT_EQ(socket_v2_client_handshake(sockets[0], &client_features), 1);
+  ASSERT_TRUE((server_features & IDK_SOCKET_FEATURE_SEQPACKET) != 0);
+  ASSERT_EQ(server_features, client_features);
+  close(sockets[0]);
+  close(sockets[1]);
+}
+
 int main(void) {
   RUN(round_trip_frame_and_fd);
+  RUN(hello_features_negotiate_without_fds);
   RUN(reject_wrong_type);
   return 0;
 }
