@@ -15,6 +15,7 @@
  *   IDK_CEF_DEBUG_PORT  enable DevTools on this port (optional)
  */
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
@@ -30,6 +31,7 @@
 #include "app.h"
 #include "config.h"
 #include "core/log.h"
+#include "glib_pump.h"
 #include "include/capi/cef_app_capi.h"
 #include "include/cef_version_info.h"
 #include "public/idk_producer.h"
@@ -243,20 +245,35 @@ int main(int argc, char *argv[]) {
 
   view->Start(); /* producer connect + input thread */
 
+  // CEF requires a periodic reference pump even with external_message_pump.
+  // This is a maximum 33ms gap, not an 8ms poll tick. OnScheduleMessagePumpWork
+  // still wakes the loop immediately for earlier work.
+  using Clock = std::chrono::steady_clock;
+  constexpr auto kMaxCefPumpGap = std::chrono::milliseconds(33);
+  GlibPump glib;
+  auto next_cef_pump = Clock::now() + kMaxCefPumpGap;
   pump.Schedule(0);
+  pump.TakeDue();
   CefDoMessageLoopWork();
+  std::vector<pollfd> pfds;
+  pfds.reserve(16);
   for (;;) {
     if (view->QuitRequested())
       break;
 
     pump.Reconcile();
     const int producer_fd = idk_producer_poll_fd();
-    struct pollfd pfds[3] = {
-        {.fd = producer_fd, .events = producer_fd >= 0 ? POLLIN : 0, .revents = 0},
-        {.fd = pump.WakeFd(), .events = POLLIN, .revents = 0},
-        {.fd = pump.TimerFd(), .events = POLLIN, .revents = 0},
-    };
-    int rc = poll(pfds, 3, 8);
+    pfds.clear();
+    pfds.push_back({.fd = producer_fd, .events = static_cast<short>(producer_fd >= 0 ? POLLIN : 0), .revents = 0});
+    pfds.push_back({.fd = pump.WakeFd(), .events = POLLIN, .revents = 0});
+    pfds.push_back({.fd = pump.TimerFd(), .events = POLLIN, .revents = 0});
+    const auto now = Clock::now();
+    int timeout_ms = now >= next_cef_pump
+                         ? 0
+                         : static_cast<int>(std::chrono::ceil<std::chrono::milliseconds>(next_cef_pump - now).count());
+    glib.Prepare(pfds, timeout_ms);
+    const int rc = poll(pfds.data(), pfds.size(), timeout_ms);
+    glib.Dispatch(pfds, rc >= 0);
     if (rc < 0) {
       if (errno == EINTR)
         continue;
@@ -270,9 +287,30 @@ int main(int argc, char *argv[]) {
       pump.DrainTimer();
       pump.Reconcile();
     }
-    if (producer_fd >= 0 && pfds[0].revents & (POLLIN | POLLHUP | POLLERR))
+    if (producer_fd >= 0 && pfds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
       view->PollSocket();
-    CefDoMessageLoopWork();
+      CefDoMessageLoopWork();
+      next_cef_pump = Clock::now() + kMaxCefPumpGap;
+      for (size_t i = 0; i < 3; ++i)
+        pfds[i].revents = 0;
+      const int immediate_rc = poll(pfds.data(), 3, 0);
+      if (immediate_rc > 0) {
+        if (pfds[1].revents & POLLIN) {
+          pump.DrainWake();
+          pump.Reconcile();
+        }
+        if (pfds[2].revents & POLLIN) {
+          pump.DrainTimer();
+          pump.Reconcile();
+        }
+        if (pfds[0].revents & (POLLIN | POLLHUP | POLLERR))
+          view->PollSocket();
+      }
+    }
+    if (pump.TakeDue() || Clock::now() >= next_cef_pump) {
+      CefDoMessageLoopWork();
+      next_cef_pump = Clock::now() + kMaxCefPumpGap;
+    }
   }
   view->Stop(); /* join the input thread */
   view = nullptr;

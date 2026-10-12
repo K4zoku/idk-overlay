@@ -1,6 +1,6 @@
 #pragma once
 
-#include <atomic>
+#include <mutex>
 #include <cstdint>
 
 class CefPump {
@@ -26,8 +26,11 @@ private:
 
   int wake_fd_ = -1;
   int timer_fd_ = -1;
-  std::atomic<int64_t> deadline_ns_{-1};
-  std::atomic<uint64_t> generation_{0};
+  // OnScheduleMessagePumpWork can run on any thread. Keep the deadline and
+  // generation in one critical section so TakeDue cannot erase new work.
+  std::mutex lock_;
+  int64_t deadline_ns_ = -1;
+  uint64_t generation_ = 0;
   uint64_t applied_generation_ = 0;
   bool stopped_ = false;
 };

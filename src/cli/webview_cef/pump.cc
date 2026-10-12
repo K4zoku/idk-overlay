@@ -41,24 +41,29 @@ void CefPump::Wake() {
 }
 
 void CefPump::Schedule(int64_t delay_ms) {
-  if (stopped_)
-    return;
-  int64_t deadline = -1;
-  if (delay_ms >= 0) {
-    constexpr int64_t kNsPerMs = 1000000;
-    const int64_t now = NowNs();
-    const int64_t delay_ns = delay_ms > INT64_MAX / kNsPerMs ? INT64_MAX : delay_ms * kNsPerMs;
-    deadline = delay_ns > INT64_MAX - now ? INT64_MAX : now + delay_ns;
+  // CEF defines delay_ms <= 0 as immediate work, not cancellation.
+  constexpr int64_t kNsPerMs = 1000000;
+  const int64_t now = NowNs();
+  const int64_t positive_ms = delay_ms > 0 ? delay_ms : 0;
+  const int64_t delay_ns = positive_ms > INT64_MAX / kNsPerMs ? INT64_MAX : positive_ms * kNsPerMs;
+  const int64_t deadline = delay_ns > INT64_MAX - now ? INT64_MAX : now + delay_ns;
+  {
+    std::lock_guard<std::mutex> guard(lock_);
+    if (stopped_)
+      return;
+    deadline_ns_ = deadline;
+    ++generation_;
   }
-  deadline_ns_.store(deadline, std::memory_order_release);
-  generation_.fetch_add(1, std::memory_order_acq_rel);
   Wake();
 }
 
 void CefPump::Cancel() {
-  stopped_ = true;
-  deadline_ns_.store(-1, std::memory_order_release);
-  generation_.fetch_add(1, std::memory_order_acq_rel);
+  {
+    std::lock_guard<std::mutex> guard(lock_);
+    stopped_ = true;
+    deadline_ns_ = -1;
+    ++generation_;
+  }
   Reconcile();
 }
 
@@ -81,26 +86,27 @@ void CefPump::DrainTimer() {
 void CefPump::Reconcile() {
   if (timer_fd_ < 0)
     return;
-  const uint64_t generation = generation_.load(std::memory_order_acquire);
-  if (generation == applied_generation_)
+  std::lock_guard<std::mutex> guard(lock_);
+  if (generation_ == applied_generation_)
     return;
 
-  const int64_t deadline = deadline_ns_.load(std::memory_order_acquire);
   itimerspec spec = {};
-  if (deadline >= 0) {
-    spec.it_value.tv_sec = deadline / 1000000000;
-    spec.it_value.tv_nsec = deadline % 1000000000;
+  if (deadline_ns_ >= 0) {
+    spec.it_value.tv_sec = deadline_ns_ / 1000000000;
+    spec.it_value.tv_nsec = deadline_ns_ % 1000000000;
   }
-  timerfd_settime(timer_fd_, TFD_TIMER_ABSTIME, &spec, nullptr);
-  applied_generation_ = generation;
+  if (timerfd_settime(timer_fd_, TFD_TIMER_ABSTIME, &spec, nullptr) == 0)
+    applied_generation_ = generation_;
 }
 
 bool CefPump::TakeDue() {
-  const int64_t deadline = deadline_ns_.load(std::memory_order_acquire);
-  if (deadline < 0 || deadline > NowNs())
-    return false;
-  deadline_ns_.store(-1, std::memory_order_release);
-  generation_.fetch_add(1, std::memory_order_acq_rel);
+  {
+    std::lock_guard<std::mutex> guard(lock_);
+    if (deadline_ns_ < 0 || deadline_ns_ > NowNs())
+      return false;
+    deadline_ns_ = -1;
+    ++generation_;
+  }
   Reconcile();
   return true;
 }

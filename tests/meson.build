@@ -118,3 +118,12 @@ test('test_cef_shm_format', cef_shm_format_test)
 cef_shm_diff_test = executable('test_cef_shm_diff', 'test_cef_shm_diff.cc',
                                 include_directories: inc, cpp_args: ['-std=c++20'])
 test('test_cef_shm_diff', cef_shm_diff_test)
+
+# CEF pump / Linux GLib integration unit tests (no CEF distribution required).
+test_cef_pump_exe = executable('test_cef_pump',
+    ['test_cef_pump.cc', '../src/cli/webview_cef/pump.cc',
+     '../src/cli/webview_cef/glib_pump.cc'],
+    cpp_args: ['-std=c++20'],
+    dependencies: [dl_lib, pthread_lib],
+)
+test('test_cef_pump', test_cef_pump_exe)
