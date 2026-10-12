@@ -46,6 +46,7 @@ public:
    * readable (or on a timeout): drains ACK/REQUEST non-blocking. */
   void PollSocket();
   bool QuitRequested() const { return quit_.load(); }
+  bool PageReady() const { return page_ready_.load(std::memory_order_acquire); }
 
   /* ── UI-thread entry points (input.cc posts these via tasks.h) ── */
   void SendKeyEventUI(const CefKeyEvent &ev);
@@ -146,7 +147,7 @@ private:
   std::vector<uint8_t> shm_shadow_; /* producer-owned full snapshot for SHM replay */
   int shm_shadow_w_ = 0, shm_shadow_h_ = 0;
   uint64_t last_capture_counter_ = 0;
-  bool page_ready_ = false;     /* main URL reached OnLoadEnd */
+  std::atomic<bool> page_ready_{false}; /* main URL reached OnLoadEnd */
   bool capture_ = false;
   bool js_capture_ = false; /* last capture state seen by JS (edge events) */
   bool js_visible_ = true;  /* last visibility state seen by JS */

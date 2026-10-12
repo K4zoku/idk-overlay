@@ -73,7 +73,7 @@ void View::LoadUrl() {
 void View::OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int) {
   if (!frame->IsMain() || frame->GetURL() == "about:blank" || page_ready_)
     return;
-  page_ready_ = true;
+  page_ready_.store(true, std::memory_order_release);
   InjectScripts();
   if (request_credit_)
     NudgeFrame();

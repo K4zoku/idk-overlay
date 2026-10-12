@@ -244,10 +244,12 @@ int main(int argc, char *argv[]) {
   view->Start(); /* producer connect + input thread */
 
   pump.Schedule(0);
+  CefDoMessageLoopWork();
   for (;;) {
     if (view->QuitRequested())
       break;
 
+    const bool startup = !view->PageReady();
     pump.Reconcile();
     const int producer_fd = idk_producer_poll_fd();
     struct pollfd pfds[3] = {
@@ -255,7 +257,7 @@ int main(int argc, char *argv[]) {
         {.fd = pump.WakeFd(), .events = POLLIN, .revents = 0},
         {.fd = pump.TimerFd(), .events = POLLIN, .revents = 0},
     };
-    int rc = poll(pfds, 3, -1);
+    int rc = poll(pfds, 3, startup ? 5 : -1);
     if (rc < 0) {
       if (errno == EINTR)
         continue;
@@ -271,7 +273,7 @@ int main(int argc, char *argv[]) {
     }
     if (producer_fd >= 0 && pfds[0].revents & (POLLIN | POLLHUP | POLLERR))
       view->PollSocket();
-    if (pump.TakeDue())
+    if (pump.TakeDue() || (rc == 0 && startup))
       CefDoMessageLoopWork();
   }
   view->Stop(); /* join the input thread */
