@@ -11,7 +11,7 @@
 
 int consumer_init(idk_transport_t *tp, const char *path) {
   if (is_abstract(path)) {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = socket(AF_UNIX, TP_SOCKET_TYPE(tp), 0);
     if (fd < 0)
       return -1;
     set_nonblock(fd);
@@ -36,7 +36,7 @@ int consumer_init(idk_transport_t *tp, const char *path) {
 
   struct stat st;
   if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode)) {
-    int test = socket(AF_UNIX, SOCK_STREAM, 0);
+    int test = socket(AF_UNIX, TP_SOCKET_TYPE(tp), 0);
     if (test >= 0) {
       struct sockaddr_un addr = {.sun_family = AF_UNIX};
       snprintf(addr.sun_path, sizeof(addr.sun_path), "%.107s", path);
@@ -50,7 +50,7 @@ int consumer_init(idk_transport_t *tp, const char *path) {
   }
 
   unlink(path);
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int fd = socket(AF_UNIX, TP_SOCKET_TYPE(tp), 0);
   if (fd < 0)
     return -1;
   set_nonblock(fd);

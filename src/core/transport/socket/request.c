@@ -12,6 +12,14 @@ int tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
     errno = EINVAL;
     return -1;
   }
+  if (TP_S_SEQPACKET(tp->_rsv)) {
+    if (socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), NULL, 0) < 0) {
+      if (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF)
+        tp_socket_disconnect_client(tp);
+      return -1;
+    }
+    return 0;
+  }
   idk_request_msg_t wire = *req;
   wire.type |= TP_S_REQUEST_TAG;
   ssize_t n = send(tp->_client_fd, &wire, sizeof(wire), MSG_NOSIGNAL);
@@ -45,6 +53,46 @@ static int recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout
   }
   if (take_queued(tp, req) == 0)
     return 0;
+  if (TP_S_SEQPACKET(tp->_rsv)) {
+    for (int i = 0; i < 256; i++) {
+      uint16_t type = 0;
+      int peek = socket_v2_peek_type(tp->_client_fd, &type);
+      if (peek <= 0)
+        return -1;
+      if (type == IDK_SOCKET_V2_REQUEST) {
+        int fds[4];
+        int nfd = 0;
+        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), fds, &nfd);
+        for (int j = 0; j < nfd; j++)
+          close(fds[j]);
+        if (rc != 1 || nfd != 0)
+          return -1;
+        if (req->type > IDK_REQUEST_SHUTDOWN)
+          return -1;
+        return 0;
+      }
+      if (type == IDK_SOCKET_V2_ACK) {
+        if (preserve_ack) {
+          errno = EAGAIN;
+          return -1;
+        }
+        idk_ack_msg_t stale;
+        int fds[4];
+        int nfd = 0;
+        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_ACK, &stale, sizeof(stale), fds, &nfd);
+        for (int j = 0; j < nfd; j++)
+          close(fds[j]);
+        if (rc != 1 || nfd != 0)
+          return -1;
+        continue;
+      }
+      errno = EBADMSG;
+      return -1;
+    }
+    errno = ELOOP;
+    return -1;
+  }
+
   struct pollfd pfd = {.fd = tp->_client_fd, .events = POLLIN};
   if (poll(&pfd, 1, timeout_ms) <= 0)
     return -1;

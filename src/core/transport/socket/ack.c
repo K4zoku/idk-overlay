@@ -8,6 +8,11 @@
 void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
   if (tp->_client_fd < 0 || !ack)
     return;
+  if (TP_S_SEQPACKET(tp->_rsv)) {
+    if (socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_ACK, ack, sizeof(*ack), NULL, 0) < 0)
+      tp_socket_disconnect_client(tp);
+    return;
+  }
   ssize_t n = send(tp->_client_fd, ack, sizeof(*ack), MSG_NOSIGNAL);
   if (n < 0 &&
       (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF)) {
@@ -29,6 +34,45 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
     tp_socket_disconnect_client(tp);
     return -1;
   }
+  if (TP_S_SEQPACKET(tp->_rsv)) {
+    for (int i = 0; i < 256; i++) {
+      uint16_t type = 0;
+      int peek = socket_v2_peek_type(tp->_client_fd, &type);
+      if (peek <= 0)
+        return -1;
+      if (type == IDK_SOCKET_V2_ACK) {
+        int fds[4];
+        int nfd = 0;
+        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_ACK, ack, sizeof(*ack), fds, &nfd);
+        if (rc == 1 && nfd != 0) {
+          for (int j = 0; j < nfd; j++)
+            close(fds[j]);
+          return -1;
+        }
+        return rc == 1 ? 0 : -1;
+      }
+      if (type == IDK_SOCKET_V2_REQUEST) {
+        idk_request_msg_t req;
+        int fds[4];
+        int nfd = 0;
+        if (socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, &req, sizeof(req), fds, &nfd) != 1)
+          return -1;
+        for (int j = 0; j < nfd; j++)
+          close(fds[j]);
+        if (req.type > IDK_REQUEST_SHUTDOWN)
+          return -1;
+        uint8_t *queued = &TP_S_QUEUED_REQ(tp->_rsv);
+        if (req.type == IDK_REQUEST_SHUTDOWN || *queued == 0)
+          *queued = req.type + 1;
+        continue;
+      }
+      errno = EBADMSG;
+      return -1;
+    }
+    errno = ELOOP;
+    return -1;
+  }
+
   /* Demultiplex queued REQUESTs before ACK. Otherwise two 8-byte REQUESTs
    * may be mistaken for a 16-byte successful ACK on a stream socket. */
   for (int i = 0; i < 256; ++i) {

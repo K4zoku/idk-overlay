@@ -9,7 +9,7 @@
 #include "internal.h"
 
 int producer_init(idk_transport_t *tp, const char *path) {
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int fd = socket(AF_UNIX, TP_SOCKET_TYPE(tp), 0);
   if (fd < 0)
     return -1;
 

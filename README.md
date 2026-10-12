@@ -178,6 +178,8 @@ idk-inject $(pgrep osu!)  # actual osu!lazer process name
 | `IDK_BROKER` | (unset) | Force broker mode. Set to `1` (or any non-empty value) to require the host-namespace `idk-broker`. Note that Wine/Proton is auto-detected, so you rarely need to set this manually. |
 | `IDK_TP_ABSTRACT` | (unset) | Abstract AF_UNIX socket name (without leading NUL) for the frame transport. Set by `idk-broker` for the webview — normally not set manually. |
 | `IDK_INPUT_ABSTRACT` | (unset) | Abstract AF_UNIX socket name (without leading NUL) for input events. Set by `idk-broker` for the webview — normally not set manually. |
+| `IDK_TP_SOCKET` | `stream` | Set to `seqpacket` in both peers to enable the versioned `SOCK_SEQPACKET` transport. |
+| `IDK_GPU_SYNC` | (unset) | Set to `1` to gate Vulkan DMA-BUF ACKs on a release sync-file, with queue-idle fallback when unsupported. |
 | `IDK_VK` | `1` | Enable Vulkan hooks. |
 | `IDK_GL` | `1` | Enable OpenGL/EGL hooks. |
 | `IDK_DEBUG` | (unset) | Set to `1` for debug logging. |

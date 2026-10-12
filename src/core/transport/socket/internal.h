@@ -8,6 +8,8 @@
 #include <sys/types.h>
 
 #include "core/transport.h"
+#include "protocol.h"
+
 
 /* _rsv[56] layout: [0]=state, [4]=connect_retries, [8..47]=path */
 #define TP_S_STATE(rsv) (*(int *)(rsv))
@@ -21,7 +23,8 @@
 /* Producer-side queued REQUEST while awaiting a 16-byte ACK. */
 #define TP_S_QUEUED_REQ(rsv) ((rsv)[48])
 #define TP_S_REQUEST_TAG 0x80u
-
+#define TP_S_SEQPACKET(rsv) ((rsv)[49])
+#define TP_SOCKET_TYPE(tp) (TP_S_SEQPACKET((tp)->_rsv) ? SOCK_SEQPACKET : SOCK_STREAM)
 /* Internal helpers: not part of the public symbol surface. */
 #define IDK_INTERNAL __attribute__((visibility("hidden")))
 

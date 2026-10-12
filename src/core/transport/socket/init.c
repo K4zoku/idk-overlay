@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -25,6 +26,8 @@ int tp_socket_init(idk_transport_t *tp, const char *name) {
   tp->ready = false;
   tp->role = role;
   tp->backend = backend;
+  const char *socket_mode = getenv("IDK_TP_SOCKET");
+  TP_S_SEQPACKET(tp->_rsv) = socket_mode && strcmp(socket_mode, "seqpacket") == 0;
   if (role == IDK_TP_CONSUMER)
     return consumer_init(tp, name);
   else
