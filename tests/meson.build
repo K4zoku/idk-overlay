@@ -28,6 +28,13 @@ foreach src : ['test_wire_protocol.c', 'test_input.c', 'test_ack.c', 'test_shm_d
     test(name, test_exe)
 endforeach
 
+broker_handshake_test = executable('test_broker_handshake',
+    ['test_broker_handshake.c', '../src/cli/broker/handshake.c'],
+    c_args: test_c_args,
+    include_directories: inc,
+)
+test('test_broker_handshake', broker_handshake_test)
+
 # X11 hook contract tests with a fake XSelectInput implementation.
 test_x11_select_exe = executable('test_x11_select',
     ['test_x11_select.c', '../src/hook/input/x11/select.c'],
