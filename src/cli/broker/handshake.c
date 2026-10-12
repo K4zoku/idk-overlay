@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -26,6 +27,12 @@ ssize_t recv_full(int fd, void *buf, size_t len) {
 int validate_handshake(const idk_cp_handshake_t *hs) {
   if (hs->identity != IDK_CP_ID_OVERLAY) {
     fprintf(stderr, "idk-broker: bad identity 0x%x\n", hs->identity);
+    return -1;
+  }
+  if (!memchr(hs->comm, '\0', sizeof(hs->comm)) || !memchr(hs->tp_socket, '\0', sizeof(hs->tp_socket)) ||
+      !memchr(hs->input_socket, '\0', sizeof(hs->input_socket)) ||
+      !memchr(hs->webview, '\0', sizeof(hs->webview))) {
+    fprintf(stderr, "idk-broker: unterminated handshake string\n");
     return -1;
   }
   if (hs->tp_socket[0] == '\0' || hs->input_socket[0] == '\0') {
