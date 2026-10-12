@@ -84,7 +84,7 @@ int tp_socket_poll(idk_transport_t *tp) {
       const char *path = (const char *)(tp->_rsv + 8);
       if (!abstr && path[0] == '\0')
         return 0;
-      int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      int fd = socket(AF_UNIX, TP_SOCKET_TYPE(tp), 0);
       if (fd < 0)
         return 0;
       struct sockaddr_un addr = {.sun_family = AF_UNIX};
