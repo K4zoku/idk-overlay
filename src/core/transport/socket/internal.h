@@ -18,6 +18,9 @@
 #define TP_STATE_BOUND 2
 #define TP_STATE_READY 3
 #define TP_S_PATH_CAP 40
+/* Producer-side queued REQUEST while awaiting a 16-byte ACK. */
+#define TP_S_QUEUED_REQ(rsv) ((rsv)[48])
+#define TP_S_REQUEST_TAG 0x80u
 
 /* Internal helpers: not part of the public symbol surface. */
 #define IDK_INTERNAL __attribute__((visibility("hidden")))

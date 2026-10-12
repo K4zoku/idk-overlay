@@ -15,6 +15,10 @@ struct GroupConfig {
  * Url, Width, Height, Match, InjectScripts). Returns groups in file order. */
 std::vector<GroupConfig> ParseConfig(const std::string &path);
 
+/* Find an explicit --config path or a legacy positional config path without
+ * treating values belonging to other options as config files. */
+const char *FindConfigPath(int argc, char *argv[]);
+
 /* Pick the view for |proc| (process name, may be empty):
  * - if any group has a Match= regex, take the first group whose regex
  *   matches |proc| (groups without Match= are skipped);

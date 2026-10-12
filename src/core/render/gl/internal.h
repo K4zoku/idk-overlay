@@ -141,6 +141,7 @@ IDK_INTERNAL GLuint egl_dmabuf_to_texture(int dmabuf_fd, uint32_t w, uint32_t h,
 
 /* tex.c */
 IDK_INTERNAL void release_dmabuf_backing(int i);
+IDK_INTERNAL GLuint shm_rect_to_texture(int shm_fd, uint32_t w, uint32_t h);
 IDK_INTERNAL GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buffer_idx,
                                    int premultiplied);
 /* Import a dmabuf frame into the back texture slot. Returns 0 on success,
@@ -153,7 +154,6 @@ IDK_INTERNAL void gl_state_restore(const gl_state_t *st);
 
 /* errors.c */
 IDK_INTERNAL int gl_program_ensure_valid(void);
-IDK_INTERNAL void gl_stale_frame_clear(void);
 IDK_INTERNAL void gl_draw_error_check(GLint fb_w, GLint fb_h);
 
 /* Shader loader (version.c / select.c / spirv.c / glsl.c / link.c) */

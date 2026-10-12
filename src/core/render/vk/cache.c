@@ -162,11 +162,18 @@ int overlay_upload(VkCommandBuffer cmd) {
       return -1;
     }
   } else if (ctx->staging.vk_shm_fd >= 0) {
-    if (vk_upload_shm(ctx->staging.vk_shm_fd, ctx->overlay.vk_overlay_w, ctx->overlay.vk_overlay_h,
-                      ctx->overlay.vk_overlay_w * ctx->overlay.vk_overlay_h * 4, 0, cmd) != 0) {
+    int rc = ctx->staging.vk_shm_is_delta
+                 ? vk_upload_shm_rect(ctx->staging.vk_shm_fd, ctx->overlay.vk_overlay_w, ctx->overlay.vk_overlay_h, cmd)
+                 : vk_upload_shm(ctx->staging.vk_shm_fd, ctx->overlay.vk_overlay_w, ctx->overlay.vk_overlay_h,
+                                 ctx->overlay.vk_overlay_w * ctx->overlay.vk_overlay_h * 4, 0, cmd);
+    if (rc != 0) {
+      ctx->staging.vk_shm_baseline_valid = 0;
       IDK_ERR("comp-vk", "render_overlay: SHM upload failed (vk_shm_fd=%d)\n", ctx->staging.vk_shm_fd);
       return -1;
     }
+    close(ctx->staging.vk_shm_fd);
+    ctx->staging.vk_shm_fd = -1;
+    ctx->staging.vk_shm_is_delta = 0;
   } else {
     IDK_LOG("comp-vk", "render_overlay: no SHM or DMABUF data\n");
   }

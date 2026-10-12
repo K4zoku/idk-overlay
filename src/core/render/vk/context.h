@@ -73,6 +73,8 @@ typedef struct {
   VkDeviceMemory vk_shm_img_mem;
   VkImageView vk_shm_view;
   int vk_shm_fd;
+  int vk_shm_is_delta;
+  int vk_shm_baseline_valid;
 } vk_staging_t;
 
 typedef struct {
@@ -158,6 +160,7 @@ IDK_INTERNAL uint32_t find_mem_type(const VkPhysicalDeviceMemoryProperties *mp, 
                                     VkMemoryPropertyFlags props);
 
 /* upload.c */
+IDK_INTERNAL int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd);
 IDK_INTERNAL int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buf_idx,
                                VkCommandBuffer cmd);
 

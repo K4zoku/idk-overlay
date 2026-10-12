@@ -4,6 +4,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -11,7 +13,9 @@
 #include "core/log.h"
 #include "include/cef_app.h"
 #include "input.h"
+#include "shm_format.h"
 #include "public/idk_producer.h"
+#include "public/idk_shm_delta.h"
 #include "tasks.h"
 
 /* DRM fourcc codes (BGRA/RGBA 8888 memory order, matching the CEF formats). */
@@ -24,6 +28,8 @@ View::View(GroupConfig conf, bool no_dmabuf, std::string sock_path, bool sock_ab
     : conf_(std::move(conf)), sock_path_(std::move(sock_path)), sock_abstract_(sock_abstract), no_dmabuf_(no_dmabuf),
       render_w_(conf_.width), render_h_(conf_.height) {
   use_dmabuf_ = !no_dmabuf_;
+  const char *roi = getenv("IDK_CEF_SHM_ROI");
+  shm_roi_enabled_ = roi && strcmp(roi, "1") == 0;
 }
 
 View::~View() { Stop(); }
@@ -68,7 +74,8 @@ void View::OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int) {
     return;
   page_ready_ = true;
   InjectScripts();
-  NudgeFrame();
+  if (request_credit_)
+    NudgeFrame();
 }
 
 void View::InjectScripts() {
@@ -214,35 +221,78 @@ bool View::OnCursorChange(CefRefPtr<CefBrowser>, CefCursorHandle, cef_cursor_typ
   return true;
 }
 
-void View::OnPaint(CefRefPtr<CefBrowser>, PaintElementType type, const RectList &, const void *buffer, int width,
+void View::OnPaint(CefRefPtr<CefBrowser>, PaintElementType type, const RectList &dirty_rects, const void *buffer, int width,
                    int height) {
-  /* Software OSR (shared_texture off / GPU failure): pixels → SHM. */
-  if (type != PET_VIEW || !buffer)
+  if (type != PET_VIEW || !buffer || !connected_ || !visible_)
     return;
-  render_pending_ = false;
-  if (!connected_ || !visible_ || pending_)
+  /* OnPaint supplies BGRA from the top-left; the existing SHM consumers
+   * (both GL and Vulkan) expect the same RGBA row order as Qt glReadPixels. */
+  std::vector<uint8_t> rgba;
+  if (!idk_cef_shm::ToGlRgba((const uint8_t *)buffer, (uint32_t)width * 4,
+                              width, height, idk_cef_shm::Channels::BGRA, rgba))
     return;
-  if (width <= 0 || height <= 0)
+  if (pending_ || !request_credit_ || deferred_kind_ != DeferredKind::None) {
+    CacheDeferredPixels(rgba.data(), width, height);
+    dropped_since_send_ = true;
+    needs_full_update_ = true;
+    if (request_credit_ && !pending_) MaybeSendDeferred();
     return;
-  SendShmPixels((const uint8_t *)buffer, width, height);
+  }
+  SendShmPixels(rgba.data(), width, height, &dirty_rects);
+  if (pending_) {
+    request_credit_ = false;
+    needs_full_update_ = true; /* Wait for consumer ACK before using the baseline. */
+    capture_counter_valid_ = false;
+    dropped_since_send_ = false;
+  }
 }
 
-void View::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType type, const RectList &,
+void View::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType type, const RectList &dirty_rects,
                               const CefAcceleratedPaintInfo &info) {
   if (type != PET_VIEW)
-    return; /* popups not composited (v1) */
-  render_pending_ = false;
-  if (!connected_ || !visible_ || pending_)
     return;
+  if (!connected_ || !visible_)
+    return;
+  if (pending_ || !request_credit_ || deferred_kind_ != DeferredKind::None) {
+    CacheDeferredGpu(info);
+    dropped_since_send_ = true;
+    needs_full_update_ = true;
+    capture_counter_valid_ = false;
+    if (request_credit_ && !pending_) MaybeSendDeferred();
+    return;
+  }
+
+  const auto &extra = info.extra;
+  if (!needs_full_update_ && extra.has_capture_update_rect &&
+      (extra.capture_update_rect.width <= 0 || extra.capture_update_rect.height <= 0)) {
+    rate_unchanged_++;
+    return;
+  }
+  bool can_blit_dirty = !needs_full_update_ && extra.has_capture_counter && capture_counter_valid_ &&
+                        extra.capture_counter == last_capture_counter_ + 1 && extra.has_capture_update_rect &&
+                        extra.visible_rect.x == 0 && extra.visible_rect.y == 0 &&
+                        extra.coded_size.width == extra.visible_rect.width &&
+                        extra.coded_size.height == extra.visible_rect.height;
   if (use_dmabuf_ && !dmabuf_failed_)
-    SendFrameDmaBuf(info);
+    SendFrameDmaBuf(info, dirty_rects, !can_blit_dirty);
   else
-    SendShmFromDmaBuf(info);
+    SendShmFromDmaBuf(info, dirty_rects);
+  if (pending_) {
+    request_credit_ = false;
+    needs_full_update_ = true; /* Re-enable partials only after consumer ACK. */
+    dropped_since_send_ = false;
+    capture_counter_valid_ = extra.has_capture_counter;
+    if (capture_counter_valid_)
+      last_capture_counter_ = extra.capture_counter;
+  } else {
+    needs_full_update_ = true;
+  }
 }
 
 /* ── Frame paths ───────────────────────────────────────────────────── */
 
-void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
+void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &dirty_rects, bool full_update) {
+  staged_send_ = false;
   int w = info.extra.visible_rect.width;
   int h = info.extra.visible_rect.height;
   if (w <= 0 || h <= 0)
@@ -254,8 +304,10 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
   uint32_t stride = 0, fourcc = 0;
   uint64_t modifier = 0;
   uint16_t buf_id = 0;
-  if (gpu_.Init() && gpu_.BlitAndExport(info, w, h, &stride, &fourcc, &modifier, &buf_id) == 0) {
-    int fd = dup(gpu_.Fd());
+  GpuBuf &target = gpu_inflight_ == &gpu_ ? deferred_gpu_ : gpu_;
+  if (target.Init() && target.BlitAndExport(info, w, h, dirty_rects, full_update,
+                                           &stride, &fourcc, &modifier, &buf_id) == 0) {
+    int fd = dup(target.Fd());
     if (fd < 0)
       return;
     idk_frame_header_t hdr = {};
@@ -273,6 +325,14 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
       pending_ = true;
       send_time_ms_ = now_ms();
       rate_sent_++;
+      staged_send_ = true;
+      last_sent_shm_ = false;
+      gpu_inflight_ = &target;
+      sent_w_ = w; sent_h_ = h;
+      if (target.LastBlitPartial())
+        rate_partial_++;
+      else
+        rate_full_++;
     }
     return;
   }
@@ -313,17 +373,21 @@ void View::SendFrameDmaBuf(const CefAcceleratedPaintInfo &info) {
     close(fds[i]);
   if (rc == 0) {
     pending_ = true;
+    last_sent_shm_ = false;
+    sent_w_ = w; sent_h_ = h;
     send_time_ms_ = now_ms();
+    rate_sent_++;
   }
 }
 
-void View::SendShmFromDmaBuf(const CefAcceleratedPaintInfo &info) {
+void View::SendShmFromDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &dirty_rects) {
   if (info.plane_count < 1)
     return;
   const auto &p = info.planes[0];
   int w = info.extra.visible_rect.width;
   int h = info.extra.visible_rect.height;
-  if (w <= 0 || h <= 0)
+  if (w <= 0 || h <= 0 || p.stride < (uint64_t)w * 4 ||
+      (uint64_t)p.stride * h > p.size)
     return;
 
   if (info.modifier != 0) {
@@ -336,47 +400,225 @@ void View::SendShmFromDmaBuf(const CefAcceleratedPaintInfo &info) {
   if (map == MAP_FAILED)
     return;
 
-  /* Strip the row padding; the compositor expects tightly packed BGRA. */
-  std::vector<uint8_t> px((size_t)w * h * 4);
-  for (int y = 0; y < h; y++)
-    memcpy(px.data() + (size_t)y * w * 4, (const uint8_t *)map + (size_t)y * p.stride, (size_t)w * 4);
+  /* CEF's native-pixmap rows have top-left origin; pixel channels are
+   * declared by info.format. Normalize before SHM transport (including ROI). */
+  std::vector<uint8_t> rgba;
+  bool ok = idk_cef_shm::ToGlRgba((const uint8_t *)map, p.stride, w, h,
+               info.format == CEF_COLOR_TYPE_RGBA_8888 ? idk_cef_shm::Channels::RGBA
+                                                      : idk_cef_shm::Channels::BGRA, rgba);
   munmap(map, p.size);
-
-  SendShmPixels(px.data(), w, h);
+  if (ok)
+    SendShmPixels(rgba.data(), w, h, &dirty_rects);
 }
 
-void View::SendShmPixels(const uint8_t *px, int w, int h) {
+/* The wire carries exactly one bounding rectangle; multiple CEF dirty rects
+ * are merged only if their bounding box costs less than half a full frame.
+ * Rect coordinates are top-left and match CEF SHM pixel row order. */
+static bool choose_shm_roi(const View::RectList &dirty, int w, int h, idk_shm_delta_t &roi) {
+  if (dirty.empty() || dirty.size() > 32 || w <= 0 || h <= 0)
+    return false;
+  int64_t x0 = w, y0 = h, x1 = 0, y1 = 0;
+  for (const auto &r : dirty) {
+    if (r.width <= 0 || r.height <= 0)
+      return false;
+    int64_t left = std::max<int64_t>(0, r.x);
+    int64_t top = std::max<int64_t>(0, r.y);
+    int64_t right = std::min<int64_t>(w, (int64_t)r.x + r.width);
+    int64_t bottom = std::min<int64_t>(h, (int64_t)r.y + r.height);
+    if (left >= right || top >= bottom)
+      return false;
+    x0 = std::min(x0, left); y0 = std::min(y0, top);
+    x1 = std::max(x1, right); y1 = std::max(y1, bottom);
+  }
+  int64_t area = (x1 - x0) * (y1 - y0);
+  if (area * 2 >= (int64_t)w * h)
+    return false;
+  /* The packed RGBA buffer is in GL bottom-left row order. */
+  roi = {IDK_SHM_DELTA_MAGIC, (uint32_t)x0,
+         (uint32_t)idk_cef_shm::ToGlY((int)y0, (int)(y1 - y0), h),
+         (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
+  return true;
+}
+
+void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_rects) {
+  if (w <= 0 || h <= 0 || (uint64_t)w * h * 4 > SIZE_MAX)
+    return;
+  /* Never send an ROI until the consumer has acknowledged the full baseline.
+   * On the next callback after a dropped frame we deliberately send full. */
+  idk_shm_delta_t roi{};
+  bool partial = shm_roi_enabled_ && shm_baseline_valid_ && !needs_full_update_ && dirty_rects &&
+                 choose_shm_roi(*dirty_rects, w, h, roi);
+  size_t payload = partial ? (size_t)roi.width * roi.height * 4 + sizeof(roi) : (size_t)w * h * 4;
   int fd = memfd_create("idk-webview-cef", MFD_CLOEXEC);
   if (fd < 0)
     return;
-  size_t size = (size_t)w * h * 4;
-  if (ftruncate(fd, (off_t)size) < 0) {
+  if (ftruncate(fd, (off_t)payload) < 0) {
     close(fd);
     return;
   }
-  void *map = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  void *map = mmap(nullptr, payload, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (map == MAP_FAILED) {
     close(fd);
     return;
   }
-  memcpy(map, px, size);
-  munmap(map, size);
+  if (partial) {
+    if (!idk_shm_delta_pack(map, payload, px, (uint32_t)w, (uint32_t)h, &roi)) {
+      munmap(map, payload);
+      close(fd);
+      return;
+    }
+  } else {
+    memcpy(map, px, payload);
+  }
+  munmap(map, payload);
 
   idk_frame_header_t hdr = {};
   hdr.width = w;
   hdr.height = h;
-  hdr.stride = 0; /* SHM */
-  hdr.fourcc = 0; /* SHM */
-  hdr.flags = IDK_FRAME_FLAG_VISIBLE;
+  hdr.stride = 0;
+  hdr.fourcc = 0;
+  hdr.flags = IDK_FRAME_FLAG_VISIBLE | (partial ? IDK_FRAME_FLAG_SHM_RECT : 0);
   hdr.nfd = 1;
-  hdr.buf_id = 0;
-
   int rc = idk_producer_send_frame(fd, &hdr);
   close(fd);
   if (rc == 0) {
+    if (partial && shm_shadow_w_ == w && shm_shadow_h_ == h && shm_shadow_.size() == (size_t)w * h * 4) {
+      for (uint32_t row = 0; row < roi.height; ++row)
+        memcpy(shm_shadow_.data() + ((size_t)(roi.y + row) * w + roi.x) * 4,
+               px + ((size_t)(roi.y + row) * w + roi.x) * 4, (size_t)roi.width * 4);
+    } else {
+      shm_shadow_.assign(px, px + (size_t)w * h * 4);
+    }
+    shm_shadow_w_ = w; shm_shadow_h_ = h;
     pending_ = true;
+    request_credit_ = false;
+    last_sent_shm_ = true;
+    sent_w_ = w; sent_h_ = h;
     send_time_ms_ = now_ms();
     rate_sent_++;
+    bytes_shm_sent_ += payload;
+    if (partial) rate_shm_roi_++;
+  }
+}
+
+/* Capture a paint that arrived while the game was processing an older
+ * frame. The CEF callback buffer expires at return; own a full snapshot so
+ * the last update of a static page cannot vanish. Retain only the newest. */
+void View::CacheDeferredPixels(const uint8_t *pixels, int w, int h) {
+  if (!pixels || w <= 0 || h <= 0 || (uint64_t)w * h * 4 > 256ull * 1024 * 1024)
+    return;
+  deferred_pixels_.assign(pixels, pixels + (size_t)w * h * 4);
+  deferred_w_ = w;
+  deferred_h_ = h;
+  deferred_gpu_ptr_ = nullptr;
+  deferred_kind_ = DeferredKind::Pixels;
+  capture_counter_valid_ = false;
+}
+
+void View::CacheDeferredGpu(const CefAcceleratedPaintInfo &info) {
+  int w = info.extra.visible_rect.width, h = info.extra.visible_rect.height;
+  if (w <= 0 || h <= 0)
+    return;
+  /* Select the staging BO not currently referenced by an in-flight IPC frame.
+   * If one deferred snapshot already exists, it is safe to replace it here. */
+  GpuBuf &target = gpu_inflight_ == &gpu_ ? deferred_gpu_ : gpu_;
+  uint32_t stride = 0, fourcc = 0;
+  uint64_t modifier = 0;
+  uint16_t id = 0;
+  if (target.Init() && target.BlitAndExport(info, w, h, {}, true, &stride, &fourcc, &modifier, &id) == 0) {
+    deferred_gpu_ptr_ = &target;
+    deferred_w_ = w;
+    deferred_h_ = h;
+    deferred_pixels_.clear();
+    deferred_kind_ = DeferredKind::Gpu;
+    capture_counter_valid_ = false;
+    return;
+  }
+  /* If GPU staging is unavailable, retain a CPU copy for linear buffers. */
+  if (info.plane_count < 1 || info.modifier != 0)
+    return;
+  const auto &plane = info.planes[0];
+  if (plane.stride < (uint32_t)w * 4 || (uint64_t)plane.stride * h > plane.size ||
+      (uint64_t)w * h * 4 > 256ull * 1024 * 1024)
+    return;
+  void *map = mmap(nullptr, plane.size, PROT_READ, MAP_SHARED, plane.fd, 0);
+  if (map == MAP_FAILED)
+    return;
+  bool converted = idk_cef_shm::ToGlRgba((const uint8_t *)map, plane.stride, w, h,
+                     info.format == CEF_COLOR_TYPE_RGBA_8888 ? idk_cef_shm::Channels::RGBA
+                                                            : idk_cef_shm::Channels::BGRA,
+                     deferred_pixels_);
+  munmap(map, plane.size);
+  if (!converted)
+    return;
+  deferred_w_ = w;
+  deferred_h_ = h;
+  deferred_gpu_ptr_ = nullptr;
+  deferred_kind_ = DeferredKind::Pixels;
+  capture_counter_valid_ = false;
+}
+
+bool View::SendOwnedGpu(GpuBuf &buffer, int w, int h) {
+  /* GPU staging exposes properties through the same metadata cached at blit
+   * time, so no CEF buffer handle needs to outlive its callback. */
+  if (buffer.Fd() < 0)
+    return false;
+  int fd = dup(buffer.Fd());
+  if (fd < 0)
+    return false;
+  idk_frame_header_t hdr{};
+  hdr.width = w;
+  hdr.height = h;
+  hdr.stride = buffer.Stride();
+  hdr.fourcc = buffer.Fourcc();
+  hdr.modifier = buffer.Modifier();
+  hdr.flags = IDK_FRAME_FLAG_VISIBLE;
+  hdr.nfd = 1;
+  hdr.buf_id = buffer.BufferId();
+  int rc = idk_producer_send_dma_buf(&fd, &hdr);
+  close(fd);
+  if (rc != 0)
+    return false;
+  pending_ = true;
+  last_sent_shm_ = false;
+  staged_send_ = true;
+  gpu_inflight_ = &buffer;
+  sent_w_ = w; sent_h_ = h;
+  send_time_ms_ = now_ms();
+  ++rate_sent_;
+  ++rate_deferred_;
+  return true;
+}
+
+void View::MaybeSendDeferred() {
+  if (!request_credit_ || pending_ || !connected_ || !visible_ || deferred_kind_ == DeferredKind::None)
+    return;
+  bool sent = false;
+  if (deferred_kind_ == DeferredKind::Gpu && deferred_gpu_ptr_) {
+    if (!use_dmabuf_ || dmabuf_failed_) {
+      /* Slow one-time readback for SHM-only or rejected static frames; no Invalidate. */
+      if (deferred_gpu_ptr_->ReadPixels(deferred_pixels_)) {
+        deferred_kind_ = DeferredKind::Pixels;
+        deferred_gpu_ptr_ = nullptr;
+      }
+    }
+    if (deferred_kind_ == DeferredKind::Gpu && use_dmabuf_ && !dmabuf_failed_)
+      sent = SendOwnedGpu(*deferred_gpu_ptr_, deferred_w_, deferred_h_);
+    /* A rejected DMA-BUF can be retried from the owned staging BO without
+     * a fresh Chromium capture. SHM conversion needs an explicit readback. */
+  }
+  if (!sent && deferred_kind_ == DeferredKind::Pixels && !deferred_pixels_.empty()) {
+    SendShmPixels(deferred_pixels_.data(), deferred_w_, deferred_h_);
+    sent = pending_;
+    if (sent) ++rate_deferred_;
+  }
+  if (sent) {
+    deferred_kind_ = DeferredKind::None;
+    deferred_pixels_.clear();
+    deferred_gpu_ptr_ = nullptr;
+    request_credit_ = false;
+    needs_full_update_ = true;
+    dropped_since_send_ = false;
   }
 }
 
@@ -388,6 +630,12 @@ void View::ConnectTask() {
   if (now && !connected_) {
     connected_ = true;
     connect_attempts_ = 0;
+    deferred_kind_ = DeferredKind::None;
+    gpu_inflight_ = nullptr;
+    shm_shadow_.clear();
+    needs_full_update_ = true;
+    shm_baseline_valid_ = false;
+    capture_counter_valid_ = false;
     IDK_LOG("webview-cef", "compositor connected\n");
     if (!input_) {
       input_ = new InputThread(this, sock_path_);
@@ -395,6 +643,13 @@ void View::ConnectTask() {
     }
   } else if (!now && connected_) {
     connected_ = false;
+    deferred_kind_ = DeferredKind::None;
+    deferred_pixels_.clear();
+    gpu_inflight_ = nullptr;
+    shm_shadow_.clear();
+    shm_baseline_valid_ = false;
+    pending_ = false;
+    request_credit_ = false;
     IDK_LOG("webview-cef", "compositor disconnected - reconnecting\n");
   } else if (!now && !connected_) {
     connect_attempts_++;
@@ -402,6 +657,12 @@ void View::ConnectTask() {
       int attempts = connect_attempts_;
       connected_ = true;
       connect_attempts_ = 0;
+      deferred_kind_ = DeferredKind::None;
+      gpu_inflight_ = nullptr;
+      shm_shadow_.clear();
+      needs_full_update_ = true;
+      shm_baseline_valid_ = false;
+      capture_counter_valid_ = false;
       IDK_LOG("webview-cef", "compositor connected after %d attempts\n", attempts);
       if (!input_) {
         input_ = new InputThread(this, sock_path_);
@@ -417,13 +678,19 @@ void View::ConnectTask() {
 
   /* 1s diagnostics: game request/ack rate vs our send rate. */
   if (connected_)
-    IDK_LOG("webview-cef", "rate: sent=%d req=%d ack=%d (last 1s)\n", rate_sent_, rate_req_, rate_ack_);
-  rate_sent_ = rate_req_ = rate_ack_ = 0;
+    IDK_LOG("webview-cef", "rate: sent=%d req=%d ack=%d unchanged=%d gpu_partial=%d gpu_full=%d shm_roi=%d shm_bytes=%llu deferred=%d (last 1s)\n",
+            rate_sent_, rate_req_, rate_ack_, rate_unchanged_, rate_partial_, rate_full_,
+            rate_shm_roi_, (unsigned long long)bytes_shm_sent_, rate_deferred_);
+  rate_sent_ = rate_req_ = rate_ack_ = rate_unchanged_ = rate_partial_ = rate_full_ = rate_shm_roi_ = 0;
+  bytes_shm_sent_ = 0;
+  rate_deferred_ = 0;
 
   PostToUIDelayed([self = CefRefPtr<View>(this)] { self->ConnectTask(); }, 1000);
 }
 
-/* ACK/REQUEST drain (called by the main loop when the socket is ready). */
+/* Chromium may complete a BeginFrame without producing any paint callback.
+ * A REQUEST therefore grants permission to submit one frame; it must not
+ * create a pending capture or require a corresponding OnPaint to finish. */
 void View::PollSocket() {
   if (!connected_ || !visible_)
     return;
@@ -433,62 +700,103 @@ void View::PollSocket() {
       rate_ack_++;
       ProcessAck(ack);
     } else if ((now_ms() - send_time_ms_) > 100) {
-      /* Lost ACK (compositor busy/restarted) — unlock like the Qt backend. */
+      if (deferred_kind_ == DeferredKind::None) {
+        if (gpu_inflight_) {
+          deferred_kind_ = DeferredKind::Gpu;
+          deferred_gpu_ptr_ = gpu_inflight_;
+          deferred_w_ = sent_w_; deferred_h_ = sent_h_;
+        } else if (last_sent_shm_ && !shm_shadow_.empty()) {
+          deferred_kind_ = DeferredKind::Pixels;
+          deferred_pixels_ = shm_shadow_;
+          deferred_w_ = shm_shadow_w_; deferred_h_ = shm_shadow_h_;
+        }
+      }
       pending_ = false;
-      IDK_LOG("webview-cef", "ACK timeout - force-unlock pending\n");
+      gpu_inflight_ = nullptr;
+      shm_baseline_valid_ = false;
+      needs_full_update_ = true;
+      IDK_LOG("webview-cef", "ACK timeout - retain latest snapshot\n");
     }
   }
-  if (!pending_) {
-    idk_request_msg_t req;
-    if (idk_producer_recv_request(&req, 0) == 0) {
-      if (req.type == IDK_REQUEST_SHUTDOWN) {
-        IDK_LOG("webview-cef", "compositor shutdown request\n");
-        quit_.store(true);
-        return;
-      }
+  if (pending_)
+    return;
+
+  bool requested = false;
+  idk_request_msg_t req;
+  for (int i = 0; i < 256 && idk_producer_recv_request(&req, 0) == 0; ++i) {
+    if (req.type == IDK_REQUEST_SHUTDOWN) {
+      quit_.store(true);
+      return;
+    }
+    if (req.type == IDK_REQUEST_NEXT_FRAME) {
       rate_req_++;
-      /* Game asks for the next frame → render exactly one. */
-      if (!render_pending_)
+      requested = true;
+    }
+  }
+  if (requested) {
+    request_credit_ = true;
+    if (page_ready_) {
+      MaybeSendDeferred();
+      if (!pending_ && deferred_kind_ == DeferredKind::None)
         NudgeFrame();
     }
   }
 }
 
-/* Issue one external begin frame. SendExternalBeginFrame is ignored while
- * a previous begin frame is pending, so NudgeRetry keeps re-issuing until
- * a paint actually arrives (OnAcceleratedPaint clears render_pending_). */
 void View::NudgeFrame() {
-  if (!browser_ || !page_ready_)
-    return;
-  render_pending_ = true;
-  browser_->GetHost()->Invalidate(PET_VIEW);
-  browser_->GetHost()->SendExternalBeginFrame();
-  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->NudgeRetry(); }, 25);
-}
-
-void View::NudgeRetry() {
-  if (quit_.load() || !render_pending_)
-    return;
-  if (browser_) {
-    browser_->GetHost()->Invalidate(PET_VIEW);
+  if (browser_ && connected_ && visible_ && !pending_ && page_ready_)
     browser_->GetHost()->SendExternalBeginFrame();
-  }
-  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->NudgeRetry(); }, 25);
 }
 
 void View::ProcessAck(const idk_ack_msg_t &ack) {
-  if (ack.ack == 1 && use_dmabuf_ && !dmabuf_failed_) {
-    dmabuf_reject_count_++;
-    if (dmabuf_reject_count_ >= DMABUF_REJECT_LIMIT) {
-      dmabuf_failed_ = true;
-      IDK_LOG("webview-cef", "dmabuf rejected %d times - falling back to SHM\n", dmabuf_reject_count_);
+  const bool accepted = ack.ack == 0;
+  shm_baseline_valid_ = accepted && last_sent_shm_;
+  if (accepted && !dropped_since_send_ && deferred_kind_ == DeferredKind::None)
+    needs_full_update_ = false;
+  if (!accepted) {
+    needs_full_update_ = true;
+    capture_counter_valid_ = false;
+    if (ack.ack == 1 && use_dmabuf_ && !dmabuf_failed_) {
+      ++dmabuf_reject_count_;
+      if (dmabuf_reject_count_ >= DMABUF_REJECT_LIMIT) {
+        dmabuf_failed_ = true;
+        IDK_LOG("webview-cef", "dmabuf rejected %d times - falling back to SHM\n", dmabuf_reject_count_);
+      }
+    }
+    /* Do not replace a newer deferred paint with this older rejected frame. */
+    if (last_sent_shm_ && deferred_kind_ == DeferredKind::None && !shm_shadow_.empty()) {
+      deferred_pixels_ = shm_shadow_;
+      deferred_w_ = shm_shadow_w_;
+      deferred_h_ = shm_shadow_h_;
+      deferred_gpu_ptr_ = nullptr;
+      deferred_kind_ = DeferredKind::Pixels;
+    }
+    if (gpu_inflight_ && deferred_kind_ == DeferredKind::None) {
+      deferred_w_ = sent_w_;
+      deferred_h_ = sent_h_;
+      if (dmabuf_failed_ && gpu_inflight_->ReadPixels(deferred_pixels_)) {
+        deferred_kind_ = DeferredKind::Pixels;
+        deferred_gpu_ptr_ = nullptr;
+      } else {
+        deferred_kind_ = DeferredKind::Gpu;
+        deferred_gpu_ptr_ = gpu_inflight_;
+      }
     }
   }
+  gpu_inflight_ = nullptr;
+  pending_ = false;
 
   if (ack.w > 0 && ack.h > 0 && (ack.w != render_w_ || ack.h != render_h_)) {
     render_w_ = ack.w;
     render_h_ = ack.h;
-    dmabuf_failed_ = false; /* retry dmabuf at the new size */
+    needs_full_update_ = true;
+    shm_baseline_valid_ = false;
+    capture_counter_valid_ = false;
+    deferred_kind_ = DeferredKind::None;
+    deferred_pixels_.clear();
+    deferred_gpu_ptr_ = nullptr;
+    shm_shadow_.clear();
+    dmabuf_failed_ = false;
     dmabuf_reject_count_ = 0;
     IDK_LOG("webview-cef", "game resize: %dx%d\n", render_w_, render_h_);
     if (browser_) {
@@ -496,8 +804,6 @@ void View::ProcessAck(const idk_ack_msg_t &ack) {
       browser_->GetHost()->NotifyMoveOrResizeStarted();
     }
   }
-
-  pending_ = false;
 }
 
 /* ── Input (UI-thread half) ────────────────────────────────────────── */
@@ -548,9 +854,14 @@ void View::SetOverlayVisible(bool v) {
   if (visible_ == v)
     return;
   visible_ = v;
+  request_credit_ = false;
+  deferred_kind_ = DeferredKind::None;
+  deferred_pixels_.clear();
+  shm_shadow_.clear();
+  needs_full_update_ = true;
+  shm_baseline_valid_ = false;
+  capture_counter_valid_ = false;
   FireVisibleEvents(v);
-  if (v)
-    NudgeFrame(); /* fresh frame after show */
 }
 
 /* ── JS events (mirror the Qt webview: window CustomEvents) ─────────── */

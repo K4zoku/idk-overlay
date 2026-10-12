@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -41,6 +42,24 @@ static std::string ValueOf(const std::string &line) {
   if (eq == std::string::npos)
     return "";
   return Unquote(Trim(line.substr(eq + 1)));
+}
+
+const char *FindConfigPath(int argc, char *argv[]) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--config") == 0) {
+      if (i + 1 < argc)
+        return argv[++i];
+      return nullptr;
+    }
+    if (strcmp(argv[i], "--socket") == 0 || strcmp(argv[i], "--url") == 0 || strcmp(argv[i], "--width") == 0 ||
+        strcmp(argv[i], "--height") == 0 || strcmp(argv[i], "--match") == 0) {
+      i++;
+      continue;
+    }
+    if (argv[i][0] != '-')
+      return argv[i];
+  }
+  return nullptr;
 }
 
 std::vector<GroupConfig> ParseConfig(const std::string &path) {

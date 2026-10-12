@@ -36,8 +36,8 @@
 #define CEF_DIST_DIR ""
 #endif
 
-/* CLI mirrors the Qt webview: [config] [--socket] [--no-dmabuf] [--url]
- * [--width] [--height] [--match]. */
+/* CLI options mirror the Qt webview: [config] [--config] [--socket]
+ * [--no-dmabuf] [--url] [--width] [--height] [--match]. */
 static const char *ArgValue(int argc, char **argv, const char *name, const char **out) {
   for (int i = 1; i < argc - 1; i++) {
     if (strcmp(argv[i], name) == 0) {
@@ -47,6 +47,7 @@ static const char *ArgValue(int argc, char **argv, const char *name, const char 
   }
   return nullptr;
 }
+
 
 static bool HasFlag(int argc, char **argv, const char *name) {
   for (int i = 1; i < argc; i++)
@@ -134,20 +135,13 @@ int main(int argc, char *argv[]) {
   if (exit_code >= 0)
     return exit_code;
 
-  const char *conf_path = nullptr;
-  for (int i = 1; i < argc; i++) {
-    if (argv[i][0] != '-') {
-      conf_path = argv[i];
-      break;
-    }
-  }
-
   bool no_dmabuf = HasFlag(argc, argv, "--no-dmabuf");
   const char *cli_url = nullptr, *cli_match = nullptr, *cli_w = nullptr, *cli_h = nullptr;
   ArgValue(argc, argv, "--url", &cli_url);
   ArgValue(argc, argv, "--match", &cli_match);
   ArgValue(argc, argv, "--width", &cli_w);
   ArgValue(argc, argv, "--height", &cli_h);
+  const char *conf_path = FindConfigPath(argc, argv);
 
   std::string sock_path;
   bool sock_abstract = false;
@@ -220,10 +214,9 @@ int main(int argc, char *argv[]) {
   CefWindowInfo wi;
   wi.SetAsWindowless(0);
   wi.shared_texture_enabled = true; /* dmabuf planes via OnAcceleratedPaint */
-  /* Game-driven rendering: each compositor REQUEST issues an external
-   * begin frame → CEF renders exactly when the game asks, saving machine
-   * resources. NudgeRetry() covers dropped begin frames (a new
-   * SendExternalBeginFrame is ignored while one is pending). */
+  /* Game-driven rendering: begin frames are requested by the game, while
+   * Chromium's video capturer delivers paints only when the surface changes.
+   * A BeginFrame can complete without producing any paint callback. */
   wi.external_begin_frame_enabled = true;
 
   CefBrowserSettings bs; /* wrapper ctor sets size */

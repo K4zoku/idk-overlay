@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "public/idk_shm_delta.h"
+
 #include "context.h"
 #include "core/compositor.h"
 #include "core/log.h"
@@ -84,6 +86,7 @@ static int image_ensure(uint32_t w, uint32_t h) {
   VK_LOAD(vkFreeMemory);
   if (st->vk_shm_img != VK_NULL_HANDLE && ctx->overlay.vk_shm_img_w == w && ctx->overlay.vk_shm_img_h == h)
     return 0;
+  st->vk_shm_baseline_valid = 0;
   vkDestroyImage(dev, st->vk_shm_img, NULL);
   st->vk_shm_img = VK_NULL_HANDLE;
   vkDestroyImageView(dev, st->vk_shm_view, NULL);
@@ -170,6 +173,66 @@ int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t 
   if (image_ensure(w, h) != 0)
     return -1;
   copy_buf_to_img(cmd, w, h);
+  ctx->overlay.vk_overlay_img = ctx->staging.vk_shm_img;
+  ctx->overlay.vk_overlay_view = ctx->staging.vk_shm_view;
+  ctx->staging.vk_shm_baseline_valid = 1;
+  return 0;
+}
+
+/* Packed SHM ROI: the preceding full SHM upload left the image in
+ * SHADER_READ_ONLY_OPTIMAL. Preserve all texels outside the damaged region. */
+int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
+  vk_context_t *ctx = vk_ctx();
+  if (!ctx->staging.vk_shm_baseline_valid || ctx->staging.vk_shm_img == VK_NULL_HANDLE ||
+      ctx->overlay.vk_shm_img_w != w || ctx->overlay.vk_shm_img_h != h)
+    return -1;
+  static idk_shm_cache_t cache;
+  if (!idk_shm_cache_map(&cache, fd) || cache.size < sizeof(idk_shm_delta_t))
+    return -1;
+  idk_shm_delta_t rect;
+  memcpy(&rect, cache.map, sizeof(rect));
+  if (!idk_shm_delta_validate(&rect, w, h, cache.size))
+    return -1;
+  VkDeviceSize bytes = cache.size - sizeof(rect);
+  if (staging_ensure(bytes) != 0)
+    return -1;
+  memcpy(ctx->staging.vk_staging_mapped, (const uint8_t *)cache.map + sizeof(rect), (size_t)bytes);
+  VK_LOAD(vkFlushMappedMemoryRanges);
+  VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                               .memory = ctx->staging.vk_staging_mem, .size = VK_WHOLE_SIZE};
+  if (vkFlushMappedMemoryRanges(ctx->device.vk_dev, 1, &flush) != VK_SUCCESS)
+    return -1;
+  VK_LOAD(vkCmdPipelineBarrier);
+  VK_LOAD(vkCmdCopyBufferToImage);
+  VkImageMemoryBarrier to_transfer = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = ctx->staging.vk_shm_img,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                       0, NULL, 0, NULL, 1, &to_transfer);
+  VkBufferImageCopy copy = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0, .bufferImageHeight = 0,
+      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .imageOffset = {(int32_t)rect.x, (int32_t)rect.y, 0},
+      .imageExtent = {rect.width, rect.height, 1},
+  };
+  vkCmdCopyBufferToImage(cmd, ctx->staging.vk_staging_buf, ctx->staging.vk_shm_img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+  VkImageMemoryBarrier to_sample = to_transfer;
+  to_sample.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  to_sample.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  to_sample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  to_sample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                       0, NULL, 0, NULL, 1, &to_sample);
   ctx->overlay.vk_overlay_img = ctx->staging.vk_shm_img;
   ctx->overlay.vk_overlay_view = ctx->staging.vk_shm_view;
   return 0;

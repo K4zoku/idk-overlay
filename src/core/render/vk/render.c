@@ -2,6 +2,9 @@
 
 #include <stdatomic.h>
 #include <unistd.h>
+#include <sys/stat.h>
+
+#include "public/idk_shm_delta.h"
 
 #include "context.h"
 #include "core/compositor.h"
@@ -31,12 +34,28 @@ int idk_vk_compositor_render(void) {
   int processed = 0;
 
   if (!idk_frame_is_dmabuf(hdr)) {
+    if (hdr->flags & IDK_FRAME_FLAG_SHM_RECT) {
+      int fd = g_comp.dmabuf_fd[0];
+      idk_shm_delta_t rect;
+      struct stat st;
+      if (!ctx->staging.vk_shm_baseline_valid ||
+          ctx->overlay.vk_shm_img_w != hdr->width || ctx->overlay.vk_shm_img_h != hdr->height ||
+          fd < 0 || fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(rect) ||
+          pread(fd, &rect, sizeof(rect), 0) != (ssize_t)sizeof(rect) ||
+          !idk_shm_delta_validate(&rect, hdr->width, hdr->height, (size_t)st.st_size)) {
+        /* Fail before acknowledging an invalid delta. Keep the old overlay. */
+        idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+        idk_compositor_send_ack(1);
+        return -1;
+      }
+    }
     ctx->dmabuf.vk_dmabuf_cache_id = 0;
     ctx->overlay.vk_overlay_w = hdr->width;
     ctx->overlay.vk_overlay_h = hdr->height;
     if (ctx->staging.vk_shm_fd >= 0)
       close(ctx->staging.vk_shm_fd);
     ctx->staging.vk_shm_fd = g_comp.dmabuf_fd[0];
+    ctx->staging.vk_shm_is_delta = (hdr->flags & IDK_FRAME_FLAG_SHM_RECT) != 0;
     g_comp.dmabuf_fd[0] = -1;
     ctx->overlay.vk_has_frame = 1;
     if (ctx->dmabuf.vk_has_dmabuf_pending) {
@@ -46,6 +65,7 @@ int idk_vk_compositor_render(void) {
     }
     processed = 1;
   } else {
+    ctx->staging.vk_shm_baseline_valid = 0;
     if (ctx->dmabuf.vk_has_dmabuf_pending && ctx->dmabuf.vk_dmabuf_pending_fd >= 0) {
       close(ctx->dmabuf.vk_dmabuf_pending_fd);
     }

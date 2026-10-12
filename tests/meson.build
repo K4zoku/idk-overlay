@@ -19,7 +19,7 @@ test_comp_dep = declare_dependency(
 )
 
 # Header-only tests (no linking needed)
-foreach src : ['test_wire_protocol.c', 'test_input.c', 'test_ack.c']
+foreach src : ['test_wire_protocol.c', 'test_input.c', 'test_ack.c', 'test_shm_delta.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,
@@ -40,7 +40,7 @@ test('test_x11_select', test_x11_select_exe)
 foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
                'test_abstract_socket.c', 'test_compositor_path.c',
                'test_compositor_api.c', 'test_cursor_transport.c',
-               'test_fd_leaks.c']
+               'test_fd_leaks.c', 'test_socket_controls.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,
@@ -89,3 +89,20 @@ test_exe = executable('test_ipc', 'test_ipc.c',
     link_with: [test_ipc_lib],
 )
 test('test_ipc', test_exe)
+
+# CEF dirty-rect geometry (standalone; no CEF binary or GPU needed).
+cef_damage_test = executable('test_cef_damage', 'test_cef_damage.cc', cpp_args: ['-std=c++20'])
+test('test_cef_damage', cef_damage_test)
+
+cef_args_test = executable('test_webview_cef_args',
+    ['test_webview_cef_args.cc', '../src/cli/webview_cef/config.cc', '../src/core/log.c'],
+    c_args: test_c_args,
+    cpp_args: ['-std=c++20'],
+    include_directories: inc,
+)
+test('test_webview_cef_args', cef_args_test)
+
+# CEF BGRA/top-left -> GL SHM RGBA/bottom-left normalization (no CEF distro required).
+cef_shm_format_test = executable('test_cef_shm_format', 'test_cef_shm_format.cc',
+    cpp_args: ['-std=c++20'], include_directories: inc)
+test('test_cef_shm_format', cef_shm_format_test)

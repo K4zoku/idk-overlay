@@ -19,8 +19,8 @@ class InputThread;
 /* One windowless CEF browser feeding the idk compositor.
  *
  * Frame flow (all on the CEF UI thread):
- *   compositor REQUEST → Invalidate() → OnAcceleratedPaint → send
- *   (dmabuf via SCM_RIGHTS, or SHM memfd fallback) → ACK → repeat.
+ *   compositor REQUEST → external BeginFrame → (only on damage)
+ *   OnAcceleratedPaint → send DMA-BUF or SHM → game ACK.
  *
  * The input socket lives on a dedicated thread (input.cc) that posts
  * CefKeyEvent/CefMouseEvent work here.
@@ -85,13 +85,16 @@ private:
   void ConnectTask();
   void ProcessAck(const idk_ack_msg_t &ack);
   void NudgeFrame();
-  void NudgeRetry();
+  void MaybeSendDeferred();
+  void CacheDeferredPixels(const uint8_t *pixels, int w, int h);
+  void CacheDeferredGpu(const CefAcceleratedPaintInfo &info);
+  bool SendOwnedGpu(GpuBuf &buffer, int w, int h);
 
   /* Frame paths. OnAcceleratedPaint delivers the fd only for the duration
    * of the callback, so each path copies/dups before returning. */
-  void SendFrameDmaBuf(const CefAcceleratedPaintInfo &info);
-  void SendShmFromDmaBuf(const CefAcceleratedPaintInfo &info);
-  void SendShmPixels(const uint8_t *px, int w, int h);
+  void SendFrameDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &dirty_rects, bool full_update);
+  void SendShmFromDmaBuf(const CefAcceleratedPaintInfo &info, const RectList &dirty_rects);
+  void SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_rects = nullptr);
 
   void InjectScripts();
   void LoadUrl();
@@ -120,7 +123,25 @@ private:
 
   bool pending_ = false;        /* frame in flight, awaiting ACK */
   bool visible_ = true;         /* overlay visibility */
-  bool render_pending_ = false; /* begin frame issued, waiting for a paint */
+  bool request_credit_ = false; /* game has requested an updated frame */
+  bool needs_full_update_ = true; /* no reliable staging/consumer baseline */
+  bool capture_counter_valid_ = false;
+  bool staged_send_ = false;
+  enum class DeferredKind { None, Pixels, Gpu };
+  DeferredKind deferred_kind_ = DeferredKind::None;
+  std::vector<uint8_t> deferred_pixels_;
+  int deferred_w_ = 0, deferred_h_ = 0;
+  GpuBuf deferred_gpu_; /* second staging buffer: never write the in-flight buffer */
+  GpuBuf *deferred_gpu_ptr_ = nullptr;
+  GpuBuf *gpu_inflight_ = nullptr;
+  bool dropped_since_send_ = false;
+  int sent_w_ = 0, sent_h_ = 0;
+  bool shm_roi_enabled_ = false; /* explicit opt-in until both consumers are upgraded */
+  bool shm_baseline_valid_ = false; /* only after consumer ACK of full SHM frame */
+  bool last_sent_shm_ = false;
+  std::vector<uint8_t> shm_shadow_; /* producer-owned full snapshot for SHM replay */
+  int shm_shadow_w_ = 0, shm_shadow_h_ = 0;
+  uint64_t last_capture_counter_ = 0;
   bool page_ready_ = false;     /* main URL reached OnLoadEnd */
   bool capture_ = false;
   bool js_capture_ = false; /* last capture state seen by JS (edge events) */
@@ -130,6 +151,12 @@ private:
   int rate_sent_ = 0; /* 1s diagnostics counters */
   int rate_req_ = 0;
   int rate_ack_ = 0;
+  int rate_unchanged_ = 0;
+  int rate_partial_ = 0;
+  int rate_full_ = 0;
+  int rate_shm_roi_ = 0;
+  int rate_deferred_ = 0;
+  uint64_t bytes_shm_sent_ = 0;
 
   GpuBuf gpu_; /* staging blit (CEF linear → driver-native tiled) */
 

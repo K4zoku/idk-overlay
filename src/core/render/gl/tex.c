@@ -1,6 +1,9 @@
 /* tex.c - double-buffered overlay textures + SHM upload */
 
 #include <unistd.h>
+#include <string.h>
+
+#include "public/idk_shm_delta.h"
 
 #include "internal.h"
 
@@ -78,6 +81,47 @@ uint8_t gl_import_frame(const idk_frame_header_t *hdr, int fd) {
   return 0;
 }
 
+/* The GL context belongs to the game. It may have a PBO and custom unpack
+ * strides/offsets bound when the overlay hook runs. Our memfd is a CPU pointer,
+ * so always isolate the unpack state and restore it after each upload. */
+typedef struct shm_unpack_state {
+  GLint alignment, row_length, skip_rows, skip_pixels, pixel_unpack_buffer;
+} shm_unpack_state_t;
+
+static void shm_unpack_begin(shm_unpack_state_t *st) {
+  glGetIntegerv(GL_UNPACK_ALIGNMENT, &st->alignment);
+  st->row_length = st->skip_rows = st->skip_pixels = st->pixel_unpack_buffer = 0;
+  if (!g_is_gles || g_gl_version >= 300) {
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &st->row_length);
+    glGetIntegerv(GL_UNPACK_SKIP_ROWS, &st->skip_rows);
+    glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &st->skip_pixels);
+    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &st->pixel_unpack_buffer);
+  }
+  if (idk_fn_glPixelStorei) {
+    idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (!g_is_gles || g_gl_version >= 300) {
+      idk_fn_glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+      idk_fn_glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+      idk_fn_glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    }
+  }
+  if (idk_fn_glBindBuffer && (!g_is_gles || g_gl_version >= 300))
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+}
+
+static void shm_unpack_end(const shm_unpack_state_t *st) {
+  if (idk_fn_glPixelStorei) {
+    idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, st->alignment);
+    if (!g_is_gles || g_gl_version >= 300) {
+      idk_fn_glPixelStorei(GL_UNPACK_ROW_LENGTH, st->row_length);
+      idk_fn_glPixelStorei(GL_UNPACK_SKIP_ROWS, st->skip_rows);
+      idk_fn_glPixelStorei(GL_UNPACK_SKIP_PIXELS, st->skip_pixels);
+    }
+  }
+  if (idk_fn_glBindBuffer && (!g_is_gles || g_gl_version >= 300))
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)st->pixel_unpack_buffer);
+}
+
 /* SHM → GL texture upload via glTex(Sub)Image2D */
 GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buffer_idx, int premultiplied) {
   if (!idk_fn_glTexImage2D) {
@@ -103,8 +147,10 @@ GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, u
   uint32_t buf_size = pixel_size;
   uint8_t *buf = (uint8_t *)s_shm_cache.map + (buffer_idx * buf_size);
 
-  GLint last_unpack_align = 4;
-  glGetIntegerv(GL_UNPACK_ALIGNMENT, &last_unpack_align);
+  shm_unpack_state_t unpack;
+  GLint old_texture = 0;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_texture);
+  shm_unpack_begin(&unpack);
 
   int back = 1 - g_tex_idx;
 
@@ -121,9 +167,6 @@ GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, u
   if (g_tex[back] == 0) {
     glGenTextures(1, &g_tex[back]);
     glBindTexture(GL_TEXTURE_2D, g_tex[back]);
-    if (idk_fn_glPixelStorei) {
-      idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    }
     idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, buf);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -133,16 +176,11 @@ GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, u
     g_tex_h[back] = (GLsizei)h;
   } else {
     glBindTexture(GL_TEXTURE_2D, g_tex[back]);
-    if (idk_fn_glPixelStorei) {
-      idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    }
     idk_fn_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
   }
 
-  if (idk_fn_glPixelStorei) {
-    idk_fn_glPixelStorei(GL_UNPACK_ALIGNMENT, last_unpack_align);
-  }
-  glBindTexture(GL_TEXTURE_2D, 0);
+  shm_unpack_end(&unpack);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)old_texture);
 
   g_tex_idx = back;
   g_comp.has_frame = true;
@@ -153,4 +191,35 @@ GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, u
           g_tex[back], (int)g_comp.frame_premultiplied, (unsigned)buffer_idx);
 
   return g_tex[g_tex_idx];
+}
+
+/* Apply a packed SHM ROI to the currently displayed SHM texture. The producer
+ * is forbidden to send a delta until the consumer ACKed a full SHM baseline. */
+GLuint shm_rect_to_texture(int fd, uint32_t w, uint32_t h) {
+  static idk_shm_cache_t cache;
+  if (!idk_shm_cache_map(&cache, fd) || cache.size < sizeof(idk_shm_delta_t))
+    return 0;
+  idk_shm_delta_t rect;
+  memcpy(&rect, cache.map, sizeof(rect));
+  if (!idk_shm_delta_validate(&rect, w, h, cache.size))
+    return 0;
+  int slot = g_tex_idx;
+  if (!g_tex[slot] || g_tex_img[slot] || g_tex_dmabuf_fd[slot] >= 0 ||
+      g_tex_w[slot] != (int)w || g_tex_h[slot] != (int)h || !idk_fn_glTexSubImage2D)
+    return 0;
+  shm_unpack_state_t unpack;
+  GLint old_texture = 0;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_texture);
+  shm_unpack_begin(&unpack);
+  glBindTexture(GL_TEXTURE_2D, g_tex[slot]);
+  const uint8_t *pixels = (const uint8_t *)cache.map + sizeof(rect);
+  idk_fn_glTexSubImage2D(GL_TEXTURE_2D, 0, (GLint)rect.x, (GLint)rect.y, (GLsizei)rect.width,
+                         (GLsizei)rect.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+  shm_unpack_end(&unpack);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)old_texture);
+  if (glGetError() != GL_NO_ERROR)
+    return 0;
+  g_comp.has_frame = true;
+  g_comp.frame_premultiplied = true;
+  return g_tex[slot];
 }

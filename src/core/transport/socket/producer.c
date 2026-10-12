@@ -60,6 +60,7 @@ int producer_init(idk_transport_t *tp, const char *path) {
   tp->_server_fd = -1;
   tp->_client_fd = fd;
   TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+  TP_S_QUEUED_REQ(tp->_rsv) = 0;
   TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
   TP_S_ABSTRACT(tp->_rsv) = abstr ? 1 : 0;
   size_t cap = TP_S_PATH_CAP - (abstr ? 0 : 1);
@@ -100,6 +101,7 @@ int tp_socket_poll(idk_transport_t *tp) {
         tp->_client_fd = fd;
         tp->ready = true;
         TP_S_STATE(tp->_rsv) = TP_STATE_READY;
+        TP_S_QUEUED_REQ(tp->_rsv) = 0;
         TP_S_CONNECT_RETRIES(tp->_rsv) = 30;
         IDK_LOG("tp", "socket: connected to %s%s (fd=%d)\n", abstr ? "\\0" : "", abstr ? path + 1 : path, fd);
         return 0;

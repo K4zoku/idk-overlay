@@ -142,6 +142,8 @@ void idk_vk_compositor_shutdown(void) {
   ctx->overlay.vk_overlay_view = VK_NULL_HANDLE;
   ctx->overlay.vk_overlay_w = 0;
   ctx->overlay.vk_overlay_h = 0;
+  ctx->staging.vk_shm_baseline_valid = 0;
+  ctx->staging.vk_shm_is_delta = 0;
   ctx->overlay.vk_shm_img_w = 0;
   ctx->overlay.vk_shm_img_h = 0;
   ctx->dmabuf.vk_dmabuf_w = 0;

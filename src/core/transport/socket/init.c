@@ -46,5 +46,6 @@ void tp_socket_disconnect_client(idk_transport_t *tp) {
     tp->_client_fd = -1;
   }
   tp->ready = false;
+  TP_S_QUEUED_REQ(tp->_rsv) = 0;
   TP_S_STATE(tp->_rsv) = (tp->role == IDK_TP_CONSUMER) ? TP_STATE_LISTEN : TP_STATE_INIT;
 }

@@ -30,19 +30,6 @@ int gl_program_ensure_valid(void) {
   return 1;
 }
 
-/* Drop the displayed frame if no new frame arrived for >1s. */
-void gl_stale_frame_clear(void) {
-  if (g_comp.has_frame) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double elapsed = (now.tv_sec - g_comp.last_frame_ts.tv_sec) + (now.tv_nsec - g_comp.last_frame_ts.tv_nsec) / 1e9;
-    if (elapsed > 1.0) {
-      IDK_LOG("comp", "stale frame cleared (%.0fms since last frame)\n", elapsed * 1000);
-      g_comp.has_frame = false;
-    }
-  }
-}
-
 /* Post-draw error check: throttle logging (first 5, then every 300th)
  * and invalidate the texture after 5 consecutive errors. */
 void gl_draw_error_check(GLint fb_w, GLint fb_h) {

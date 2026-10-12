@@ -6,12 +6,14 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <utility>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
 
 #include "core/log.h"
+#include "damage.h"
 
 #define DRM_FORMAT_ABGR8888 0x34324241u
 #define DRM_FORMAT_ARGB8888 0x34325241u
@@ -38,6 +40,7 @@ typedef void (*PFN_GL_FRAMEBUFFER_TEXTURE2D)(GLenum, GLenum, GLenum, GLuint, GLi
 typedef void (*PFN_GL_BLIT_FRAMEBUFFER)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
 typedef void (*PFN_GL_DELETE_FRAMEBUFFERS)(GLsizei, const GLuint *);
 typedef GLenum (*PFN_GL_GET_ERROR)(void);
+typedef void (*PFN_GL_READ_PIXELS)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
 typedef void (*PFN_GL_IMAGE_TARGET_TEXTURE2D)(GLenum, void *);
 typedef GLsync (*PFN_GL_FENCE_SYNC)(GLenum, GLbitfield);
 typedef GLenum (*PFN_GL_CLIENT_WAIT_SYNC)(GLsync, GLbitfield, GLuint64);
@@ -105,6 +108,7 @@ bool GpuBuf::Init() {
   fn_blit_framebuffer_ = GPA("glBlitFramebuffer");
   fn_delete_framebuffers_ = GPA("glDeleteFramebuffers");
   fn_gl_get_error_ = GPA("glGetError");
+  fn_gl_read_pixels_ = GPA("glReadPixels");
   fn_image_target_texture2d_ = GPA("glEGLImageTargetTexture2DOES");
   fn_fence_sync_ = GPA("glFenceSync");
   fn_client_wait_sync_ = GPA("glClientWaitSync");
@@ -229,6 +233,8 @@ void GpuBuf::DestroyBo() {
     bo_ = nullptr;
   }
   bo_w_ = bo_h_ = 0;
+  bo_initialized_ = false;
+  last_blit_partial_ = false;
 }
 
 bool GpuBuf::EnsureBo(int w, int h) {
@@ -314,9 +320,13 @@ bool GpuBuf::WaitForGpu() {
   return fn_finish_ != nullptr;
 }
 
-int GpuBuf::BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h, uint32_t *stride, uint32_t *fourcc,
-                          uint64_t *modifier, uint16_t *buf_id) {
+int GpuBuf::BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h,
+                          const CefRenderHandler::RectList &dirty_rects, bool full_update, uint32_t *stride,
+                          uint32_t *fourcc, uint64_t *modifier, uint16_t *buf_id) {
   if (info.plane_count < 1)
+    return -1;
+  /* Both regular and deferred GpuBuf have private EGL contexts. */
+  if (!((PFN_EGL_MAKE_CURRENT)fn_make_current_)(dpy_, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx_))
     return -1;
   const auto &p = info.planes[0];
 
@@ -336,14 +346,59 @@ int GpuBuf::BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h, uin
   ((PFN_GL_FRAMEBUFFER_TEXTURE2D)fn_framebuffer_texture2d_)(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                                             in_tex_, 0);
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_DRAW_FRAMEBUFFER, fbo_);
-  ((PFN_GL_BLIT_FRAMEBUFFER)fn_blit_framebuffer_)(0, 0, w, h, 0, h, w, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  bool partial = bo_initialized_ && !full_update && !dirty_rects.empty() && dirty_rects.size() <= 32;
+  if (partial) {
+    for (const auto &r : dirty_rects) {
+      IdkBlitRect blit;
+      if (!idk_dirty_blit_rect(r.x, r.y, r.width, r.height, w, h, blit)) {
+        partial = false;
+        break;
+      }
+    }
+  }
+  if (partial) {
+    for (const auto &r : dirty_rects) {
+      IdkBlitRect b;
+      idk_dirty_blit_rect(r.x, r.y, r.width, r.height, w, h, b);
+      ((PFN_GL_BLIT_FRAMEBUFFER)fn_blit_framebuffer_)(b.sx0, b.sy0, b.sx1, b.sy1, b.dx0, b.dy0, b.dx1,
+                                                     b.dy1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
+  } else {
+    ((PFN_GL_BLIT_FRAMEBUFFER)fn_blit_framebuffer_)(0, 0, w, h, 0, h, w, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  }
   ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_FRAMEBUFFER, 0);
-  if (!WaitForGpu())
+  if ((fn_gl_get_error_ && ((PFN_GL_GET_ERROR)fn_gl_get_error_)() != GL_NO_ERROR) || !WaitForGpu()) {
+    bo_initialized_ = false;
     return -1;
+  }
+  bo_initialized_ = true;
+  last_blit_partial_ = partial;
 
   *stride = bo_stride_;
   *fourcc = GBM_FORMAT_ABGR8888;
   *modifier = bo_modifier_;
   *buf_id = generation_;
   return 0;
+}
+
+/* Rare recovery path after game rejection: read our owned staging BO instead
+ * of asking Chromium to force-capture a static page again. */
+bool GpuBuf::ReadPixels(std::vector<uint8_t> &out) {
+  if (!bo_initialized_ || bo_w_ <= 0 || bo_h_ <= 0 ||
+      (uint64_t)bo_w_ * bo_h_ * 4 > 256ull * 1024 * 1024 ||
+      !fn_gl_read_pixels_ || !fn_make_current_)
+    return false;
+  if (!((PFN_EGL_MAKE_CURRENT)fn_make_current_)(dpy_, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx_))
+    return false;
+  std::vector<uint8_t> gpu((size_t)bo_h_ * (size_t)bo_w_ * 4);
+  ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_READ_FRAMEBUFFER, fbo_);
+  ((PFN_GL_READ_PIXELS)fn_gl_read_pixels_)(0, 0, bo_w_, bo_h_, GL_RGBA, GL_UNSIGNED_BYTE, gpu.data());
+  ((PFN_GL_BIND_FRAMEBUFFER)fn_bind_framebuffer_)(GL_READ_FRAMEBUFFER, 0);
+  if (((PFN_GL_GET_ERROR)fn_gl_get_error_)() != GL_NO_ERROR)
+    return false;
+  /* glReadPixels already returns RGBA with the bottom texel row first,
+   * which is the existing SHM wire format. Flipping it again inverted
+   * deferred DMA-BUF -> SHM fallback snapshots. */
+  out = std::move(gpu);
+  return true;
 }

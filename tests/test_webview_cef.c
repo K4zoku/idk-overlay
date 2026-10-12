@@ -117,6 +117,48 @@ TEST(cef_webview_frame_flow) {
   unlink(SOCK_PATH);
 }
 
+/* A static page must send one frame, then stop producing traffic even while
+ * the game continues to issue external begin frames. No forced refresh. */
+TEST(cef_webview_static_damage_idle) {
+  unlink(SOCK_PATH);
+  idk_transport_t comp = {0};
+  ASSERT_EQ(idk_tp_init(&comp, IDK_TP_CONSUMER, SOCK_PATH), 0);
+  pid_t pid = fork();
+  ASSERT_TRUE(pid >= 0);
+  if (pid == 0) {
+    execl(argv_bin, argv_bin, "--socket", SOCK_PATH, "--url",
+          "data:text/html,<body%20style='background:green'>static</body>", (char *)NULL);
+    _exit(127);
+  }
+  ASSERT_EQ(wait_accept(&comp, ACCEPT_TIMEOUT_MS), 0);
+  ASSERT_TRUE(!wait_readable(comp._client_fd, 400)); /* No unsolicited transport. */
+  idk_request_msg_t req = {.type = IDK_REQUEST_NEXT_FRAME};
+  ASSERT_EQ(idk_tp_send_request(&comp, &req), 0);
+  ASSERT_TRUE(wait_readable(comp._client_fd, FRAME_TIMEOUT_MS));
+  verify_frame(&comp);
+  idk_ack_msg_t ack = {.ack = 0};
+  idk_tp_send_ack(&comp, &ack);
+
+  /* Drain any initial asynchronous capture while establishing the baseline. */
+  int quiet = 0;
+  for (int i = 0; i < 12; i++) {
+    ASSERT_EQ(idk_tp_send_request(&comp, &req), 0);
+    if (!wait_readable(comp._client_fd, 150)) {
+      quiet++;
+      continue;
+    }
+    verify_frame(&comp);
+    idk_tp_send_ack(&comp, &ack);
+  }
+  ASSERT_TRUE(quiet >= 6);
+  idk_request_msg_t sd = {.type = IDK_REQUEST_SHUTDOWN};
+  ASSERT_EQ(idk_tp_send_request(&comp, &sd), 0);
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  idk_tp_destroy(&comp);
+  unlink(SOCK_PATH);
+}
+
 /* Reject every dmabuf frame: after 5 rejections the webview must switch
  * to SHM frames (memfd, no DMABUF flag, zero stride/fourcc). */
 TEST(cef_webview_shm_fallback) {
@@ -268,6 +310,7 @@ int main(int argc, char **argv) {
   }
   argv_bin = argv[1];
   RUN(cef_webview_frame_flow);
+  RUN(cef_webview_static_damage_idle);
   RUN(cef_webview_shm_fallback);
   RUN(cef_webview_cursor_visibility);
   return 0;

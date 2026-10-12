@@ -3,6 +3,8 @@
 #include <stdatomic.h>
 #include <unistd.h>
 
+#include "public/idk_shm_delta.h"
+
 #include "core/compositor_egl.h"
 #include "internal.h"
 
@@ -25,7 +27,8 @@ int idk_compositor_egl_render(void) {
 
   if (!idk_frame_is_dmabuf(hdr)) {
     uint32_t pixel_size = hdr->width * hdr->height * 4;
-    GLuint tex = shm_to_texture(fd, hdr->width, hdr->height, pixel_size, 0, 1);
+    GLuint tex = (hdr->flags & IDK_FRAME_FLAG_SHM_RECT) ? shm_rect_to_texture(fd, hdr->width, hdr->height)
+                                                        : shm_to_texture(fd, hdr->width, hdr->height, pixel_size, 0, 1);
     if (tex == 0)
       ack = 1;
     else
@@ -68,7 +71,7 @@ void idk_compositor_egl_render_overlay(int x, int y, uint32_t w, uint32_t h) {
   if (!gl_program_ensure_valid())
     return;
 
-  gl_stale_frame_clear();
+  /* Static damage-driven overlays intentionally reuse the last frame indefinitely. */
   if (!g_comp.has_frame || g_tex[g_tex_idx] == 0)
     return;
 

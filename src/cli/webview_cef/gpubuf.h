@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <vector>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -35,10 +36,17 @@ public:
   /* Blit the CEF frame into the cached staging buffer. On success fills
    * stride/fourcc/modifier/buf_id for the frame header and returns 0.
    * Fd() is valid until the next call or a size change. */
-  int BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h, uint32_t *stride, uint32_t *fourcc,
-                    uint64_t *modifier, uint16_t *buf_id);
+  int BlitAndExport(const CefAcceleratedPaintInfo &info, int w, int h,
+                    const CefRenderHandler::RectList &dirty_rects, bool full_update, uint32_t *stride,
+                    uint32_t *fourcc, uint64_t *modifier, uint16_t *buf_id);
 
   int Fd() const { return fd_; }
+  uint32_t Stride() const { return bo_stride_; }
+  uint32_t Fourcc() const { return 0x34324241u; /* DRM_FORMAT_ABGR8888 */ }
+  uint64_t Modifier() const { return bo_modifier_; }
+  uint16_t BufferId() const { return generation_; }
+  bool LastBlitPartial() const { return last_blit_partial_; }
+  bool ReadPixels(std::vector<uint8_t> &out);
 
 private:
   bool EnsureBo(int w, int h);
@@ -78,6 +86,7 @@ private:
   void *fn_blit_framebuffer_ = nullptr;
   void *fn_delete_framebuffers_ = nullptr;
   void *fn_gl_get_error_ = nullptr;
+  void *fn_gl_read_pixels_ = nullptr;
   void *fn_fence_sync_ = nullptr;
   void *fn_client_wait_sync_ = nullptr;
   void *fn_delete_sync_ = nullptr;
@@ -90,6 +99,8 @@ private:
   int fd_ = -1;
   int bo_w_ = 0;
   int bo_h_ = 0;
+  bool bo_initialized_ = false;
+  bool last_blit_partial_ = false;
   uint32_t bo_stride_ = 0;
   uint64_t bo_modifier_ = 0;
   uint16_t generation_ = 1;
