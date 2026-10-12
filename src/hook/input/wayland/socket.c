@@ -246,6 +246,8 @@ void teardown_input_socket(void) {
     pthread_join(g_accept_thread, NULL);
     g_accept_thread_started = 0;
     atomic_store(&g_accept_stop, 0);
+    close(g_accept_wake_fd);
+    g_accept_wake_fd = -1;
   }
 
   pthread_mutex_lock(&g_input_tp_lock);

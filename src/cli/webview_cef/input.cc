@@ -103,14 +103,30 @@ bool InputThread::Connect() {
     return false;
   }
   while (!tp_.ready) {
-    struct pollfd handshake = {.fd = tp_._client_fd, .events = POLLIN, .revents = 0};
-    int rc = poll(&handshake, 1, -1);
+    struct pollfd handshake[2] = {
+        {.fd = tp_._client_fd, .events = POLLIN, .revents = 0},
+        {.fd = command_fd_, .events = POLLIN, .revents = 0},
+    };
+    int nfds = command_fd_ >= 0 ? 2 : 1;
+    int rc = poll(handshake, nfds, -1);
     if (rc < 0 && errno == EINTR)
       continue;
-    if (rc <= 0 || handshake.revents & (POLLHUP | POLLERR | POLLNVAL) || idk_tp_poll(&tp_) < 0) {
+    if (nfds == 2 && handshake[1].revents & POLLIN) {
+      eventfd_t value;
+      while (eventfd_read(command_fd_, &value) == 0)
+        continue;
+      if (stop_.load())
+        break;
+    }
+    if (stop_.load() || rc <= 0 || handshake[0].revents & (POLLHUP | POLLERR | POLLNVAL) ||
+        idk_tp_poll(&tp_) < 0) {
       idk_tp_destroy(&tp_);
       return false;
     }
+  }
+  if (!tp_.ready) {
+    idk_tp_destroy(&tp_);
+    return false;
   }
 
   watch_fd_ = tp_._client_fd;
