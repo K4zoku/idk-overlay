@@ -109,6 +109,7 @@ typedef struct {
 
 typedef struct {
   int vk_dmabuf_failed_this_frame;
+  int vk_pending_release_ack;
   struct timespec vk_last_swapchain_create_ts;
   pthread_mutex_t vk_render_lock;
 } vk_flags_t;

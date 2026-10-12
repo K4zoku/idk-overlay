@@ -1,5 +1,5 @@
 
-linux_sources = files('linux/fd.c')
+linux_sources = files('linux/fd.c', 'linux/sync.c')
 
 subdir('compositor')
 subdir('transport')

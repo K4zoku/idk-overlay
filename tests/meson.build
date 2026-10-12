@@ -41,7 +41,7 @@ foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
                'test_abstract_socket.c', 'test_compositor_path.c',
                'test_compositor_api.c', 'test_cursor_transport.c',
                'test_fd_leaks.c', 'test_socket_controls.c', 'test_hidden_discard.c',
-               'test_linux_fd.c', 'test_socket_v2.c']
+               'test_linux_fd.c', 'test_linux_sync.c', 'test_socket_v2.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,
