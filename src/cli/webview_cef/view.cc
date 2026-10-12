@@ -47,6 +47,7 @@ void View::Start() {
 }
 
 void View::Stop() {
+  quit_.store(true, std::memory_order_release);
   if (input_) {
     input_->Stop();
     delete input_;
@@ -654,7 +655,10 @@ void View::MaybeSendDeferred() {
 /* ── Producer connect + pacing ─────────────────────────────────────── */
 
 void View::ConnectTask() {
-  bool now = idk_producer_is_connected();
+  if (quit_.load(std::memory_order_acquire))
+    return;
+  connect_task_scheduled_ = false;
+  const bool now = idk_producer_is_connected();
 
   if (now && !connected_) {
     connected_ = true;
@@ -708,16 +712,24 @@ void View::ConnectTask() {
     }
   }
 
-  /* 1s diagnostics: game request/ack rate vs our send rate. */
-  if (connected_)
-    IDK_LOG("webview-cef", "rate: sent=%d req=%d ack=%d unchanged=%d gpu_partial=%d gpu_full=%d shm_roi=%d shm_bytes=%llu deferred=%d (last 1s)\n",
-            rate_sent_, rate_req_, rate_ack_, rate_unchanged_, rate_partial_, rate_full_,
-            rate_shm_roi_, (unsigned long long)bytes_shm_sent_, rate_deferred_);
-  rate_sent_ = rate_req_ = rate_ack_ = rate_unchanged_ = rate_partial_ = rate_full_ = rate_shm_roi_ = 0;
-  bytes_shm_sent_ = 0;
-  rate_deferred_ = 0;
+  const char *stats_env = std::getenv("IDK_CEF_STATS");
+  if (stats_env && stats_env[0] == '1') {
+    if (connected_)
+      IDK_LOG("webview-cef", "rate: sent=%d req=%d ack=%d unchanged=%d gpu_partial=%d gpu_full=%d shm_roi=%d shm_bytes=%llu deferred=%d\n",
+              rate_sent_, rate_req_, rate_ack_, rate_unchanged_, rate_partial_, rate_full_,
+              rate_shm_roi_, (unsigned long long)bytes_shm_sent_, rate_deferred_);
+    rate_sent_ = rate_req_ = rate_ack_ = rate_unchanged_ = rate_partial_ = rate_full_ = rate_shm_roi_ = 0;
+    bytes_shm_sent_ = 0;
+    rate_deferred_ = 0;
+  }
 
-  PostToUIDelayed([self = CefRefPtr<View>(this)] { self->ConnectTask(); }, 1000);
+  if (!connected_) {
+    connect_task_scheduled_ = true;
+    PostToUIDelayed([self = CefRefPtr<View>(this)] {
+      if (!self->quit_.load(std::memory_order_acquire))
+        self->ConnectTask();
+    }, 1000);
+  }
 }
 
 /* Chromium may complete a BeginFrame without producing any paint callback.
@@ -753,8 +765,25 @@ void View::PollSocket() {
       requested = true;
     }
   }
-  if (!idk_producer_is_connected())
+  if (!idk_producer_is_connected()) {
+    connected_ = false;
+    deferred_kind_ = DeferredKind::None;
+    deferred_pixels_.clear();
+    gpu_inflight_ = nullptr;
+    gpu_last_acked_ = nullptr;
+    shm_shadow_.clear();
+    shm_baseline_valid_ = false;
+    pending_ = false;
+    request_credit_ = false;
+    if (!connect_task_scheduled_) {
+      connect_task_scheduled_ = true;
+      PostToUIDelayed([self = CefRefPtr<View>(this)] {
+        if (!self->quit_.load(std::memory_order_acquire))
+          self->ConnectTask();
+      }, 0);
+    }
     return;
+  }
   if (!visible_)
     return;
   if (requested)

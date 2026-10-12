@@ -57,16 +57,20 @@ static int recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout
     for (int i = 0; i < 256; i++) {
       uint16_t type = 0;
       int peek = socket_v2_peek_type(tp->_client_fd, &type);
-      if (peek <= 0)
+      if (peek <= 0) {
+        tp_socket_disconnect_on_recv_error(tp, peek);
         return -1;
+      }
       if (type == IDK_SOCKET_V2_REQUEST) {
         int fds[4];
         int nfd = 0;
         int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), fds, &nfd);
         for (int j = 0; j < nfd; j++)
           close(fds[j]);
-        if (rc != 1 || nfd != 0)
+        if (rc != 1 || nfd != 0) {
+          tp_socket_disconnect_on_recv_error(tp, rc);
           return -1;
+        }
         if (req->type > IDK_REQUEST_SHUTDOWN)
           return -1;
         return 0;

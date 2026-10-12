@@ -38,8 +38,10 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
     for (int i = 0; i < 256; i++) {
       uint16_t type = 0;
       int peek = socket_v2_peek_type(tp->_client_fd, &type);
-      if (peek <= 0)
+      if (peek <= 0) {
+        tp_socket_disconnect_on_recv_error(tp, peek);
         return -1;
+      }
       if (type == IDK_SOCKET_V2_ACK) {
         int fds[4];
         int nfd = 0;
@@ -55,8 +57,11 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
         idk_request_msg_t req;
         int fds[4];
         int nfd = 0;
-        if (socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, &req, sizeof(req), fds, &nfd) != 1)
+        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, &req, sizeof(req), fds, &nfd);
+        if (rc != 1) {
+          tp_socket_disconnect_on_recv_error(tp, rc);
           return -1;
+        }
         for (int j = 0; j < nfd; j++)
           close(fds[j]);
         if (req.type > IDK_REQUEST_SHUTDOWN)
@@ -67,6 +72,7 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
         continue;
       }
       errno = EBADMSG;
+      tp_socket_disconnect_client(tp);
       return -1;
     }
     errno = ELOOP;

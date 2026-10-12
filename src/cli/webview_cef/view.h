@@ -114,6 +114,7 @@ private:
   bool sock_abstract_ = false;
   bool no_dmabuf_;
   bool connected_ = false;
+  bool connect_task_scheduled_ = false;
   int connect_attempts_ = 0;
   std::atomic<bool> quit_{false};
 

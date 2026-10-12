@@ -1,6 +1,7 @@
 #ifndef IDK_TP_SOCKET_INTERNAL_H
 #define IDK_TP_SOCKET_INTERNAL_H
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -38,5 +39,14 @@ IDK_INTERNAL int producer_init(idk_transport_t *tp, const char *path);
 IDK_INTERNAL void tp_socket_disconnect_client(idk_transport_t *tp);
 IDK_INTERNAL int scm_recv_fds(int fd, void *buf, size_t len, int fds[4], int *nfd);
 IDK_INTERNAL ssize_t scm_send_fds(int fd, const void *buf, size_t len, const int *fds, int nfd);
+
+static inline bool tp_socket_recv_fatal(ssize_t n) {
+  return n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+}
+
+static inline void tp_socket_disconnect_on_recv_error(idk_transport_t *tp, ssize_t n) {
+  if (tp_socket_recv_fatal(n))
+    tp_socket_disconnect_client(tp);
+}
 
 #endif

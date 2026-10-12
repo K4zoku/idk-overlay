@@ -89,7 +89,6 @@ int idk_producer_send_pixels(const void *pixels, const idk_frame_header_t *hdr) 
   int rc = idk_producer_send_frame(shm_fd, &f);
   close(shm_fd);
 
-  usleep(50000);
   return rc;
 }
 
