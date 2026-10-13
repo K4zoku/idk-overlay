@@ -27,9 +27,11 @@ TEST(reap_fallback_short_lived_child) {
 TEST(reap_pidfd_or_fallback) {
     pid_t pid = fork();
     ASSERT_TRUE(pid >= 0);
-    if (pid == 0)
+    if (pid == 0) {
+        alarm(2);
         pause();
-
+        _exit(124);
+    }
     errno = 0;
     int pidfd = broker_pidfd_open(pid);
     if (pidfd < 0 && (errno == ENOSYS || errno == EINVAL || errno == EPERM)) {
