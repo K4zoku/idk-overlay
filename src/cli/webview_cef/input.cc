@@ -24,7 +24,8 @@ static int OpenRetryWatch(const std::string &name, std::string &leaf) {
   const std::string directory = slash == std::string::npos ? "." : name.substr(0, slash);
   leaf = slash == std::string::npos ? name : name.substr(slash + 1);
   int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-  if (fd < 0 || inotify_add_watch(fd, directory.c_str(), IN_CREATE | IN_MOVED_TO) < 0) {
+  if (fd < 0 || inotify_add_watch(fd, directory.c_str(),
+                                  IN_CREATE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF | IN_Q_OVERFLOW) < 0) {
     if (fd >= 0)
       close(fd);
     return -1;
@@ -43,7 +44,9 @@ static bool RetryWatchHit(int fd, const std::string &leaf) {
       break;
     for (ssize_t offset = 0; offset < bytes;) {
       const auto *event = reinterpret_cast<const struct inotify_event *>(buffer + offset);
-      if (event->len != 0 && leaf == event->name)
+      if (event->mask & (IN_Q_OVERFLOW | IN_IGNORED | IN_DELETE_SELF | IN_MOVE_SELF))
+        hit = true;
+      if (event->len != 0 && (event->mask & (IN_CREATE | IN_MOVED_TO)) && leaf == event->name)
         hit = true;
       offset += sizeof(*event) + event->len;
     }
@@ -179,7 +182,7 @@ void InputThread::Run() {
   bool connected = false;
   int retries = 0;
   std::string retry_leaf;
-  const int retry_fd = OpenRetryWatch(name_, retry_leaf);
+  int retry_fd = OpenRetryWatch(name_, retry_leaf);
 
   while (!stop_.load()) {
     if (!connected) {
@@ -213,6 +216,13 @@ void InputThread::Run() {
           }
           bool retry = false;
           for (int i = 0; i < nfds; i++) {
+            if (retry_fds[i].fd == retry_fd &&
+                (retry_fds[i].revents & (POLLERR | POLLHUP | POLLNVAL))) {
+              close(retry_fd);
+              retry_fd = -1;
+              retry = true;
+              break;
+            }
             if (!(retry_fds[i].revents & POLLIN))
               continue;
             if (retry_fds[i].fd == command_fd_) {
