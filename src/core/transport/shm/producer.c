@@ -1,12 +1,19 @@
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
-
 #include "core/log.h"
 
 #include "internal.h"
+static void shm_producer_close_mapping(void *ptr, int fd) {
+  if (ptr)
+    munmap(ptr, SHM_SIZE);
+  if (fd >= 0)
+    close(fd);
+}
+
 
 int shm_init_producer(idk_transport_t *tp, const char *name) {
   char shm_name[64];
@@ -36,7 +43,7 @@ int shm_init_producer(idk_transport_t *tp, const char *name) {
 
   if (*shm_i32(ptr, SHM_O_MAGIC) != SHM_MAGIC_VAL) {
     IDK_ERR("tp", "shm: bad magic on %s\n", shm_name);
-    close(shm_fd);
+    shm_producer_close_mapping(ptr, shm_fd);
     return -1;
   }
 
@@ -59,7 +66,8 @@ int shm_init_producer(idk_transport_t *tp, const char *name) {
   while (atomic_load(cons_state) != 2) {
     if (atomic_load(cons_state) == -1) {
       IDK_ERR("tp", "shm: consumer died before ready on %s\n", shm_name);
-      close(shm_fd);
+      shm_producer_close_mapping(ptr, shm_fd);
+      TP_SH_SHM_PTR(tp->_rsv) = NULL;
       tp->_client_fd = -1;
       return -1;
     }
@@ -69,7 +77,8 @@ int shm_init_producer(idk_transport_t *tp, const char *name) {
     waited_ms += 1000;
     if (waited_ms >= 30000) {
       IDK_ERR("tp", "shm: timeout waiting for consumer on %s\n", shm_name);
-      close(shm_fd);
+      shm_producer_close_mapping(ptr, shm_fd);
+      TP_SH_SHM_PTR(tp->_rsv) = NULL;
       tp->_client_fd = -1;
       return -1;
     }
