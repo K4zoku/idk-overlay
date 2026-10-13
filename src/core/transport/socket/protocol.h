@@ -22,6 +22,13 @@ enum idk_socket_v2_type {
   IDK_SOCKET_V2_FEATURES = 7,
 };
 
+typedef struct idk_socket_v2_identity {
+  uint64_t session_generation;
+  uint64_t message_id;
+} idk_socket_v2_identity_t;
+
+_Static_assert(sizeof(idk_socket_v2_identity_t) == 16, "idk_socket_v2_identity_t must be 16 bytes");
+
 #pragma pack(push, 1)
 typedef struct idk_socket_features {
   uint32_t features;
@@ -32,11 +39,14 @@ typedef struct idk_socket_features {
 
 _Static_assert(sizeof(idk_socket_features_t) == 8, "idk_socket_features_t must be 8 bytes");
 
-int socket_v2_send_hello(int fd);
-int socket_v2_server_handshake(int fd, uint32_t *features);
-int socket_v2_client_handshake(int fd, uint32_t *features);
-int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_bytes, const int *fds, int nfd);
-int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload_capacity, int fds[4], int *nfd);
+uint64_t socket_v2_new_session_generation(void);
+int socket_v2_send_hello(int fd, const idk_socket_v2_identity_t *identity);
+int socket_v2_server_handshake(int fd, uint32_t *features, uint64_t *session_generation, uint64_t *next_message_id);
+int socket_v2_client_handshake(int fd, uint64_t session_generation, uint32_t *features, uint64_t *next_message_id);
+int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_bytes,
+                   const idk_socket_v2_identity_t *identity, const int *fds, int nfd);
+int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload_capacity,
+                   idk_socket_v2_identity_t *identity, int fds[4], int *nfd);
 int socket_v2_peek_type(int fd, uint16_t *type);
 
 #endif

@@ -9,7 +9,7 @@ void tp_socket_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack) {
   if (tp->_client_fd < 0 || !ack)
     return;
   if (TP_S_SEQPACKET(tp->_rsv)) {
-    if (socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_ACK, ack, sizeof(*ack), NULL, 0) < 0)
+    if (tp_socket_v2_send(tp, IDK_SOCKET_V2_ACK, ack, sizeof(*ack), NULL, 0) < 0)
       tp_socket_disconnect_client(tp);
     return;
   }
@@ -45,7 +45,7 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
       if (type == IDK_SOCKET_V2_ACK) {
         int fds[4];
         int nfd = 0;
-        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_ACK, ack, sizeof(*ack), fds, &nfd);
+        int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_ACK, ack, sizeof(*ack), fds, &nfd);
         if (rc == 1 && nfd != 0) {
           for (int j = 0; j < nfd; j++)
             close(fds[j]);
@@ -57,7 +57,7 @@ int tp_socket_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) 
         idk_request_msg_t req;
         int fds[4];
         int nfd = 0;
-        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, &req, sizeof(req), fds, &nfd);
+        int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_REQUEST, &req, sizeof(req), fds, &nfd);
         if (rc != 1) {
           tp_socket_disconnect_on_recv_error(tp, rc);
           return -1;

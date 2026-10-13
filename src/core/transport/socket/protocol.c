@@ -3,9 +3,11 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #define IDK_SOCKET_LOCAL_FEATURES (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF)
 
@@ -64,25 +66,36 @@ static int collect_fds(struct msghdr *msg, int fds[4], int *nfd) {
   *nfd = received;
   return malformed ? -1 : 0;
 }
-int socket_v2_send_hello(int fd) {
+static _Atomic uint64_t g_session_seed = 1;
+
+uint64_t socket_v2_new_session_generation(void) {
+  struct timespec now = {0};
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  uint64_t serial = atomic_fetch_add_explicit(&g_session_seed, 1, memory_order_relaxed);
+  uint64_t generation = ((uint64_t)getpid() << 32) ^ ((uint64_t)now.tv_sec << 17) ^ (uint64_t)now.tv_nsec ^ serial;
+  return generation ? generation : serial + 1;
+}
+
+int socket_v2_send_hello(int fd, const idk_socket_v2_identity_t *identity) {
   const idk_socket_features_t hello = {
       .features = IDK_SOCKET_LOCAL_FEATURES,
       .max_fds = 4,
       .reserved = 0,
   };
-  return socket_v2_send(fd, IDK_SOCKET_V2_HELLO, &hello, sizeof(hello), NULL, 0);
+  return socket_v2_send(fd, IDK_SOCKET_V2_HELLO, &hello, sizeof(hello), identity, NULL, 0);
 }
 
-int socket_v2_server_handshake(int fd, uint32_t *features) {
+int socket_v2_server_handshake(int fd, uint32_t *features, uint64_t *session_generation, uint64_t *next_message_id) {
   idk_socket_features_t hello = {0};
+  idk_socket_v2_identity_t hello_identity = {0};
   int fds[4];
   int nfd = 0;
-  int rc = socket_v2_recv(fd, IDK_SOCKET_V2_HELLO, &hello, sizeof(hello), fds, &nfd);
+  int rc = socket_v2_recv(fd, IDK_SOCKET_V2_HELLO, &hello, sizeof(hello), &hello_identity, fds, &nfd);
   for (int i = 0; i < nfd; i++)
     close(fds[i]);
   if (rc <= 0)
     return rc;
-  if (nfd != 0) {
+  if (nfd != 0 || hello_identity.session_generation == 0 || hello_identity.message_id == 0) {
     errno = EBADMSG;
     return -1;
   }
@@ -95,34 +108,48 @@ int socket_v2_server_handshake(int fd, uint32_t *features) {
       .max_fds = hello.max_fds < 4 ? hello.max_fds : 4,
       .reserved = 0,
   };
-  if (socket_v2_send(fd, IDK_SOCKET_V2_FEATURES, &selected, sizeof(selected), NULL, 0) < 0)
+  idk_socket_v2_identity_t selected_identity = {
+      .session_generation = hello_identity.session_generation,
+      .message_id = 1,
+  };
+  if (socket_v2_send(fd, IDK_SOCKET_V2_FEATURES, &selected, sizeof(selected), &selected_identity, NULL, 0) < 0)
     return -1;
   if (features)
     *features = selected.features;
+  if (session_generation)
+    *session_generation = hello_identity.session_generation;
+  if (next_message_id)
+    *next_message_id = 2;
   return 1;
 }
 
-int socket_v2_client_handshake(int fd, uint32_t *features) {
+int socket_v2_client_handshake(int fd, uint64_t session_generation, uint32_t *features, uint64_t *next_message_id) {
   idk_socket_features_t selected = {0};
+  idk_socket_v2_identity_t selected_identity = {0};
   int fds[4];
   int nfd = 0;
-  int rc = socket_v2_recv(fd, IDK_SOCKET_V2_FEATURES, &selected, sizeof(selected), fds, &nfd);
+  int rc = socket_v2_recv(fd, IDK_SOCKET_V2_FEATURES, &selected, sizeof(selected), &selected_identity, fds, &nfd);
   for (int i = 0; i < nfd; i++)
     close(fds[i]);
   if (rc <= 0)
     return rc;
-  if (nfd != 0 || selected.max_fds == 0 || !(selected.features & IDK_SOCKET_FEATURE_SEQPACKET)) {
+  if (nfd != 0 || session_generation == 0 || selected_identity.session_generation != session_generation ||
+      selected_identity.message_id == 0 || selected.max_fds == 0 ||
+      !(selected.features & IDK_SOCKET_FEATURE_SEQPACKET)) {
     errno = EPROTONOSUPPORT;
     return -1;
   }
   if (features)
     *features = selected.features;
+  if (next_message_id)
+    *next_message_id = 2;
   return 1;
 }
 
-int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_bytes, const int *fds, int nfd) {
-  if (fd < 0 || !payload || payload_bytes > IDK_SOCKET_V2_MAX_PAYLOAD || nfd < 0 || nfd > 4 ||
-      (nfd > 0 && !fds)) {
+int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_bytes,
+                   const idk_socket_v2_identity_t *identity, const int *fds, int nfd) {
+  if (fd < 0 || !payload || !identity || identity->session_generation == 0 || identity->message_id == 0 ||
+      payload_bytes > IDK_SOCKET_V2_MAX_PAYLOAD || nfd < 0 || nfd > 4 || (nfd > 0 && !fds)) {
     errno = EINVAL;
     return -1;
   }
@@ -134,8 +161,8 @@ int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_by
       .type = type,
       .flags = 0,
       .payload_bytes = (uint32_t)payload_bytes,
-      .session_generation = 0,
-      .message_id = 0,
+      .session_generation = identity->session_generation,
+      .message_id = identity->message_id,
   };
   char control[CMSG_SPACE(sizeof(int) * 4)] = {0};
   struct iovec iov[2] = {{.iov_base = &header, .iov_len = sizeof(header)},
@@ -160,9 +187,9 @@ int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_by
   }
   return 0;
 }
-
-int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload_capacity, int fds[4], int *nfd) {
-  if (fd < 0 || !payload || !fds || !nfd || payload_capacity > IDK_SOCKET_V2_MAX_PAYLOAD) {
+int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload_capacity,
+                   idk_socket_v2_identity_t *identity, int fds[4], int *nfd) {
+  if (fd < 0 || !payload || !identity || !fds || !nfd || payload_capacity > IDK_SOCKET_V2_MAX_PAYLOAD) {
     errno = EINVAL;
     return -1;
   }
@@ -196,8 +223,8 @@ int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload
   if (!bad)
     memcpy(&header, wire, sizeof(header));
   if (!bad && (header.magic != IDK_SOCKET_V2_MAGIC || header.major != IDK_SOCKET_V2_MAJOR || header.minor != 0 ||
-               header.type != expected_type || header.payload_bytes > payload_capacity ||
-               sizeof(header) + (size_t)header.payload_bytes != (size_t)received))
+               header.session_generation == 0 || header.message_id == 0 || header.type != expected_type ||
+               header.payload_bytes > payload_capacity || sizeof(header) + (size_t)header.payload_bytes != (size_t)received))
     bad = true;
   if (bad) {
     close_fds(fds, nfd);
@@ -205,7 +232,10 @@ int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload
     errno = EBADMSG;
     return -1;
   }
-
+  *identity = (idk_socket_v2_identity_t){
+      .session_generation = header.session_generation,
+      .message_id = header.message_id,
+  };
   memcpy(payload, wire + sizeof(header), header.payload_bytes);
   free(wire);
   return 1;
@@ -221,7 +251,8 @@ int socket_v2_peek_type(int fd, uint16_t *type) {
     return -1;
   }
   if ((size_t)n < sizeof(header) || header.magic != IDK_SOCKET_V2_MAGIC || header.major != IDK_SOCKET_V2_MAJOR ||
-      header.minor != 0 || header.payload_bytes > IDK_SOCKET_V2_MAX_PAYLOAD) {
+      header.minor != 0 || header.session_generation == 0 || header.message_id == 0 ||
+      header.payload_bytes > IDK_SOCKET_V2_MAX_PAYLOAD) {
     errno = EBADMSG;
     return -1;
   }

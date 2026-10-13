@@ -70,7 +70,7 @@ int tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev) {
   }
 
   if (TP_S_SEQPACKET(tp->_rsv)) {
-    if (socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_INPUT, ev, sizeof(*ev), NULL, 0) < 0) {
+    if (tp_socket_v2_send(tp, IDK_SOCKET_V2_INPUT, ev, sizeof(*ev), NULL, 0) < 0) {
       if (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF)
         tp_socket_disconnect_client(tp);
       return -1;
@@ -104,7 +104,7 @@ int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev) {
   if (TP_S_SEQPACKET(tp->_rsv)) {
     int fds[4];
     int nfd = 0;
-    int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_INPUT, ev, sizeof(*ev), fds, &nfd);
+    int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_INPUT, ev, sizeof(*ev), fds, &nfd);
     for (int i = 0; i < nfd; i++)
       close(fds[i]);
     return rc;
@@ -146,7 +146,7 @@ int tp_socket_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor
     memcpy(payload, cursor, sizeof(*cursor));
     if (cursor->data_size > 0)
       memcpy(payload + sizeof(*cursor), pixels, cursor->data_size);
-    int rc = socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_CURSOR, payload, payload_size, NULL, 0);
+    int rc = tp_socket_v2_send(tp, IDK_SOCKET_V2_CURSOR, payload, payload_size, NULL, 0);
     free(payload);
     if (rc < 0)
       tp_socket_disconnect_client(tp);
@@ -172,7 +172,7 @@ int tp_socket_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint
       return -1;
     int fds[4];
     int nfd = 0;
-    int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_CURSOR, payload, payload_capacity, fds, &nfd);
+    int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_CURSOR, payload, payload_capacity, fds, &nfd);
     for (int i = 0; i < nfd; i++)
       close(fds[i]);
     if (rc <= 0) {

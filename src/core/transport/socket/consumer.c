@@ -85,6 +85,8 @@ int tp_socket_accept(idk_transport_t *tp) {
   set_nonblock(c);
   tp->_client_fd = c;
   tp->ready = !TP_S_SEQPACKET(tp->_rsv);
+  tp_socket_set_session_generation(tp, 0);
+  tp_socket_set_next_message_id(tp, 0);
   TP_S_STATE(tp->_rsv) = TP_S_SEQPACKET(tp->_rsv) ? TP_STATE_HANDSHAKE : TP_STATE_READY;
   TP_S_QUEUED_REQ(tp->_rsv) = 0;
   return 1;

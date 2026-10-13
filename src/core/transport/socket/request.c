@@ -13,7 +13,7 @@ int tp_socket_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
     return -1;
   }
   if (TP_S_SEQPACKET(tp->_rsv)) {
-    if (socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), NULL, 0) < 0) {
+    if (tp_socket_v2_send(tp, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), NULL, 0) < 0) {
       if (errno == EPIPE || errno == ECONNRESET || errno == ESHUTDOWN || errno == ECONNABORTED || errno == EBADF)
         tp_socket_disconnect_client(tp);
       return -1;
@@ -64,7 +64,7 @@ static int recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout
       if (type == IDK_SOCKET_V2_REQUEST) {
         int fds[4];
         int nfd = 0;
-        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), fds, &nfd);
+        int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_REQUEST, req, sizeof(*req), fds, &nfd);
         for (int j = 0; j < nfd; j++)
           close(fds[j]);
         if (rc != 1 || nfd != 0) {
@@ -83,7 +83,7 @@ static int recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout
         idk_ack_msg_t stale;
         int fds[4];
         int nfd = 0;
-        int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_ACK, &stale, sizeof(stale), fds, &nfd);
+        int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_ACK, &stale, sizeof(stale), fds, &nfd);
         for (int j = 0; j < nfd; j++)
           close(fds[j]);
         if (rc != 1 || nfd != 0)

@@ -12,7 +12,7 @@ int tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int
     return -1;
   }
   if (TP_S_SEQPACKET(tp->_rsv)) {
-    int rc = socket_v2_recv(tp->_client_fd, IDK_SOCKET_V2_FRAME, hdr, sizeof(*hdr), fds, nfd);
+    int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_FRAME, hdr, sizeof(*hdr), fds, nfd);
     if (rc == 1 && hdr->nfd != 0 && hdr->nfd != *nfd) {
       for (int i = 0; i < *nfd; i++)
         close(fds[i]);
@@ -47,7 +47,7 @@ int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int
     return -1;
   }
   int rc = TP_S_SEQPACKET(tp->_rsv)
-               ? socket_v2_send(tp->_client_fd, IDK_SOCKET_V2_FRAME, hdr, sizeof(*hdr), fds, nfd)
+               ? tp_socket_v2_send(tp, IDK_SOCKET_V2_FRAME, hdr, sizeof(*hdr), fds, nfd)
                : (scm_send_fds(tp->_client_fd, hdr, sizeof(*hdr), fds, nfd) == (ssize_t)sizeof(*hdr) ? 0 : -1);
   if (rc < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK)

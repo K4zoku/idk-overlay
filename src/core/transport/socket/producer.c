@@ -11,7 +11,14 @@
 static int begin_producer_handshake(idk_transport_t *tp, int fd) {
   if (!TP_S_SEQPACKET(tp->_rsv))
     return 0;
-  if (socket_v2_send_hello(fd) < 0)
+  uint64_t session_generation = socket_v2_new_session_generation();
+  tp_socket_set_session_generation(tp, session_generation);
+  tp_socket_set_next_message_id(tp, 2);
+  const idk_socket_v2_identity_t identity = {
+      .session_generation = session_generation,
+      .message_id = 1,
+  };
+  if (socket_v2_send_hello(fd, &identity) < 0)
     return -1;
   TP_S_STATE(tp->_rsv) = TP_STATE_HANDSHAKE;
   tp->ready = false;
@@ -134,13 +141,18 @@ int tp_socket_poll(idk_transport_t *tp) {
   }
   if (TP_S_SEQPACKET(tp->_rsv) && !tp->ready) {
     uint32_t features = 0;
-    int handshake = tp->role == IDK_TP_CONSUMER ? socket_v2_server_handshake(tp->_client_fd, &features)
-                                                 : socket_v2_client_handshake(tp->_client_fd, &features);
+    uint64_t session_generation = tp_socket_session_generation(tp);
+    uint64_t next_message_id = tp_socket_next_message_id(tp);
+    int handshake = tp->role == IDK_TP_CONSUMER
+                        ? socket_v2_server_handshake(tp->_client_fd, &features, &session_generation, &next_message_id)
+                        : socket_v2_client_handshake(tp->_client_fd, session_generation, &features, &next_message_id);
     if (handshake < 0) {
       tp_socket_disconnect_client(tp);
       return -1;
     }
     if (handshake == 1) {
+      tp_socket_set_session_generation(tp, session_generation);
+      tp_socket_set_next_message_id(tp, next_message_id);
       TP_S_STATE(tp->_rsv) = TP_STATE_READY;
       tp->ready = true;
       IDK_LOG("tp", "socket: negotiated seqpacket features=0x%x\n", features);
