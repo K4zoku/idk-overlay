@@ -57,11 +57,13 @@ TEST(hello_features_negotiate_without_fds) {
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
   uint64_t session_generation = socket_v2_new_session_generation();
   idk_socket_v2_identity_t hello_identity = {.session_generation = session_generation, .message_id = 1};
-  ASSERT_EQ(socket_v2_send_hello(sockets[0], &hello_identity), 0);
+  ASSERT_EQ(socket_v2_send_hello(sockets[0], IDK_SOCKET_FEATURES_DEFAULT, &hello_identity), 0);
   uint32_t server_features = 0;
   uint64_t server_session = 0;
   uint64_t server_next = 0;
-  ASSERT_EQ(socket_v2_server_handshake(sockets[1], &server_features, &server_session, &server_next), 1);
+  ASSERT_EQ(socket_v2_server_handshake(sockets[1], IDK_SOCKET_FEATURES_DEFAULT, &server_features, &server_session,
+                                       &server_next),
+            1);
   uint32_t client_features = 0;
   uint64_t client_next = 0;
   ASSERT_EQ(socket_v2_client_handshake(sockets[0], session_generation, &client_features, &client_next), 1);
@@ -74,9 +76,31 @@ TEST(hello_features_negotiate_without_fds) {
   close(sockets[1]);
 }
 
+TEST(negotiate_capability_subset) {
+  int sockets[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
+  uint64_t session_generation = socket_v2_new_session_generation();
+  idk_socket_v2_identity_t hello_identity = {.session_generation = session_generation, .message_id = 1};
+  ASSERT_EQ(socket_v2_send_hello(sockets[0], IDK_SOCKET_FEATURE_SEQPACKET, &hello_identity), 0);
+  uint32_t server_features = 0;
+  uint64_t server_session = 0;
+  uint64_t server_next = 0;
+  ASSERT_EQ(socket_v2_server_handshake(sockets[1], IDK_SOCKET_FEATURES_DEFAULT, &server_features, &server_session,
+                                       &server_next),
+            1);
+  uint32_t client_features = 0;
+  uint64_t client_next = 0;
+  ASSERT_EQ(socket_v2_client_handshake(sockets[0], session_generation, &client_features, &client_next), 1);
+  ASSERT_EQ(server_features, IDK_SOCKET_FEATURE_SEQPACKET);
+  ASSERT_EQ(client_features, IDK_SOCKET_FEATURE_SEQPACKET);
+  close(sockets[0]);
+  close(sockets[1]);
+}
+
 int main(void) {
   RUN(round_trip_frame_and_fd);
   RUN(hello_features_negotiate_without_fds);
   RUN(reject_wrong_type);
+  RUN(negotiate_capability_subset);
   return 0;
 }

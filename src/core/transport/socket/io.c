@@ -13,6 +13,15 @@ int tp_socket_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int
   }
   if (TP_S_SEQPACKET(tp->_rsv)) {
     int rc = tp_socket_v2_recv(tp, IDK_SOCKET_V2_FRAME, hdr, sizeof(*hdr), fds, nfd);
+    if (rc == 1 && (hdr->flags & IDK_FRAME_FLAG_DMABUF) &&
+        !(tp_socket_features(tp) & IDK_SOCKET_FEATURE_DMABUF)) {
+      for (int i = 0; i < *nfd; i++)
+        close(fds[i]);
+      *nfd = 0;
+      tp_socket_disconnect_client(tp);
+      errno = EOPNOTSUPP;
+      return -1;
+    }
     if (rc == 1 && hdr->nfd != 0 && hdr->nfd != *nfd) {
       for (int i = 0; i < *nfd; i++)
         close(fds[i]);
@@ -44,6 +53,11 @@ int tp_socket_drop_frame(idk_transport_t *tp) {
 int tp_socket_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *fds, int nfd) {
   if (tp->_client_fd < 0 || !hdr || !fds || nfd < 1 || nfd > 4) {
     errno = EINVAL;
+    return -1;
+  }
+  if (TP_S_SEQPACKET(tp->_rsv) && (hdr->flags & IDK_FRAME_FLAG_DMABUF) &&
+      !(tp_socket_features(tp) & IDK_SOCKET_FEATURE_DMABUF)) {
+    errno = EOPNOTSUPP;
     return -1;
   }
   int rc = TP_S_SEQPACKET(tp->_rsv)

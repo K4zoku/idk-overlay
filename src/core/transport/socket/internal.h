@@ -14,8 +14,8 @@
 #include "protocol.h"
 
 /* _rsv[72]: [0..3]=state, [4..7]=connect retries, [8..47]=path,
- *            [48]=queued request, [49]=seqpacket, [56..63]=session generation,
- *            [64..71]=next message ID */
+ *            [48]=queued request, [49]=seqpacket, [50..53]=features,
+ *            [56..63]=session generation, [64..71]=next message ID */
 #define TP_S_STATE(rsv) (*(int *)(rsv))
 #define TP_S_CONNECT_RETRIES(rsv) (*(int *)((rsv) + 4))
 #define TP_S_ABSTRACT(rsv) ((rsv)[7])
@@ -47,6 +47,16 @@ static inline uint64_t tp_socket_next_message_id(const idk_transport_t *tp) {
 
 static inline void tp_socket_set_next_message_id(idk_transport_t *tp, uint64_t value) {
   memcpy(tp->_rsv + 64, &value, sizeof(value));
+}
+
+static inline uint32_t tp_socket_features(const idk_transport_t *tp) {
+  uint32_t value = 0;
+  memcpy(&value, tp->_rsv + 50, sizeof(value));
+  return value;
+}
+
+static inline void tp_socket_set_features(idk_transport_t *tp, uint32_t value) {
+  memcpy(tp->_rsv + 50, &value, sizeof(value));
 }
 
 static inline int tp_socket_v2_send(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,

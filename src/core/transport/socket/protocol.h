@@ -11,6 +11,7 @@
 #define IDK_SOCKET_FEATURE_ROI (1u << 1)
 #define IDK_SOCKET_FEATURE_DMABUF (1u << 2)
 #define IDK_SOCKET_FEATURE_SYNC_FILE (1u << 3)
+#define IDK_SOCKET_FEATURES_DEFAULT (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF)
 
 enum idk_socket_v2_type {
   IDK_SOCKET_V2_FRAME = 1,
@@ -40,8 +41,9 @@ typedef struct idk_socket_features {
 _Static_assert(sizeof(idk_socket_features_t) == 8, "idk_socket_features_t must be 8 bytes");
 
 uint64_t socket_v2_new_session_generation(void);
-int socket_v2_send_hello(int fd, const idk_socket_v2_identity_t *identity);
-int socket_v2_server_handshake(int fd, uint32_t *features, uint64_t *session_generation, uint64_t *next_message_id);
+int socket_v2_send_hello(int fd, uint32_t features, const idk_socket_v2_identity_t *identity);
+int socket_v2_server_handshake(int fd, uint32_t local_features, uint32_t *features, uint64_t *session_generation,
+                               uint64_t *next_message_id);
 int socket_v2_client_handshake(int fd, uint64_t session_generation, uint32_t *features, uint64_t *next_message_id);
 int socket_v2_send(int fd, uint16_t type, const void *payload, size_t payload_bytes,
                    const idk_socket_v2_identity_t *identity, const int *fds, int nfd);

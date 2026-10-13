@@ -9,7 +9,6 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
-#define IDK_SOCKET_LOCAL_FEATURES (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF)
 
 #pragma pack(push, 1)
 typedef struct socket_v2_header {
@@ -76,16 +75,17 @@ uint64_t socket_v2_new_session_generation(void) {
   return generation ? generation : serial + 1;
 }
 
-int socket_v2_send_hello(int fd, const idk_socket_v2_identity_t *identity) {
+int socket_v2_send_hello(int fd, uint32_t features, const idk_socket_v2_identity_t *identity) {
   const idk_socket_features_t hello = {
-      .features = IDK_SOCKET_LOCAL_FEATURES,
+      .features = features,
       .max_fds = 4,
       .reserved = 0,
   };
   return socket_v2_send(fd, IDK_SOCKET_V2_HELLO, &hello, sizeof(hello), identity, NULL, 0);
 }
 
-int socket_v2_server_handshake(int fd, uint32_t *features, uint64_t *session_generation, uint64_t *next_message_id) {
+int socket_v2_server_handshake(int fd, uint32_t local_features, uint32_t *features, uint64_t *session_generation,
+                               uint64_t *next_message_id) {
   idk_socket_features_t hello = {0};
   idk_socket_v2_identity_t hello_identity = {0};
   int fds[4];
@@ -99,12 +99,13 @@ int socket_v2_server_handshake(int fd, uint32_t *features, uint64_t *session_gen
     errno = EBADMSG;
     return -1;
   }
-  if (hello.max_fds == 0 || !(hello.features & IDK_SOCKET_FEATURE_SEQPACKET)) {
+  if (hello.max_fds == 0 || !(hello.features & IDK_SOCKET_FEATURE_SEQPACKET) ||
+      !(local_features & IDK_SOCKET_FEATURE_SEQPACKET)) {
     errno = EPROTONOSUPPORT;
     return -1;
   }
   idk_socket_features_t selected = {
-      .features = hello.features & IDK_SOCKET_LOCAL_FEATURES,
+      .features = hello.features & local_features,
       .max_fds = hello.max_fds < 4 ? hello.max_fds : 4,
       .reserved = 0,
   };
