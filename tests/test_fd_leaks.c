@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -18,6 +19,17 @@ static int count_open_fds(void) {
   while (readdir(dir))
     count++;
   closedir(dir);
+  return count;
+}
+
+static int count_mappings(void) {
+  FILE *maps = fopen("/proc/self/maps", "r");
+  ASSERT_NE(maps, NULL);
+  int count = 0;
+  char line[512];
+  while (fgets(line, sizeof(line), maps))
+    count++;
+  fclose(maps);
   return count;
 }
 
@@ -177,6 +189,24 @@ TEST(compositor_replacement_and_shutdown_plateau) {
   unlink(path);
   ASSERT_TRUE(count_open_fds() <= baseline + 2);
 }
+TEST(shm_failed_init_unmaps_mapping) {
+  char name[64];
+  snprintf(name, sizeof(name), "/idk-shm-fail-%d", (int)getpid());
+  shm_unlink(name);
+  int owner_fd = -1;
+  void *owner_ptr = shm_setup(name, &owner_fd, 1);
+  ASSERT_NE(owner_ptr, NULL);
+  *shm_i32(owner_ptr, SHM_O_MAGIC) = SHM_MAGIC_VAL;
+  atomic_store(shm_atom(owner_ptr, SHM_O_CONS_STATE), -1);
+  int baseline = count_mappings();
+  idk_transport_t tp = {.role = IDK_TP_PRODUCER, ._client_fd = -1};
+  ASSERT_EQ(shm_init_producer(&tp, name), -1);
+  ASSERT_EQ(count_mappings(), baseline);
+  munmap(owner_ptr, SHM_SIZE);
+  close(owner_fd);
+  shm_unlink(name);
+}
+
 
 int main(void) {
   RUN(scm_rights_plateau);
@@ -184,5 +214,6 @@ int main(void) {
   RUN(frame_fd_cleanup_is_idempotent);
   RUN(shm_partial_steal_closes_previous_fds);
   RUN(compositor_replacement_and_shutdown_plateau);
+  RUN(shm_failed_init_unmaps_mapping);
   return 0;
 }
