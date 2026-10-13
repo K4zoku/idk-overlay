@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -22,6 +23,10 @@ extern int tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev
 extern int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
 extern int tp_socket_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels);
 extern int tp_socket_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity);
+extern int tp_socket_send_control(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,
+                                   const int *fds, int nfd);
+extern int tp_socket_recv_control(idk_transport_t *tp, uint16_t type, void *payload, size_t payload_capacity,
+                                   int fds[4], int *nfd);
 
 extern int tp_shm_init(idk_transport_t *tp, const char *name);
 extern void tp_shm_destroy(idk_transport_t *tp);
@@ -47,6 +52,18 @@ static int resolve_backend(void) {
   return IDK_TP_SOCKET;
 }
 
+static int tp_control_unsupported(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,
+                                  const int *fds, int nfd) {
+  (void)tp; (void)type; (void)payload; (void)payload_bytes; (void)fds; (void)nfd;
+  return (errno = ENOTSUP), -1;
+}
+
+static int tp_control_recv_unsupported(idk_transport_t *tp, uint16_t type, void *payload, size_t payload_capacity,
+                                       int fds[4], int *nfd) {
+  (void)tp; (void)type; (void)payload; (void)payload_capacity; (void)fds; (void)nfd;
+  return (errno = ENOTSUP), -1;
+}
+
 typedef struct {
   int (*init)(idk_transport_t *, const char *);
   void (*destroy)(idk_transport_t *);
@@ -59,6 +76,8 @@ typedef struct {
   int (*send)(idk_transport_t *, const idk_frame_header_t *, const int *, int);
   int (*wait_ack)(idk_transport_t *, idk_ack_msg_t *, int);
   int (*send_request)(idk_transport_t *, const idk_request_msg_t *);
+  int (*send_control)(idk_transport_t *, uint16_t, const void *, size_t, const int *, int);
+  int (*recv_control)(idk_transport_t *, uint16_t, void *, size_t, int[4], int *);
   int (*recv_request)(idk_transport_t *, idk_request_msg_t *, int);
   int (*send_input)(idk_transport_t *, const idk_input_event_t *);
   int (*recv_input)(idk_transport_t *, idk_input_event_t *);
@@ -80,6 +99,8 @@ static const idk_tp_backend_t tp_backends[2] = {
             .send = tp_socket_send,
             .wait_ack = tp_socket_wait_ack,
             .send_request = tp_socket_send_request,
+            .send_control = tp_socket_send_control,
+            .recv_control = tp_socket_recv_control,
             .recv_request = tp_socket_recv_request,
             .send_input = tp_socket_send_input,
             .recv_input = tp_socket_recv_input,
@@ -99,6 +120,8 @@ static const idk_tp_backend_t tp_backends[2] = {
             .send = tp_shm_send,
             .wait_ack = tp_shm_wait_ack,
             .send_request = tp_shm_send_request,
+            .send_control = tp_control_unsupported,
+            .recv_control = tp_control_recv_unsupported,
             .recv_request = tp_shm_recv_request,
             .send_input = tp_shm_send_input,
             .recv_input = tp_shm_recv_input,
@@ -140,6 +163,16 @@ int idk_tp_send(idk_transport_t *tp, const idk_frame_header_t *hdr, const int *f
 
 int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
   return tp_backends[tp->backend].wait_ack(tp, ack, timeout_ms);
+}
+
+int idk_tp_send_control(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,
+                        const int *fds, int nfd) {
+  return tp_backends[tp->backend].send_control(tp, type, payload, payload_bytes, fds, nfd);
+}
+
+int idk_tp_recv_control(idk_transport_t *tp, uint16_t type, void *payload, size_t payload_capacity, int fds[4],
+                        int *nfd) {
+  return tp_backends[tp->backend].recv_control(tp, type, payload, payload_capacity, fds, nfd);
 }
 
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
