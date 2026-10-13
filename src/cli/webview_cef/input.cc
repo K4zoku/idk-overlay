@@ -5,6 +5,7 @@
 #include <cstring>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
@@ -16,7 +17,39 @@
 #include "view.h"
 
 #define WHEEL_SCALE 12 /* match the Qt webview */
-#define INPUT_RETRY_MS 2000
+static int OpenRetryWatch(const std::string &name, std::string &leaf) {
+  if (name.empty() || name.front() == '\0')
+    return -1;
+  const size_t slash = name.rfind('/');
+  const std::string directory = slash == std::string::npos ? "." : name.substr(0, slash);
+  leaf = slash == std::string::npos ? name : name.substr(slash + 1);
+  int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+  if (fd < 0 || inotify_add_watch(fd, directory.c_str(), IN_CREATE | IN_MOVED_TO) < 0) {
+    if (fd >= 0)
+      close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+static bool RetryWatchHit(int fd, const std::string &leaf) {
+  char buffer[4096];
+  bool hit = false;
+  for (;;) {
+    ssize_t bytes = read(fd, buffer, sizeof(buffer));
+    if (bytes < 0 && (errno == EAGAIN || errno == EINTR))
+      break;
+    if (bytes <= 0)
+      break;
+    for (ssize_t offset = 0; offset < bytes;) {
+      const auto *event = reinterpret_cast<const struct inotify_event *>(buffer + offset);
+      if (event->len != 0 && leaf == event->name)
+        hit = true;
+      offset += sizeof(*event) + event->len;
+    }
+  }
+  return hit;
+}
 #define INPUT_MAX_RETRIES 15
 
 InputThread::InputThread(View *view, const std::string &frame_socket) : view_(view) {
@@ -145,6 +178,8 @@ bool InputThread::Connect() {
 void InputThread::Run() {
   bool connected = false;
   int retries = 0;
+  std::string retry_leaf;
+  const int retry_fd = OpenRetryWatch(name_, retry_leaf);
 
   while (!stop_.load()) {
     if (!connected) {
@@ -161,13 +196,39 @@ void InputThread::Run() {
       } else {
         retries++;
         if (retries == INPUT_MAX_RETRIES)
-          IDK_LOG("input-cef", "giving up after %d tries - game may not be a wayland client\n", retries);
-        struct pollfd command = {.fd = command_fd_, .events = POLLIN, .revents = 0};
-        poll(&command, command_fd_ >= 0 ? 1 : 0, INPUT_RETRY_MS);
-        if (command.revents & POLLIN) {
-          eventfd_t value;
-          while (eventfd_read(command_fd_, &value) == 0) {
+          IDK_LOG("input-cef", "giving up after %d tries - waiting for socket event\n", retries);
+        struct pollfd retry_fds[2] = {};
+        int nfds = 0;
+        if (command_fd_ >= 0)
+          retry_fds[nfds++] = {.fd = command_fd_, .events = POLLIN, .revents = 0};
+        if (retry_fd >= 0)
+          retry_fds[nfds++] = {.fd = retry_fd, .events = POLLIN, .revents = 0};
+        for (;;) {
+          int rc = poll(retry_fds, nfds, -1);
+          if (rc < 0) {
+            if (errno == EINTR)
+              continue;
+            stop_.store(true);
+            break;
           }
+          bool retry = false;
+          for (int i = 0; i < nfds; i++) {
+            if (!(retry_fds[i].revents & POLLIN))
+              continue;
+            if (retry_fds[i].fd == command_fd_) {
+              eventfd_t value;
+              if (eventfd_read(command_fd_, &value) == 0)
+                retry = true;
+              while (eventfd_read(command_fd_, &value) == 0) {
+              }
+            } else if (RetryWatchHit(retry_fd, retry_leaf)) {
+              retry = true;
+            }
+          }
+          if (stop_.load())
+            break;
+          if (retry)
+            break;
         }
         continue;
       }
@@ -232,6 +293,8 @@ void InputThread::Run() {
 
   if (tp_.ready || tp_._client_fd >= 0 || tp_._server_fd >= 0)
     idk_tp_destroy(&tp_);
+  if (retry_fd >= 0)
+    close(retry_fd);
 }
 
 /* ── Event translation → UI thread ─────────────────────────────────── */
