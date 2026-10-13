@@ -679,6 +679,9 @@ void View::MaybeSendDeferred() {
 bool View::BootstrapShmRing() {
   if (shm_ring_bootstrapped_ || !connected_)
     return shm_ring_bootstrapped_;
+  const char *socket_mode = std::getenv("IDK_TP_SOCKET");
+  if (!socket_mode || std::strcmp(socket_mode, "seqpacket") != 0)
+    return false;
   uint64_t generation = idk_producer_session_generation();
   constexpr uint32_t slot_count = IDK_SHM_RING_MAX_SLOTS;
   constexpr size_t slot_capacity = 16u * 1024u * 1024u;

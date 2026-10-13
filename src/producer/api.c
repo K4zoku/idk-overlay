@@ -38,7 +38,11 @@ int idk_producer_init(const char *sockpath) {
   return idk_tp_init(&g_tp, IDK_TP_PRODUCER, sockpath);
 }
 
-bool idk_producer_is_connected(void) { return g_tp.ready; }
+bool idk_producer_is_connected(void) {
+  if (!g_tp.ready && g_tp.backend == IDK_TP_SOCKET)
+    (void)idk_tp_poll(&g_tp);
+  return g_tp.ready;
+}
 
 void idk_producer_shutdown(void) { idk_tp_destroy(&g_tp); }
 
