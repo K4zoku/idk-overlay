@@ -27,7 +27,7 @@ static int begin_producer_handshake(idk_transport_t *tp, int fd) {
       .session_generation = session_generation,
       .message_id = 1,
   };
-  if (socket_v2_send_hello(fd, IDK_SOCKET_FEATURES_DEFAULT, &identity) < 0)
+  if (socket_v2_send_hello(fd, socket_local_features(), &identity) < 0)
     return -1;
   TP_S_STATE(tp->_rsv) = TP_STATE_HANDSHAKE;
   tp->ready = false;
@@ -143,7 +143,6 @@ int tp_socket_poll(idk_transport_t *tp) {
         return 0;
       }
       close(fd);
-      usleep(100000);
       return 0;
     }
     return -1;
@@ -163,6 +162,7 @@ int tp_socket_poll(idk_transport_t *tp) {
     if (handshake == 1) {
       tp_socket_set_session_generation(tp, session_generation);
       tp_socket_set_next_message_id(tp, next_message_id);
+      tp_socket_set_last_message_id(tp, 1);
       tp_socket_set_features(tp, features);
       TP_S_STATE(tp->_rsv) = TP_STATE_READY;
       tp->ready = true;
