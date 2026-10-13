@@ -120,6 +120,27 @@ int idk_producer_send_control(uint16_t type, const void *payload, size_t payload
   }
   return idk_tp_send_control(&g_tp, type, payload, payload_bytes, fds, nfd);
 }
+int idk_producer_recv_control(uint16_t type, void *payload, size_t payload_capacity) {
+  if (!g_tp.ready) {
+    errno = ENOTCONN;
+    return -1;
+  }
+  int fds[4] = {-1, -1, -1, -1};
+  int nfd = 0;
+  int rc = idk_tp_recv_control(&g_tp, type, payload, payload_capacity, fds, &nfd);
+  for (int i = 0; i < nfd; i++)
+    close(fds[i]);
+  return rc;
+}
+
+int idk_producer_peek_type(uint16_t *type) {
+  if (!g_tp.ready || !type) {
+    errno = g_tp.ready ? EINVAL : ENOTCONN;
+    return -1;
+  }
+  return idk_tp_peek_type(&g_tp, type);
+}
+
 
 uint64_t idk_producer_session_generation(void) {
   return idk_tp_session_generation(&g_tp);

@@ -1,10 +1,13 @@
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "core/compositor.h"
 #include "core/log.h"
 #include "../transport/socket/protocol.h"
+#include "../linux/fd.h"
+#include "public/idk_shm_delta.h"
 
 /* ===== Shared compositor API ===== */
 
@@ -44,9 +47,34 @@ static int recv_accept(void) {
   return g_comp.tp.ready ? 1 : 0;
 }
 
+static int receive_ring_create(void);
+static int receive_ring_frame(bool keep);
+
 /* Drop all queued frames while hidden. */
 static void drain_hidden(void) {
   while (1) {
+    uint16_t type = 0;
+    int peek = idk_tp_peek_type(&g_comp.tp, &type);
+    if (peek == 1 && type == IDK_SOCKET_V2_RING_CREATE) {
+      if (receive_ring_create() < 0) {
+        disconnect_client();
+        break;
+      }
+      continue;
+    }
+    if (peek == 1 && type == IDK_SOCKET_V2_FRAME_SLOT) {
+      if (receive_ring_frame(false) < 0) {
+        disconnect_client();
+        break;
+      }
+      idk_ack_msg_t ack = {.ack = IDK_ACK_DISCARDED};
+      idk_tp_send_ack(&g_comp.tp, &ack);
+      continue;
+    }
+    if (peek == 1 && type != IDK_SOCKET_V2_FRAME) {
+      disconnect_client();
+      break;
+    }
     int rc = idk_tp_drop_frame(&g_comp.tp);
     if (rc <= 0) {
       if (rc < 0)
@@ -66,21 +94,31 @@ static int receive_ring_create(void) {
   int rc = idk_tp_recv_control(&g_comp.tp, IDK_SOCKET_V2_RING_CREATE, &record, sizeof(record), fds, &nfd);
   if (rc <= 0)
     return rc;
-  if (nfd != 1) {
+  if (nfd != 1 || record.magic != IDK_SHM_RING_MAGIC || record.version != IDK_SHM_RING_VERSION ||
+      record.slot_count == 0 || record.slot_count > IDK_SHM_RING_MAX_SLOTS || record.slot_capacity == 0 ||
+      record.ring_bytes != (uint64_t)record.slot_count * record.slot_capacity ||
+      record.ring_bytes > SIZE_MAX || record.width == 0 || record.height == 0 ||
+      record.width > 65536 || record.height > 65536 || record.stride < record.width * 4 ||
+      record.session_generation != idk_tp_session_generation(&g_comp.tp)) {
+    idk_compositor_close_frame_fds(fds, &nfd);
+    return -1;
+  }
+  struct stat st = {0};
+  if (fstat(fds[0], &st) != 0 || st.st_size < 0 || (uint64_t)st.st_size < record.ring_bytes) {
     idk_compositor_close_frame_fds(fds, &nfd);
     return -1;
   }
   int ring_fd = fds[0];
   fds[0] = -1;
   idk_compositor_close_frame_fds(fds, &nfd);
-  void *map = mmap(NULL, record.ring_bytes, PROT_READ, MAP_SHARED, ring_fd, 0);
+  void *map = mmap(NULL, (size_t)record.ring_bytes, PROT_READ, MAP_SHARED, ring_fd, 0);
   close(ring_fd);
   if (map == MAP_FAILED)
     return -1;
   if (g_comp.ring_map)
     munmap(g_comp.ring_map, g_comp.ring_bytes);
   g_comp.ring_map = map;
-  g_comp.ring_bytes = record.ring_bytes;
+  g_comp.ring_bytes = (size_t)record.ring_bytes;
   g_comp.ring_generation = record.session_generation;
   g_comp.ring_slot_count = record.slot_count;
   g_comp.ring_slot_capacity = record.slot_capacity;
@@ -92,6 +130,76 @@ static int receive_ring_create(void) {
     return -1;
   return 1;
 }
+static int receive_ring_frame(bool keep) {
+  idk_shm_ring_frame_slot_t record = {0};
+  int fds[4] = {-1, -1, -1, -1};
+  int nfd = 0;
+  int rc = idk_tp_recv_control(&g_comp.tp, IDK_SOCKET_V2_FRAME_SLOT, &record, sizeof(record), fds, &nfd);
+  if (rc <= 0)
+    return rc;
+  bool addressable = nfd == 0 && g_comp.ring_map && record.session_generation == g_comp.ring_generation &&
+                     record.frame_id != 0 && record.slot_index < g_comp.ring_slot_count &&
+                     (uint64_t)record.offset == (uint64_t)record.slot_index * g_comp.ring_slot_capacity;
+  if (!addressable) {
+    idk_compositor_close_frame_fds(fds, &nfd);
+    return -1;
+  }
+  if (record.payload_bytes == 0 || record.payload_bytes > g_comp.ring_slot_capacity ||
+      (uint64_t)record.offset > g_comp.ring_bytes ||
+      (uint64_t)record.payload_bytes > g_comp.ring_bytes - record.offset ||
+      (record.flags & ~(IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI)) != 0 ||
+      ((record.flags & IDK_SHM_RING_FRAME_FULL) == 0) == ((record.flags & IDK_SHM_RING_FRAME_ROI) == 0)) {
+    idk_shm_ring_slot_release_t release = {
+        .session_generation = record.session_generation,
+        .frame_id = record.frame_id,
+        .slot_index = record.slot_index,
+        .status = 1,
+    };
+    (void)idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0);
+    return -1;
+  }
+  const uint8_t *source = (const uint8_t *)g_comp.ring_map + record.offset;
+  size_t expected_full = (size_t)record.width * record.height * 4u;
+  bool full = (record.flags & IDK_SHM_RING_FRAME_FULL) != 0;
+  bool valid_payload = record.width != 0 && record.height != 0 && record.width <= 65536 && record.height <= 65536 &&
+                       (full ? record.payload_bytes == expected_full
+                             : idk_shm_delta_validate((const idk_shm_delta_t *)source, record.width, record.height,
+                                                      record.payload_bytes));
+  int frame_fd = -1;
+  if (valid_payload && keep)
+    frame_fd = idk_memfd_copy(source, record.payload_bytes, "idk-ring-frame");
+  idk_shm_ring_slot_release_t release = {
+      .session_generation = record.session_generation,
+      .frame_id = record.frame_id,
+      .slot_index = record.slot_index,
+      .status = valid_payload && (!keep || frame_fd >= 0) ? 0u : 1u,
+  };
+  if (idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0) < 0) {
+    if (frame_fd >= 0)
+      close(frame_fd);
+    return -1;
+  }
+  if (!valid_payload)
+    return -1;
+  if (!keep)
+    return 0;
+  if (frame_fd < 0)
+    return 0;
+  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+  g_comp.hdr = (idk_frame_header_t){
+      .width = record.width,
+      .height = record.height,
+      .flags = IDK_FRAME_FLAG_VISIBLE | (full ? 0 : IDK_FRAME_FLAG_SHM_RECT),
+      .nfd = 1,
+  };
+  g_comp.dmabuf_fd[0] = frame_fd;
+  g_comp.nfd = 1;
+  g_comp.frame_w = record.width;
+  g_comp.frame_h = record.height;
+  g_comp.has_frame = true;
+  clock_gettime(CLOCK_MONOTONIC, &g_comp.last_frame_ts);
+  return 1;
+}
 
 /* Recv loop: keep the first frame of the batch and close all surplus FDs. */
 static int keep_last_frame(void) {
@@ -100,9 +208,25 @@ static int keep_last_frame(void) {
     uint16_t type = 0;
     int peek = idk_tp_peek_type(&g_comp.tp, &type);
     if (peek == 1 && type == IDK_SOCKET_V2_RING_CREATE) {
-      if (receive_ring_create() < 0)
+      if (receive_ring_create() < 0) {
         disconnect_client();
+        break;
+      }
       continue;
+    }
+    if (peek == 1 && type == IDK_SOCKET_V2_FRAME_SLOT) {
+      int ring_rc = receive_ring_frame(processed == 0);
+      if (ring_rc < 0) {
+        disconnect_client();
+        break;
+      }
+      if (ring_rc > 0)
+        processed = 1;
+      continue;
+    }
+    if (peek == 1 && type != IDK_SOCKET_V2_FRAME) {
+      disconnect_client();
+      break;
     }
     idk_frame_header_t hdr;
     int fds[4] = {-1, -1, -1, -1};

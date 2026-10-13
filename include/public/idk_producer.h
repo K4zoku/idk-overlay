@@ -93,6 +93,8 @@ bool idk_producer_is_connected(void);
  */
 int idk_producer_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *frame);
 int idk_producer_send_control(uint16_t type, const void *payload, size_t payload_bytes, const int *fds, int nfd);
+int idk_producer_recv_control(uint16_t type, void *payload, size_t payload_capacity);
+int idk_producer_peek_type(uint16_t *type);
 uint64_t idk_producer_session_generation(void);
 
 #ifdef __cplusplus

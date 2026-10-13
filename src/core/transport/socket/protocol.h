@@ -13,7 +13,8 @@
 #define IDK_SOCKET_FEATURE_DMABUF (1u << 2)
 #define IDK_SOCKET_FEATURE_SYNC_FILE (1u << 3)
 #define IDK_SOCKET_FEATURE_SHM_RING (1u << 4)
-#define IDK_SOCKET_FEATURES_DEFAULT (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF)
+#define IDK_SOCKET_FEATURES_DEFAULT \
+  (IDK_SOCKET_FEATURE_SEQPACKET | IDK_SOCKET_FEATURE_ROI | IDK_SOCKET_FEATURE_DMABUF | IDK_SOCKET_FEATURE_SHM_RING)
 
 enum idk_socket_v2_type {
   IDK_SOCKET_V2_FRAME = 1,
@@ -33,8 +34,11 @@ typedef struct idk_socket_v2_identity {
   uint64_t session_generation;
   uint64_t message_id;
 } idk_socket_v2_identity_t;
-
+#ifdef __cplusplus
+static_assert(sizeof(idk_socket_v2_identity_t) == 16, "idk_socket_v2_identity_t must be 16 bytes");
+#else
 _Static_assert(sizeof(idk_socket_v2_identity_t) == 16, "idk_socket_v2_identity_t must be 16 bytes");
+#endif
 
 #pragma pack(push, 1)
 typedef struct idk_socket_features {
@@ -43,8 +47,11 @@ typedef struct idk_socket_features {
   uint16_t reserved;
 } idk_socket_features_t;
 #pragma pack(pop)
-
+#ifdef __cplusplus
+static_assert(sizeof(idk_socket_features_t) == 8, "idk_socket_features_t must be 8 bytes");
+#else
 _Static_assert(sizeof(idk_socket_features_t) == 8, "idk_socket_features_t must be 8 bytes");
+#endif
 
 uint64_t socket_v2_new_session_generation(void);
 int socket_v2_send_hello(int fd, uint32_t features, const idk_socket_v2_identity_t *identity);

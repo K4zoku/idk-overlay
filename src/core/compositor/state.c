@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <sys/mman.h>
 #include <time.h>
 
 #include "core/compositor.h"
@@ -46,9 +47,16 @@ int idk_compositor_init(void) {
 }
 
 int idk_compositor_has_frame(void) { return g_comp.has_frame ? 1 : 0; }
-
 void idk_compositor_shutdown(void) {
   idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+  if (g_comp.ring_map) {
+    munmap(g_comp.ring_map, g_comp.ring_bytes);
+    g_comp.ring_map = NULL;
+    g_comp.ring_bytes = 0;
+    g_comp.ring_generation = 0;
+    g_comp.ring_slot_count = 0;
+    g_comp.ring_slot_capacity = 0;
+  }
   g_comp.has_frame = false;
   g_comp.dmabuf_cache_id = 0;
   if (g_comp.inited) {

@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,7 @@
 
 #include "config.h"
 #include "gpubuf.h"
+#include "shm_ring.h"
 #include "public/idk_frames.h"
 #include "public/idk_shm_delta.h"
 
@@ -83,7 +85,12 @@ private:
   /* CefDisplayHandler */
   bool OnCursorChange(CefRefPtr<CefBrowser>, CefCursorHandle, cef_cursor_type_t, const CefCursorInfo &) override;
 
-  /* Producer lifecycle + pacing (UI thread). */
+  /* Producer-side SHM ring setup and slot release handling. */
+  bool BootstrapShmRing();
+  void DrainShmRingReleases();
+  void ResetShmRing();
+  bool SendShmRingFrame(const uint8_t *payload, size_t payload_bytes, int w, int h, bool partial,
+                        const idk_shm_delta_t *roi);
   void ConnectTask();
   void ProcessAck(const idk_ack_msg_t &ack);
   void NudgeFrame();
@@ -114,6 +121,13 @@ private:
   bool sock_abstract_ = false;
   bool no_dmabuf_;
   bool connected_ = false;
+  bool shm_ring_bootstrapped_ = false;
+  bool shm_ring_ready_ = false;
+  uint64_t shm_ring_frame_id_ = 0;
+  uint64_t shm_ring_last_full_frame_id_ = 0;
+  uint64_t shm_ring_inflight_frame_id_ = 0;
+  bool shm_ring_inflight_full_ = false;
+  std::unique_ptr<ShmRing> shm_ring_;
   bool connect_task_scheduled_ = false;
   int connect_attempts_ = 0;
   std::atomic<bool> quit_{false};

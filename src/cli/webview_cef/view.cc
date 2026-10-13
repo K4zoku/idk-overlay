@@ -1,4 +1,6 @@
 #include "view.h"
+#include "../../core/transport/socket/protocol.h"
+
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -15,6 +17,8 @@
 #include "input.h"
 #include "shm_format.h"
 #include "shm_diff.h"
+#include "public/idk_shm_ring.h"
+
 #include "public/idk_producer.h"
 #include "public/idk_shm_delta.h"
 #include "tasks.h"
@@ -452,7 +456,7 @@ void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_
   bool partial = false;
   if (shm_roi_enabled_ && shm_baseline_valid_) {
     if (verified_roi && idk_shm_delta_validate(verified_roi, w, h,
-                                              sizeof(*verified_roi) + (size_t)verified_roi->width * verified_roi->height * 4)) {
+                                               sizeof(*verified_roi) + (size_t)verified_roi->width * verified_roi->height * 4)) {
       roi = *verified_roi;
       partial = true;
     } else if (!needs_full_update_ && dirty_rects) {
@@ -460,39 +464,54 @@ void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_
     }
   }
   size_t payload = partial ? (size_t)roi.width * roi.height * 4 + sizeof(roi) : (size_t)w * h * 4;
-  int fd = memfd_create("idk-webview-cef", MFD_CLOEXEC);
-  if (fd < 0)
-    return;
-  if (ftruncate(fd, (off_t)payload) < 0) {
-    close(fd);
-    return;
-  }
-  void *map = mmap(nullptr, payload, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (map == MAP_FAILED) {
-    close(fd);
-    return;
-  }
+  std::vector<uint8_t> packed(payload);
   if (partial) {
-    if (!idk_shm_delta_pack(map, payload, px, (uint32_t)w, (uint32_t)h, &roi)) {
-      munmap(map, payload);
+    if (!idk_shm_delta_pack(packed.data(), packed.size(), px, (uint32_t)w, (uint32_t)h, &roi))
+      return;
+  } else {
+    memcpy(packed.data(), px, payload);
+  }
+  const uint8_t *ring_data = packed.data();
+  size_t ring_payload = payload;
+  bool ring_partial = partial;
+  idk_shm_delta_t ring_roi = roi;
+  std::vector<uint8_t> ring_full;
+  if (ring_partial && shm_ring_bootstrapped_ && shm_ring_ready_ && shm_ring_last_full_frame_id_ == 0) {
+    ring_full.assign(px, px + (size_t)w * h * 4);
+    ring_data = ring_full.data();
+    ring_payload = ring_full.size();
+    ring_partial = false;
+  }
+  bool ring_sent = SendShmRingFrame(ring_data, ring_payload, w, h, ring_partial, ring_partial ? &ring_roi : nullptr);
+  bool sent = ring_sent;
+
+  int fd = -1;
+  if (!sent) {
+    if (shm_ring_ready_)
+      shm_ring_last_full_frame_id_ = 0;
+    fd = memfd_create("idk-webview-cef", MFD_CLOEXEC);
+    if (fd < 0)
+      return;
+    if (ftruncate(fd, (off_t)payload) < 0) {
       close(fd);
       return;
     }
-  } else {
-    memcpy(map, px, payload);
+    void *map = mmap(nullptr, payload, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+      close(fd);
+      return;
+    }
+    memcpy(map, packed.data(), payload);
+    munmap(map, payload);
+    idk_frame_header_t hdr = {};
+    hdr.width = w;
+    hdr.height = h;
+    hdr.flags = IDK_FRAME_FLAG_VISIBLE | (partial ? IDK_FRAME_FLAG_SHM_RECT : 0);
+    hdr.nfd = 1;
+    sent = idk_producer_send_frame(fd, &hdr) == 0;
+    close(fd);
   }
-  munmap(map, payload);
-
-  idk_frame_header_t hdr = {};
-  hdr.width = w;
-  hdr.height = h;
-  hdr.stride = 0;
-  hdr.fourcc = 0;
-  hdr.flags = IDK_FRAME_FLAG_VISIBLE | (partial ? IDK_FRAME_FLAG_SHM_RECT : 0);
-  hdr.nfd = 1;
-  int rc = idk_producer_send_frame(fd, &hdr);
-  close(fd);
-  if (rc == 0) {
+  if (sent) {
     if (partial && shm_shadow_w_ == w && shm_shadow_h_ == h && shm_shadow_.size() == (size_t)w * h * 4) {
       for (uint32_t row = 0; row < roi.height; ++row)
         memcpy(shm_shadow_.data() + ((size_t)(roi.y + row) * w + roi.x) * 4,
@@ -500,14 +519,17 @@ void View::SendShmPixels(const uint8_t *px, int w, int h, const RectList *dirty_
     } else {
       shm_shadow_.assign(px, px + (size_t)w * h * 4);
     }
-    shm_shadow_w_ = w; shm_shadow_h_ = h;
+    shm_shadow_w_ = w;
+    shm_shadow_h_ = h;
     pending_ = true;
     request_credit_ = false;
     last_sent_shm_ = true;
-    sent_w_ = w; sent_h_ = h;
+    sent_w_ = w;
+    sent_h_ = h;
     rate_sent_++;
-    bytes_shm_sent_ += payload;
-    if (partial) rate_shm_roi_++;
+    bytes_shm_sent_ += ring_sent ? ring_payload : payload;
+    if (ring_sent ? ring_partial : partial)
+      rate_shm_roi_++;
   }
 }
 
@@ -654,6 +676,129 @@ void View::MaybeSendDeferred() {
 
 /* ── Producer connect + pacing ─────────────────────────────────────── */
 
+bool View::BootstrapShmRing() {
+  if (shm_ring_bootstrapped_ || !connected_)
+    return shm_ring_bootstrapped_;
+  uint64_t generation = idk_producer_session_generation();
+  constexpr uint32_t slot_count = IDK_SHM_RING_MAX_SLOTS;
+  constexpr size_t slot_capacity = 16u * 1024u * 1024u;
+  if (generation == 0)
+    return false;
+  shm_ring_ = std::make_unique<ShmRing>();
+  if (!shm_ring_->Init(generation, slot_count, slot_capacity, slot_capacity * slot_count)) {
+    shm_ring_.reset();
+    return false;
+  }
+  idk_shm_ring_create_t record = {
+      .magic = IDK_SHM_RING_MAGIC,
+      .version = IDK_SHM_RING_VERSION,
+      .slot_count = slot_count,
+      .slot_capacity = static_cast<uint32_t>(slot_capacity),
+      .ring_bytes = slot_capacity * slot_count,
+      .session_generation = generation,
+      .width = static_cast<uint32_t>(render_w_),
+      .height = static_cast<uint32_t>(render_h_),
+      .stride = static_cast<uint32_t>(render_w_ > 0 ? render_w_ * 4 : 0),
+  };
+  int fd = shm_ring_->fd();
+  if (idk_producer_send_control(IDK_SOCKET_V2_RING_CREATE, &record, sizeof(record), &fd, 1) < 0) {
+    shm_ring_.reset();
+    return false;
+  }
+  shm_ring_frame_id_ = 0;
+  shm_ring_last_full_frame_id_ = 0;
+  shm_ring_inflight_frame_id_ = 0;
+  shm_ring_inflight_full_ = false;
+  shm_ring_ready_ = false;
+  shm_ring_bootstrapped_ = true;
+  return true;
+}
+
+void View::ResetShmRing() {
+  shm_ring_bootstrapped_ = false;
+  shm_ring_ready_ = false;
+  shm_ring_frame_id_ = 0;
+  shm_ring_last_full_frame_id_ = 0;
+  shm_ring_inflight_frame_id_ = 0;
+  shm_ring_inflight_full_ = false;
+  shm_ring_.reset();
+}
+
+void View::DrainShmRingReleases() {
+  if (!shm_ring_bootstrapped_ || !shm_ring_ || !idk_producer_is_connected())
+    return;
+  for (;;) {
+    uint16_t type = 0;
+    int peek = idk_producer_peek_type(&type);
+    if (peek <= 0)
+      return;
+    if (type == IDK_SOCKET_V2_RING_READY) {
+      idk_shm_ring_ready_t ready = {};
+      if (idk_producer_recv_control(IDK_SOCKET_V2_RING_READY, &ready, sizeof(ready)) != 1 ||
+          ready.session_generation != shm_ring_->generation() ||
+          ready.slot_count != shm_ring_->slot_count()) {
+        ResetShmRing();
+        return;
+      }
+      shm_ring_ready_ = true;
+      continue;
+    }
+    if (type != IDK_SOCKET_V2_SLOT_RELEASE)
+      return;
+    idk_shm_ring_slot_release_t release = {};
+    if (idk_producer_recv_control(IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release)) != 1 ||
+        !shm_ring_->Release(static_cast<int>(release.slot_index), release.session_generation, release.frame_id)) {
+      ResetShmRing();
+      return;
+    }
+  }
+}
+
+bool View::SendShmRingFrame(const uint8_t *payload, size_t payload_bytes, int w, int h, bool partial,
+                            const idk_shm_delta_t *roi) {
+  if (!shm_ring_bootstrapped_ || !shm_ring_ready_ || !shm_ring_ || !payload || payload_bytes == 0 ||
+      payload_bytes > shm_ring_->slot_capacity()) {
+    return false;
+  }
+  if (partial && shm_ring_last_full_frame_id_ == 0)
+    return false;
+  uint64_t frame_id = ++shm_ring_frame_id_;
+  if (frame_id == 0)
+    return false;
+  int slot = shm_ring_->Acquire(frame_id, payload_bytes);
+  if (slot < 0 || !shm_ring_->Write(slot, 0, payload, payload_bytes)) {
+    if (slot >= 0)
+      shm_ring_->Release(slot, shm_ring_->generation(), frame_id);
+    return false;
+  }
+  idk_shm_ring_frame_slot_t record = {
+      .session_generation = shm_ring_->generation(),
+      .frame_id = frame_id,
+      .base_frame_id = partial && roi ? shm_ring_last_full_frame_id_ : 0,
+      .slot_index = static_cast<uint32_t>(slot),
+      .offset = static_cast<uint32_t>(static_cast<size_t>(slot) * shm_ring_->slot_capacity()),
+      .payload_bytes = static_cast<uint32_t>(payload_bytes),
+      .width = static_cast<uint32_t>(w),
+      .height = static_cast<uint32_t>(h),
+      .stride = static_cast<uint32_t>(w * 4),
+      .pixel_format = 0,
+      .x = partial && roi ? roi->x : 0,
+      .y = partial && roi ? roi->y : 0,
+      .roi_width = partial && roi ? roi->width : 0,
+      .roi_height = partial && roi ? roi->height : 0,
+      .flags = static_cast<uint16_t>(partial ? IDK_SHM_RING_FRAME_ROI : IDK_SHM_RING_FRAME_FULL),
+  };
+  if (idk_producer_send_control(IDK_SOCKET_V2_FRAME_SLOT, &record, sizeof(record), nullptr, 0) < 0) {
+    shm_ring_->Release(slot, shm_ring_->generation(), frame_id);
+    return false;
+  }
+  shm_ring_inflight_frame_id_ = frame_id;
+  shm_ring_inflight_full_ = !partial;
+  return true;
+}
+
+/* ── Producer connect + pacing ─────────────────────────────────────── */
+
 void View::ConnectTask() {
   if (quit_.load(std::memory_order_acquire))
     return;
@@ -671,6 +816,7 @@ void View::ConnectTask() {
     shm_baseline_valid_ = false;
     capture_counter_valid_ = false;
     IDK_LOG("webview-cef", "compositor connected\n");
+    BootstrapShmRing();
     if (!input_) {
       input_ = new InputThread(this, sock_path_);
       input_->Start();
@@ -678,6 +824,7 @@ void View::ConnectTask() {
       input_->NotifyTransportAvailable();
     }
   } else if (!now && connected_) {
+    ResetShmRing();
     connected_ = false;
     deferred_kind_ = DeferredKind::None;
     deferred_pixels_.clear();
@@ -701,6 +848,7 @@ void View::ConnectTask() {
       needs_full_update_ = true;
       capture_counter_valid_ = false;
       IDK_LOG("webview-cef", "compositor connected after %d attempts\n", attempts);
+      BootstrapShmRing();
       if (!input_) {
         input_ = new InputThread(this, sock_path_);
         input_->Start();
@@ -741,6 +889,7 @@ void View::ConnectTask() {
 void View::PollSocket() {
   if (!connected_)
     return;
+  DrainShmRingReleases();
 
   if (pending_) {
     idk_ack_msg_t ack;
@@ -805,6 +954,14 @@ void View::NudgeFrame() {
 
 void View::ProcessAck(const idk_ack_msg_t &ack) {
   const bool accepted = ack.ack == IDK_ACK_ACCEPTED;
+  if (shm_ring_inflight_frame_id_ != 0) {
+    if (accepted && shm_ring_inflight_full_)
+      shm_ring_last_full_frame_id_ = shm_ring_inflight_frame_id_;
+    else if (!accepted && shm_ring_inflight_full_)
+      shm_ring_last_full_frame_id_ = 0;
+    shm_ring_inflight_frame_id_ = 0;
+    shm_ring_inflight_full_ = false;
+  }
   if (accepted) {
     if (!last_sent_shm_ && gpu_inflight_) {
       gpu_last_acked_ = gpu_inflight_;
