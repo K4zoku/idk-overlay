@@ -179,6 +179,55 @@ TEST(peer_credentials_same_uid) {
   unsetenv("IDK_NO_DMABUF");
 }
 
+TEST(ring_control_round_trip) {
+  int sockets[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
+  int ring_fd = open("/dev/null", O_RDONLY);
+  ASSERT_TRUE(ring_fd >= 0);
+  const uint64_t session = socket_v2_new_session_generation();
+  idk_socket_v2_identity_t identity = {.session_generation = session, .message_id = 1};
+  idk_shm_ring_create_t create = {
+      .magic = IDK_SHM_RING_MAGIC,
+      .version = IDK_SHM_RING_VERSION,
+      .slot_count = 2,
+      .slot_capacity = 4096,
+      .ring_bytes = 8192,
+      .session_generation = session,
+  };
+  ASSERT_EQ(socket_v2_send_ring_create(sockets[0], &create, &identity, ring_fd), 0);
+  idk_shm_ring_create_t received_create = {0};
+  idk_socket_v2_identity_t received_identity = {0};
+  int received_fd = -1;
+  ASSERT_EQ(socket_v2_recv_ring_create(sockets[1], &received_create, &received_identity, &received_fd), 1);
+  ASSERT_EQ(received_create.ring_bytes, create.ring_bytes);
+  ASSERT_EQ(received_identity.session_generation, session);
+  ASSERT_TRUE(received_fd >= 0);
+  close(received_fd);
+  idk_shm_ring_ready_t ready = {.session_generation = session, .slot_count = 2};
+  identity.message_id = 2;
+  ASSERT_EQ(socket_v2_send_ring_ready(sockets[0], &ready, &identity), 0);
+  idk_shm_ring_ready_t received_ready = {0};
+  ASSERT_EQ(socket_v2_recv_ring_ready(sockets[1], &received_ready, &received_identity), 1);
+  idk_shm_ring_frame_slot_t slot = {
+      .session_generation = session, .frame_id = 7, .slot_index = 1, .payload_bytes = 128,
+      .width = 32, .height = 32, .stride = 128, .flags = IDK_SHM_RING_FRAME_FULL,
+  };
+  identity.message_id = 3;
+  ASSERT_EQ(socket_v2_send_frame_slot(sockets[0], &slot, &identity), 0);
+  idk_shm_ring_frame_slot_t received_slot = {0};
+  ASSERT_EQ(socket_v2_recv_frame_slot(sockets[1], &received_slot, &received_identity), 1);
+  ASSERT_EQ(received_slot.frame_id, slot.frame_id);
+  idk_shm_ring_slot_release_t release = {.session_generation = session, .frame_id = 7, .slot_index = 1};
+  identity.message_id = 4;
+  ASSERT_EQ(socket_v2_send_slot_release(sockets[0], &release, &identity), 0);
+  idk_shm_ring_slot_release_t received_release = {0};
+  ASSERT_EQ(socket_v2_recv_slot_release(sockets[1], &received_release, &received_identity), 1);
+  ASSERT_EQ(received_release.slot_index, release.slot_index);
+  close(ring_fd);
+  close(sockets[0]);
+  close(sockets[1]);
+}
+
 int main(void) {
   RUN(round_trip_frame_and_fd);
   RUN(hello_features_negotiate_without_fds);
@@ -186,5 +235,5 @@ int main(void) {
   RUN(reject_zero_identity);
   RUN(negotiate_capability_subset);
   RUN(peer_credentials_same_uid);
-  return 0;
+  RUN(ring_control_round_trip);
 }

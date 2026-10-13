@@ -242,6 +242,96 @@ int socket_v2_recv(int fd, uint16_t expected_type, void *payload, size_t payload
   return 1;
 }
 
+static int socket_v2_recv_without_fds(int fd, uint16_t type, void *payload, size_t payload_bytes,
+                                      idk_socket_v2_identity_t *identity) {
+  int fds[4] = {-1, -1, -1, -1};
+  int nfd = 0;
+  int rc = socket_v2_recv(fd, type, payload, payload_bytes, identity, fds, &nfd);
+  if (rc == 1 && nfd != 0) {
+    close_fds(fds, &nfd);
+    errno = EBADMSG;
+    return -1;
+  }
+  return rc;
+}
+
+int socket_v2_send_ring_create(int fd, const idk_shm_ring_create_t *record,
+                               const idk_socket_v2_identity_t *identity, int ring_fd) {
+  if (!record || ring_fd < 0)
+    return (errno = EINVAL), -1;
+  return socket_v2_send(fd, IDK_SOCKET_V2_RING_CREATE, record, sizeof(*record), identity, &ring_fd, 1);
+}
+
+int socket_v2_recv_ring_create(int fd, idk_shm_ring_create_t *record, idk_socket_v2_identity_t *identity, int *ring_fd) {
+  if (!record || !ring_fd)
+    return (errno = EINVAL), -1;
+  int fds[4] = {-1, -1, -1, -1};
+  int nfd = 0;
+  int rc = socket_v2_recv(fd, IDK_SOCKET_V2_RING_CREATE, record, sizeof(*record), identity, fds, &nfd);
+  if (rc != 1)
+    return rc;
+  if (nfd != 1 || record->magic != IDK_SHM_RING_MAGIC || record->version != IDK_SHM_RING_VERSION ||
+      record->slot_count == 0 || record->slot_count > IDK_SHM_RING_MAX_SLOTS || record->slot_capacity == 0 ||
+      record->ring_bytes != (uint64_t)record->slot_count * record->slot_capacity ||
+      record->session_generation != identity->session_generation) {
+    close_fds(fds, &nfd);
+    errno = EBADMSG;
+    return -1;
+  }
+  *ring_fd = fds[0];
+  return 1;
+}
+
+int socket_v2_send_ring_ready(int fd, const idk_shm_ring_ready_t *record, const idk_socket_v2_identity_t *identity) {
+  return socket_v2_send(fd, IDK_SOCKET_V2_RING_READY, record, sizeof(*record), identity, NULL, 0);
+}
+
+int socket_v2_recv_ring_ready(int fd, idk_shm_ring_ready_t *record, idk_socket_v2_identity_t *identity) {
+  int rc = socket_v2_recv_without_fds(fd, IDK_SOCKET_V2_RING_READY, record, sizeof(*record), identity);
+  if (rc == 1 && (record->session_generation != identity->session_generation || record->slot_count == 0 ||
+                  record->slot_count > IDK_SHM_RING_MAX_SLOTS)) {
+    errno = EBADMSG;
+    return -1;
+  }
+  return rc;
+}
+
+int socket_v2_send_frame_slot(int fd, const idk_shm_ring_frame_slot_t *record,
+                              const idk_socket_v2_identity_t *identity) {
+  return socket_v2_send(fd, IDK_SOCKET_V2_FRAME_SLOT, record, sizeof(*record), identity, NULL, 0);
+}
+
+int socket_v2_recv_frame_slot(int fd, idk_shm_ring_frame_slot_t *record, idk_socket_v2_identity_t *identity) {
+  int rc = socket_v2_recv_without_fds(fd, IDK_SOCKET_V2_FRAME_SLOT, record, sizeof(*record), identity);
+  if (rc == 1 &&
+      (record->session_generation != identity->session_generation || record->frame_id == 0 ||
+       record->slot_index >= IDK_SHM_RING_MAX_SLOTS || record->payload_bytes == 0 ||
+       (record->flags & ~(IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI)) != 0 ||
+       (record->flags & (IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI)) == 0 ||
+       ((record->flags & IDK_SHM_RING_FRAME_ROI) != 0 &&
+        (record->roi_width == 0 || record->roi_height == 0)))) {
+    errno = EBADMSG;
+    return -1;
+  }
+  return rc;
+}
+
+int socket_v2_send_slot_release(int fd, const idk_shm_ring_slot_release_t *record,
+                                const idk_socket_v2_identity_t *identity) {
+  return socket_v2_send(fd, IDK_SOCKET_V2_SLOT_RELEASE, record, sizeof(*record), identity, NULL, 0);
+}
+
+int socket_v2_recv_slot_release(int fd, idk_shm_ring_slot_release_t *record, idk_socket_v2_identity_t *identity) {
+  int rc = socket_v2_recv_without_fds(fd, IDK_SOCKET_V2_SLOT_RELEASE, record, sizeof(*record), identity);
+  if (rc == 1 &&
+      (record->session_generation != identity->session_generation || record->frame_id == 0 ||
+       record->slot_index >= IDK_SHM_RING_MAX_SLOTS)) {
+    errno = EBADMSG;
+    return -1;
+  }
+  return rc;
+}
+
 int socket_v2_peek_type(int fd, uint16_t *type) {
   socket_v2_header_t header;
   ssize_t n = recv(fd, &header, sizeof(header), MSG_PEEK | MSG_DONTWAIT);
