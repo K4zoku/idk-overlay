@@ -101,6 +101,12 @@ void InputThread::QueueCursor(const idk_cursor_update_t &cursor, std::vector<uin
     eventfd_write(command_fd_, value);
   }
 }
+void InputThread::WakeReconnect() {
+  if (command_fd_ >= 0) {
+    eventfd_t value = 1;
+    eventfd_write(command_fd_, value);
+  }
+}
 
 bool InputThread::FlushCursor() {
   idk_cursor_update_t cursor;

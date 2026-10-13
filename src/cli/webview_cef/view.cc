@@ -674,6 +674,8 @@ void View::ConnectTask() {
     if (!input_) {
       input_ = new InputThread(this, sock_path_);
       input_->Start();
+    } else {
+      input_->WakeReconnect();
     }
   } else if (!now && connected_) {
     connected_ = false;
@@ -697,12 +699,13 @@ void View::ConnectTask() {
       gpu_last_acked_ = nullptr;
       shm_shadow_.clear();
       needs_full_update_ = true;
-      shm_baseline_valid_ = false;
       capture_counter_valid_ = false;
       IDK_LOG("webview-cef", "compositor connected after %d attempts\n", attempts);
       if (!input_) {
         input_ = new InputThread(this, sock_path_);
         input_->Start();
+      } else {
+        input_->WakeReconnect();
       }
     } else {
       bool log_it = connect_attempts_ == 1 || connect_attempts_ == 5 || connect_attempts_ == 30 ||
