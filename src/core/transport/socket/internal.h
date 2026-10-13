@@ -13,10 +13,9 @@
 #include "core/transport.h"
 #include "protocol.h"
 
-/* _rsv[80]: [0..3]=state, [4..7]=connect retries, [8..47]=path,
+/* _rsv[72]: [0..3]=state, [4..7]=connect retries, [8..47]=path,
  *            [48]=queued request, [49]=seqpacket, [50..53]=features,
- *            [56..63]=session generation, [64..71]=next message ID,
- *            [72..79]=last received message ID */
+ *            [56..63]=session generation, [64..71]=next message ID */
 #define TP_S_STATE(rsv) (*(int *)(rsv))
 #define TP_S_CONNECT_RETRIES(rsv) (*(int *)((rsv) + 4))
 #define TP_S_ABSTRACT(rsv) ((rsv)[7])
@@ -50,16 +49,6 @@ static inline void tp_socket_set_next_message_id(idk_transport_t *tp, uint64_t v
   memcpy(tp->_rsv + 64, &value, sizeof(value));
 }
 
-static inline uint64_t tp_socket_last_message_id(const idk_transport_t *tp) {
-  uint64_t value = 0;
-  memcpy(&value, tp->_rsv + 72, sizeof(value));
-  return value;
-}
-
-static inline void tp_socket_set_last_message_id(idk_transport_t *tp, uint64_t value) {
-  memcpy(tp->_rsv + 72, &value, sizeof(value));
-}
-
 static inline uint32_t tp_socket_features(const idk_transport_t *tp) {
   uint32_t value = 0;
   memcpy(&value, tp->_rsv + 50, sizeof(value));
@@ -78,31 +67,25 @@ static inline int tp_socket_v2_send(idk_transport_t *tp, uint16_t type, const vo
     errno = EOVERFLOW;
     return -1;
   }
+  tp_socket_set_next_message_id(tp, message_id + 1);
   const idk_socket_v2_identity_t identity = {
       .session_generation = session_generation,
       .message_id = message_id,
   };
-  int rc = socket_v2_send(tp->_client_fd, type, payload, payload_bytes, &identity, fds, nfd);
-  if (rc == 0)
-    tp_socket_set_next_message_id(tp, message_id + 1);
-  return rc;
+  return socket_v2_send(tp->_client_fd, type, payload, payload_bytes, &identity, fds, nfd);
 }
 
 static inline int tp_socket_v2_recv(idk_transport_t *tp, uint16_t expected_type, void *payload, size_t payload_capacity,
                                     int fds[4], int *nfd) {
   idk_socket_v2_identity_t identity = {0};
   int rc = socket_v2_recv(tp->_client_fd, expected_type, payload, payload_capacity, &identity, fds, nfd);
-  uint64_t last_message_id = tp_socket_last_message_id(tp);
-  if (rc == 1 && (identity.session_generation != tp_socket_session_generation(tp) ||
-                  identity.message_id != last_message_id + 1)) {
+  if (rc == 1 && identity.session_generation != tp_socket_session_generation(tp)) {
     for (int i = 0; i < *nfd; i++)
       close(fds[i]);
     *nfd = 0;
     errno = EBADMSG;
     return -1;
   }
-  if (rc == 1)
-    tp_socket_set_last_message_id(tp, identity.message_id);
   return rc;
 }
 #define TP_SOCKET_TYPE(tp) (TP_S_SEQPACKET((tp)->_rsv) ? SOCK_SEQPACKET : SOCK_STREAM)
