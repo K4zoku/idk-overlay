@@ -35,6 +35,13 @@ broker_handshake_test = executable('test_broker_handshake',
 )
 test('test_broker_handshake', broker_handshake_test)
 
+broker_reap_test = executable('test_broker_reap',
+    ['test_broker_reap.c', '../src/cli/broker/reap.c'],
+    c_args: test_c_args,
+    include_directories: inc,
+)
+test('test_broker_reap', broker_reap_test)
+
 # X11 hook contract tests with a fake XSelectInput implementation.
 test_x11_select_exe = executable('test_x11_select',
     ['test_x11_select.c', '../src/hook/input/x11/select.c'],
