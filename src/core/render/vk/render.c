@@ -31,6 +31,7 @@ int idk_vk_compositor_render(void) {
     return -1;
 
   idk_frame_header_t *hdr = &g_comp.hdr;
+  bool ring_pending = g_comp.ring_frame_active;
   int processed = 0;
 
   if (g_comp.ring_frame_active) {
@@ -93,7 +94,7 @@ int idk_vk_compositor_render(void) {
   }
 
   idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
-  if (processed)
+  if (processed && !ring_pending)
     vk_send_ack(processed);
   return 0;
 }

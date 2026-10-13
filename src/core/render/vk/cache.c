@@ -157,9 +157,11 @@ int overlay_upload(VkCommandBuffer cmd) {
                  : vk_upload_shm_ring(data, g_comp.hdr.width, g_comp.hdr.height, g_comp.ring_frame_bytes, cmd);
     if (rc != 0) {
       ctx->staging.vk_shm_baseline_valid = 0;
+      idk_compositor_send_ack(1);
       (void)idk_compositor_release_ring_slot(1);
       return -1;
     }
+    idk_compositor_send_ack(0);
     return idk_compositor_release_ring_slot(0);
   }
   if (ctx->dmabuf.vk_has_dmabuf_pending && ctx->dmabuf.vk_dmabuf_pending_fd >= 0) {
