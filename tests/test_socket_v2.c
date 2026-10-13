@@ -6,6 +6,7 @@
 
 #include "../src/core/transport/socket/protocol.h"
 #include "core/transport.h"
+#include "core/diagnostics.h"
 #include "public/idk_frames.h"
 #include "test_runner.h"
 
@@ -114,6 +115,13 @@ TEST(peer_credentials_same_uid) {
   ASSERT_TRUE(consumer.ready);
   ASSERT_EQ(idk_tp_poll(&producer), 1);
   ASSERT_TRUE(producer.ready);
+  idk_diag_reset();
+  idk_request_msg_t request = {.type = IDK_REQUEST_SHUTDOWN};
+  ASSERT_EQ(idk_tp_send_request(&producer, &request), 0);
+  ASSERT_EQ(idk_diag_get(IDK_DIAG_FRAME_REQUESTED), 0);
+  request.type = IDK_REQUEST_NEXT_FRAME;
+  ASSERT_EQ(idk_tp_send_request(&producer, &request), 0);
+  ASSERT_EQ(idk_diag_get(IDK_DIAG_FRAME_REQUESTED), 1);
   idk_tp_destroy(&producer);
   idk_tp_destroy(&consumer);
   unlink(path);

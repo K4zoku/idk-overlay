@@ -8,7 +8,7 @@ test_c_args = [
 
 # Static library of compositor functions + transport (no GPU deps)
 test_comp_lib = static_library('test_comp',
-    ['../src/core/log.c'] + linux_sources + compositor_sources + transport_sources,
+    ['../src/core/log.c', '../src/core/diagnostics.c'] + linux_sources + compositor_sources + transport_sources,
     c_args: test_c_args,
     include_directories: inc,
 )
@@ -48,7 +48,7 @@ foreach src : ['test_vendor.c', 'test_resize.c', 'test_shm_cache.c',
                'test_abstract_socket.c', 'test_compositor_path.c',
                'test_compositor_api.c', 'test_cursor_transport.c',
                'test_fd_leaks.c', 'test_socket_controls.c', 'test_hidden_discard.c',
-               'test_linux_fd.c', 'test_linux_sync.c', 'test_socket_v2.c']
+               'test_linux_fd.c', 'test_linux_sync.c', 'test_socket_v2.c', 'test_diagnostics.c']
     name = src.split('.')[0]
     test_exe = executable(name, src,
         c_args: test_c_args,

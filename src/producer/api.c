@@ -7,9 +7,11 @@
 
 #include "../core/linux/fd.h"
 #include "core/log.h"
+#include "core/diagnostics.h"
 #include "core/transport.h"
 #include "public/idk_ipc.h"
 #include "public/idk_producer.h"
+#include "public/idk_shm_delta.h"
 
 /* Internal state */
 
@@ -47,7 +49,10 @@ static int send_frame_msg(const idk_frame_header_t *hdr, const int *fds, int nfd
     return -1;
   }
 
-  return idk_tp_send(&g_tp, hdr, fds, nfd);
+  int rc = idk_tp_send(&g_tp, hdr, fds, nfd);
+  if (rc == 0)
+    idk_diag_inc((hdr->flags & IDK_FRAME_FLAG_SHM_RECT) ? IDK_DIAG_FRAME_SENT_ROI : IDK_DIAG_FRAME_SENT_FULL);
+  return rc;
 }
 
 int idk_producer_send_frame(int data_fd, const idk_frame_header_t *hdr) {

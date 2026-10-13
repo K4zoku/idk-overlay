@@ -3,6 +3,7 @@
 #include <strings.h>
 
 #include "core/transport.h"
+#include "core/diagnostics.h"
 
 extern int tp_socket_init(idk_transport_t *tp, const char *name);
 extern void tp_socket_destroy(idk_transport_t *tp);
@@ -142,7 +143,10 @@ int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms) {
 }
 
 int idk_tp_send_request(idk_transport_t *tp, const idk_request_msg_t *req) {
-  return tp_backends[tp->backend].send_request(tp, req);
+  int rc = tp_backends[tp->backend].send_request(tp, req);
+  if (rc == 0 && req && req->type == IDK_REQUEST_NEXT_FRAME)
+    idk_diag_inc(IDK_DIAG_FRAME_REQUESTED);
+  return rc;
 }
 
 int idk_tp_recv_request(idk_transport_t *tp, idk_request_msg_t *req, int timeout_ms) {

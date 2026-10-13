@@ -1,0 +1,30 @@
+#ifndef IDK_CORE_DIAGNOSTICS_H
+#define IDK_CORE_DIAGNOSTICS_H
+
+#include <stdint.h>
+
+enum idk_diag_counter {
+  IDK_DIAG_GAME_PRESENT,
+  IDK_DIAG_FRAME_REQUESTED,
+  IDK_DIAG_CEF_BEGIN_FRAME,
+  IDK_DIAG_CEF_PAINT,
+  IDK_DIAG_FRAME_SENT_FULL,
+  IDK_DIAG_FRAME_SENT_ROI,
+  IDK_DIAG_FRAME_UNCHANGED,
+  IDK_DIAG_FRAME_DEFERRED,
+  IDK_DIAG_ACK_OK,
+  IDK_DIAG_ACK_DISCARD,
+  IDK_DIAG_ACK_REJECT,
+  IDK_DIAG_RECONNECT,
+  IDK_DIAG_CEF_PUMP_WAKE_IMMEDIATE,
+  IDK_DIAG_CEF_PUMP_WAKE_TIMER,
+  IDK_DIAG_CEF_PUMP_WORK_CALLS,
+  IDK_DIAG_CEF_IDLE_WAKES,
+  IDK_DIAG_COUNTER_COUNT,
+};
+
+void idk_diag_inc(enum idk_diag_counter counter);
+uint64_t idk_diag_get(enum idk_diag_counter counter);
+void idk_diag_reset(void);
+
+#endif

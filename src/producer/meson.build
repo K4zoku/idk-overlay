@@ -1,7 +1,7 @@
 # libidk-producer.so - frame sender library (used by idk-webview)
 idk_producer_lib = library(
     'idk-producer',
-    ['api.c', '../core/log.c'] + linux_sources + transport_sources,
+    ['api.c', '../core/log.c', '../core/diagnostics.c'] + linux_sources + transport_sources,
     c_args: fs_c_flags,
     include_directories: inc,
     link_args: ['-ldl', '-lpthread'],
