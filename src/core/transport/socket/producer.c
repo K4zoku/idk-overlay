@@ -162,6 +162,7 @@ int tp_socket_poll(idk_transport_t *tp) {
     if (handshake == 1) {
       tp_socket_set_session_generation(tp, session_generation);
       tp_socket_set_next_message_id(tp, next_message_id);
+      tp_socket_set_last_message_id(tp, 1);
       tp_socket_set_features(tp, features);
       TP_S_STATE(tp->_rsv) = TP_STATE_READY;
       tp->ready = true;
