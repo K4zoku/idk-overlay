@@ -303,17 +303,18 @@ int socket_v2_send_frame_slot(int fd, const idk_shm_ring_frame_slot_t *record,
 
 int socket_v2_recv_frame_slot(int fd, idk_shm_ring_frame_slot_t *record, idk_socket_v2_identity_t *identity) {
   int rc = socket_v2_recv_without_fds(fd, IDK_SOCKET_V2_FRAME_SLOT, record, sizeof(*record), identity);
-  if (rc == 1 &&
-      (record->session_generation != identity->session_generation || record->frame_id == 0 ||
-       record->slot_index >= IDK_SHM_RING_MAX_SLOTS || record->payload_bytes == 0 ||
-       (record->flags & ~(IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI)) != 0 ||
-       (record->flags & (IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI)) == 0 ||
-       ((record->flags & IDK_SHM_RING_FRAME_ROI) != 0 &&
-        (record->roi_width == 0 || record->roi_height == 0)))) {
+  if (rc != 1)
+    return rc;
+  const bool full = (record->flags & IDK_SHM_RING_FRAME_FULL) != 0;
+  const bool roi = (record->flags & IDK_SHM_RING_FRAME_ROI) != 0;
+  if (record->session_generation != identity->session_generation || record->frame_id == 0 ||
+      record->slot_index >= IDK_SHM_RING_MAX_SLOTS || record->payload_bytes == 0 ||
+      (record->flags & ~(IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI)) != 0 || (!full && !roi) ||
+      (full && roi) || (roi && (record->roi_width == 0 || record->roi_height == 0))) {
     errno = EBADMSG;
     return -1;
   }
-  return rc;
+  return 1;
 }
 
 int socket_v2_send_slot_release(int fd, const idk_shm_ring_slot_release_t *record,

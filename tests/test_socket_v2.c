@@ -228,6 +228,43 @@ TEST(ring_control_round_trip) {
   close(sockets[1]);
 }
 
+TEST(ring_control_rejects_malformed_records) {
+  int sockets[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
+  const uint64_t session = socket_v2_new_session_generation();
+  idk_socket_v2_identity_t identity = {.session_generation = session, .message_id = 1};
+  idk_shm_ring_ready_t ready = {.session_generation = session + 1, .slot_count = 2};
+  ASSERT_EQ(socket_v2_send_ring_ready(sockets[0], &ready, &identity), 0);
+  idk_shm_ring_ready_t received_ready = {0};
+  idk_socket_v2_identity_t received_identity = {0};
+  ASSERT_EQ(socket_v2_recv_ring_ready(sockets[1], &received_ready, &received_identity), -1);
+  close(sockets[0]);
+  close(sockets[1]);
+
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
+  idk_shm_ring_frame_slot_t slot = {
+      .session_generation = session, .frame_id = 1, .slot_index = 0, .payload_bytes = 1,
+      .flags = IDK_SHM_RING_FRAME_FULL | IDK_SHM_RING_FRAME_ROI, .roi_width = 1, .roi_height = 1,
+  };
+  identity.message_id = 1;
+  ASSERT_EQ(socket_v2_send_frame_slot(sockets[0], &slot, &identity), 0);
+  ASSERT_EQ(socket_v2_recv_frame_slot(sockets[1], &slot, &received_identity), -1);
+  close(sockets[0]);
+  close(sockets[1]);
+
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets), 0);
+  int unexpected_fd = open("/dev/null", O_RDONLY);
+  ASSERT_TRUE(unexpected_fd >= 0);
+  identity.message_id = 1;
+  ready.session_generation = session;
+  ASSERT_EQ(socket_v2_send(sockets[0], IDK_SOCKET_V2_RING_READY, &ready, sizeof(ready), &identity, &unexpected_fd, 1),
+            0);
+  ASSERT_EQ(socket_v2_recv_ring_ready(sockets[1], &received_ready, &received_identity), -1);
+  close(unexpected_fd);
+  close(sockets[0]);
+  close(sockets[1]);
+}
+
 int main(void) {
   RUN(round_trip_frame_and_fd);
   RUN(hello_features_negotiate_without_fds);
@@ -236,4 +273,6 @@ int main(void) {
   RUN(negotiate_capability_subset);
   RUN(peer_credentials_same_uid);
   RUN(ring_control_round_trip);
+  RUN(ring_control_rejects_malformed_records);
+  return 0;
 }
