@@ -25,7 +25,7 @@ static int OpenRetryWatch(const std::string &name, std::string &leaf) {
   leaf = slash == std::string::npos ? name : name.substr(slash + 1);
   int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   if (fd < 0 || inotify_add_watch(fd, directory.c_str(),
-                                  IN_CREATE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF | IN_Q_OVERFLOW) < 0) {
+                                  IN_CREATE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF) < 0) {
     if (fd >= 0)
       close(fd);
     return -1;
