@@ -24,6 +24,7 @@
 #include "idk_cp.h"
 #include "idk_frames.h"
 #include "idk_input.h"
+#include "idk_shm_ring.h"
 
 #ifdef __cplusplus
 extern "C" {

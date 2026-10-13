@@ -14,6 +14,21 @@ TEST(ack_msg_size) {
     ASSERT_SIZEOF(struct idk_ack_msg, 16);
 }
 
+TEST(shm_ring_record_sizes) {
+    ASSERT_SIZEOF(idk_shm_ring_record_t, 24);
+    ASSERT_SIZEOF(idk_shm_ring_create_t, 48);
+    ASSERT_SIZEOF(idk_shm_ring_ready_t, 16);
+    ASSERT_SIZEOF(idk_shm_ring_frame_slot_t, 72);
+    ASSERT_SIZEOF(idk_shm_ring_slot_release_t, 24);
+    ASSERT_SIZEOF(idk_shm_ring_retire_t, 16);
+}
+
+TEST(shm_ring_constants) {
+    ASSERT_EQ(IDK_SHM_RING_MAGIC, 0x31475253u);
+    ASSERT_EQ(IDK_SHM_RING_VERSION, 1u);
+    ASSERT_EQ(IDK_SHM_RING_MAX_SLOTS, 3u);
+}
+
 TEST(frame_header_offsets) {
     idk_frame_header_t hdr;
     size_t base = (size_t)&hdr;
@@ -96,6 +111,8 @@ int main(void) {
     RUN(frame_header_size);
     RUN(input_event_size);
     RUN(ack_msg_size);
+    RUN(shm_ring_record_sizes);
+    RUN(shm_ring_constants);
     RUN(frame_header_offsets);
     RUN(flag_values);
     RUN(frame_is_dmabuf);
