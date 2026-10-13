@@ -680,7 +680,8 @@ bool View::BootstrapShmRing() {
   if (shm_ring_bootstrapped_ || !connected_)
     return shm_ring_bootstrapped_;
   const char *socket_mode = std::getenv("IDK_TP_SOCKET");
-  if (!socket_mode || std::strcmp(socket_mode, "seqpacket") != 0)
+  if (!socket_mode || std::strcmp(socket_mode, "seqpacket") != 0 ||
+      !(idk_producer_features() & IDK_SOCKET_FEATURE_SHM_RING))
     return false;
   uint64_t generation = idk_producer_session_generation();
   constexpr uint32_t slot_count = IDK_SHM_RING_MAX_SLOTS;

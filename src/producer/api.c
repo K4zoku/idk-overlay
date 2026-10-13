@@ -43,6 +43,7 @@ bool idk_producer_is_connected(void) {
     (void)idk_tp_poll(&g_tp);
   return g_tp.ready;
 }
+uint32_t idk_producer_features(void) { return idk_tp_features(&g_tp); }
 
 void idk_producer_shutdown(void) { idk_tp_destroy(&g_tp); }
 

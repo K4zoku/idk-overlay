@@ -110,7 +110,8 @@ static int receive_ring_create(void) {
     return -1;
   }
   struct stat st = {0};
-  if (fstat(fds[0], &st) != 0 || st.st_size < 0 || (uint64_t)st.st_size < record.ring_bytes) {
+  if (g_comp.ring_frame_active || fstat(fds[0], &st) != 0 || st.st_size < 0 ||
+      (uint64_t)st.st_size < record.ring_bytes) {
     idk_compositor_close_frame_fds(fds, &nfd);
     return -1;
   }

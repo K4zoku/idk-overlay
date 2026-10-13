@@ -5,6 +5,9 @@
 uint64_t tp_socket_session_generation_public(const idk_transport_t *tp) {
   return tp_socket_session_generation(tp);
 }
+uint32_t tp_socket_features_public(const idk_transport_t *tp) {
+  return tp_socket_features(tp);
+}
 int tp_socket_peek_type_public(idk_transport_t *tp, uint16_t *type) {
   if (!TP_S_SEQPACKET(tp->_rsv))
     return (errno = ENOTSUP), -1;

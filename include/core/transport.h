@@ -58,6 +58,7 @@ int idk_tp_wait_ack(idk_transport_t *tp, idk_ack_msg_t *ack, int timeout_ms);
 int idk_tp_send_control(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,
                         const int *fds, int nfd);
 int idk_tp_recv_control(idk_transport_t *tp, uint16_t type, void *payload, size_t payload_capacity, int fds[4], int *nfd);
+uint32_t idk_tp_features(const idk_transport_t *tp);
 
 int idk_tp_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
 int idk_tp_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
