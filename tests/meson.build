@@ -134,3 +134,9 @@ test_cef_pump_exe = executable('test_cef_pump',
     dependencies: [dl_lib, pthread_lib],
 )
 test('test_cef_pump', test_cef_pump_exe)
+
+test_shm_ring_exe = executable('test_shm_ring',
+    ['test_shm_ring.cc', '../src/cli/webview_cef/shm_ring.cc'],
+    cpp_args: ['-std=c++20'],
+)
+test('test_shm_ring', test_shm_ring_exe)

@@ -37,7 +37,7 @@ if cef_dist != ''
   idk_webview_cef_exe = executable(
       'idk-webview-cef',
       files('app.h', 'config.cc', 'glib_pump.cc', 'gpubuf.cc', 'input.cc', 'keys.cc', 'main.cc',
-            'pump.cc', 'view.cc'),
+            'pump.cc', 'shm_ring.cc', 'view.cc'),
       include_directories: [inc, cef_inc],
       dependencies: [idk_producer_dep, dl_lib, pthread_lib, gbm_dep],
       cpp_args: [
