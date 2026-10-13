@@ -49,7 +49,14 @@ static void disconnect_client(void) {
 static int recv_accept(void) {
   if (!g_comp.inited && idk_compositor_init() != 0)
     return -1;
-  idk_tp_accept(&g_comp.tp);
+  int accept_rc = idk_tp_accept(&g_comp.tp);
+  if (accept_rc < 0)
+    return -1;
+  if (!g_comp.tp.ready && accept_rc > 0) {
+    int poll_rc = idk_tp_poll(&g_comp.tp);
+    if (poll_rc < 0)
+      return -1;
+  }
   return g_comp.tp.ready ? 1 : 0;
 }
 
