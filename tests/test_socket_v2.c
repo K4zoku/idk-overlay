@@ -1,8 +1,11 @@
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "../src/core/transport/socket/protocol.h"
+#include "core/transport.h"
 #include "public/idk_frames.h"
 #include "test_runner.h"
 
@@ -97,10 +100,31 @@ TEST(negotiate_capability_subset) {
   close(sockets[1]);
 }
 
+TEST(peer_credentials_same_uid) {
+  char path[128];
+  snprintf(path, sizeof(path), "/tmp/idk-peercred-%d.sock", (int)getpid());
+  unlink(path);
+  setenv("IDK_TP_SOCKET", "seqpacket", 1);
+  idk_transport_t consumer = {0};
+  idk_transport_t producer = {0};
+  ASSERT_EQ(idk_tp_init(&consumer, IDK_TP_CONSUMER, path), 0);
+  ASSERT_EQ(idk_tp_init(&producer, IDK_TP_PRODUCER, path), 0);
+  ASSERT_EQ(idk_tp_accept(&consumer), 1);
+  ASSERT_EQ(idk_tp_poll(&consumer), 1);
+  ASSERT_TRUE(consumer.ready);
+  ASSERT_EQ(idk_tp_poll(&producer), 1);
+  ASSERT_TRUE(producer.ready);
+  idk_tp_destroy(&producer);
+  idk_tp_destroy(&consumer);
+  unlink(path);
+  unsetenv("IDK_TP_SOCKET");
+}
+
 int main(void) {
   RUN(round_trip_frame_and_fd);
   RUN(hello_features_negotiate_without_fds);
   RUN(reject_wrong_type);
   RUN(negotiate_capability_subset);
+  RUN(peer_credentials_same_uid);
   return 0;
 }

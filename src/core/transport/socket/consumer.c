@@ -3,11 +3,24 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include "core/log.h"
 #include "internal.h"
+static int peer_is_same_user(int fd) {
+  struct ucred peer = {0};
+  socklen_t length = sizeof(peer);
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) != 0)
+    return -1;
+  if (peer.uid != geteuid()) {
+    errno = EPERM;
+    return -1;
+  }
+  return 0;
+}
+
 
 int consumer_init(idk_transport_t *tp, const char *path) {
   if (is_abstract(path)) {
@@ -81,6 +94,10 @@ int tp_socket_accept(idk_transport_t *tp) {
   int c = accept(tp->_server_fd, NULL, NULL);
   if (c < 0) {
     return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+  }
+  if (peer_is_same_user(c) != 0) {
+    close(c);
+    return -1;
   }
   set_nonblock(c);
   tp->_client_fd = c;
