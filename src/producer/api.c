@@ -113,6 +113,18 @@ int idk_producer_send_dma_buf(const int *dma_buf_fds, const idk_frame_header_t *
   return rc;
 }
 
+int idk_producer_send_control(uint16_t type, const void *payload, size_t payload_bytes, const int *fds, int nfd) {
+  if (!g_tp.ready) {
+    errno = ENOTCONN;
+    return -1;
+  }
+  return idk_tp_send_control(&g_tp, type, payload, payload_bytes, fds, nfd);
+}
+
+uint64_t idk_producer_session_generation(void) {
+  return idk_tp_session_generation(&g_tp);
+}
+
 int idk_producer_wait_ack(idk_ack_msg_t *ack, int timeout_ms) {
   if (!g_tp.ready) {
     errno = ENOTCONN;

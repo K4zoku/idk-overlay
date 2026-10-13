@@ -44,7 +44,8 @@ void idk_tp_disconnect_client(idk_transport_t *tp);
 
 int idk_tp_accept(idk_transport_t *tp);
 int idk_tp_poll(idk_transport_t *tp);
-/* On success, returned FDs are owned by the caller and must be closed or transferred. */
+int idk_tp_peek_type(idk_transport_t *tp, uint16_t *type);
+uint64_t idk_tp_session_generation(const idk_transport_t *tp);
 int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd);
 int idk_tp_drop_frame(idk_transport_t *tp);
 void idk_tp_send_ack(idk_transport_t *tp, const idk_ack_msg_t *ack);

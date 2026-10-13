@@ -2,6 +2,14 @@
 
 #include "internal.h"
 
+uint64_t tp_socket_session_generation_public(const idk_transport_t *tp) {
+  return tp_socket_session_generation(tp);
+}
+int tp_socket_peek_type_public(idk_transport_t *tp, uint16_t *type) {
+  if (!TP_S_SEQPACKET(tp->_rsv))
+    return (errno = ENOTSUP), -1;
+  return socket_v2_peek_type(tp->_client_fd, type);
+}
 int tp_socket_send_control(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,
                            const int *fds, int nfd) {
   if (!TP_S_SEQPACKET(tp->_rsv)) {

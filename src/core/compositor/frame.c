@@ -1,8 +1,10 @@
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "core/compositor.h"
 #include "core/log.h"
+#include "../transport/socket/protocol.h"
 
 /* ===== Shared compositor API ===== */
 
@@ -20,6 +22,14 @@ void idk_compositor_close_frame_fds(int fds[4], int *nfd) {
 
 static void disconnect_client(void) {
   idk_tp_disconnect_client(&g_comp.tp);
+  if (g_comp.ring_map) {
+    munmap(g_comp.ring_map, g_comp.ring_bytes);
+    g_comp.ring_map = NULL;
+    g_comp.ring_bytes = 0;
+    g_comp.ring_generation = 0;
+    g_comp.ring_slot_count = 0;
+    g_comp.ring_slot_capacity = 0;
+  }
   idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
   g_comp.has_frame = false;
   g_comp.dmabuf_cache_id = 0;
@@ -49,10 +59,51 @@ static void drain_hidden(void) {
   g_comp.was_hidden = true;
 }
 
+static int receive_ring_create(void) {
+  idk_shm_ring_create_t record = {0};
+  int fds[4] = {-1, -1, -1, -1};
+  int nfd = 0;
+  int rc = idk_tp_recv_control(&g_comp.tp, IDK_SOCKET_V2_RING_CREATE, &record, sizeof(record), fds, &nfd);
+  if (rc <= 0)
+    return rc;
+  if (nfd != 1) {
+    idk_compositor_close_frame_fds(fds, &nfd);
+    return -1;
+  }
+  int ring_fd = fds[0];
+  fds[0] = -1;
+  idk_compositor_close_frame_fds(fds, &nfd);
+  void *map = mmap(NULL, record.ring_bytes, PROT_READ, MAP_SHARED, ring_fd, 0);
+  close(ring_fd);
+  if (map == MAP_FAILED)
+    return -1;
+  if (g_comp.ring_map)
+    munmap(g_comp.ring_map, g_comp.ring_bytes);
+  g_comp.ring_map = map;
+  g_comp.ring_bytes = record.ring_bytes;
+  g_comp.ring_generation = record.session_generation;
+  g_comp.ring_slot_count = record.slot_count;
+  g_comp.ring_slot_capacity = record.slot_capacity;
+  idk_shm_ring_ready_t ready = {
+      .session_generation = record.session_generation,
+      .slot_count = record.slot_count,
+  };
+  if (idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_RING_READY, &ready, sizeof(ready), NULL, 0) < 0)
+    return -1;
+  return 1;
+}
+
 /* Recv loop: keep the first frame of the batch and close all surplus FDs. */
 static int keep_last_frame(void) {
   int processed = 0;
   while (1) {
+    uint16_t type = 0;
+    int peek = idk_tp_peek_type(&g_comp.tp, &type);
+    if (peek == 1 && type == IDK_SOCKET_V2_RING_CREATE) {
+      if (receive_ring_create() < 0)
+        disconnect_client();
+      continue;
+    }
     idk_frame_header_t hdr;
     int fds[4] = {-1, -1, -1, -1};
     int nfd = 0;
@@ -62,17 +113,14 @@ static int keep_last_frame(void) {
         disconnect_client();
       break;
     }
-
     if (nfd < 1 || nfd > 4 || hdr.width == 0 || hdr.height == 0) {
       idk_compositor_close_frame_fds(fds, &nfd);
       continue;
     }
-
     if (processed > 0) {
       idk_compositor_close_frame_fds(fds, &nfd);
       continue;
     }
-
     idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
     g_comp.hdr = hdr;
     for (int i = 0; i < nfd; i++)

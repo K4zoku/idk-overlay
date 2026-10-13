@@ -76,6 +76,11 @@ typedef struct {
     uint16_t           dmabuf_cache_id;
     uint32_t           frame_w, frame_h;
     bool               frame_premultiplied;
+    void              *ring_map;
+    size_t              ring_bytes;
+    uint64_t            ring_generation;
+    uint32_t            ring_slot_count;
+    uint32_t            ring_slot_capacity;
 
     int                game_w, game_h;
     bool               size_pending;

@@ -22,6 +22,8 @@ extern int tp_socket_recv_request_preserving_ack(idk_transport_t *tp, idk_reques
 extern int tp_socket_send_input(idk_transport_t *tp, const idk_input_event_t *ev);
 extern int tp_socket_recv_input(idk_transport_t *tp, idk_input_event_t *ev);
 extern int tp_socket_send_cursor(idk_transport_t *tp, const idk_cursor_update_t *cursor, const uint8_t *pixels);
+extern uint64_t tp_socket_session_generation_public(const idk_transport_t *tp);
+extern int tp_socket_peek_type_public(idk_transport_t *tp, uint16_t *type);
 extern int tp_socket_recv_cursor(idk_transport_t *tp, idk_cursor_update_t *cursor, uint8_t *pixels, size_t capacity);
 extern int tp_socket_send_control(idk_transport_t *tp, uint16_t type, const void *payload, size_t payload_bytes,
                                    const int *fds, int nfd);
@@ -148,6 +150,12 @@ void idk_tp_disconnect_client(idk_transport_t *tp) { tp_backends[tp->backend].di
 int idk_tp_accept(idk_transport_t *tp) { return tp_backends[tp->backend].accept(tp); }
 
 int idk_tp_poll(idk_transport_t *tp) { return tp_backends[tp->backend].poll(tp); }
+int idk_tp_peek_type(idk_transport_t *tp, uint16_t *type) {
+  return tp->backend == IDK_TP_SOCKET ? tp_socket_peek_type_public(tp, type) : (errno = ENOTSUP), -1;
+}
+uint64_t idk_tp_session_generation(const idk_transport_t *tp) {
+  return tp->backend == IDK_TP_SOCKET ? tp_socket_session_generation_public(tp) : 0;
+}
 
 int idk_tp_recv(idk_transport_t *tp, idk_frame_header_t *hdr, int fds[4], int *nfd) {
   return tp_backends[tp->backend].recv(tp, hdr, fds, nfd);
