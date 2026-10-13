@@ -81,7 +81,7 @@ TEST(reject_zero_identity) {
       .minor = 0,
       .type = IDK_SOCKET_V2_FEATURES,
       .flags = 0,
-      .payload_bytes = sizeof(payload),
+      .payload_bytes = 0,
       .session_generation = socket_v2_new_session_generation(),
       .message_id = 0,
   };
@@ -144,6 +144,7 @@ TEST(peer_credentials_same_uid) {
   snprintf(path, sizeof(path), "/tmp/idk-peercred-%d.sock", (int)getpid());
   unlink(path);
   setenv("IDK_TP_SOCKET", "seqpacket", 1);
+  setenv("IDK_NO_DMABUF", "1", 1);
   idk_transport_t consumer = {0};
   idk_transport_t producer = {0};
   ASSERT_EQ(idk_tp_init(&consumer, IDK_TP_CONSUMER, path), 0);
@@ -153,6 +154,8 @@ TEST(peer_credentials_same_uid) {
   ASSERT_TRUE(consumer.ready);
   ASSERT_EQ(idk_tp_poll(&producer), 1);
   ASSERT_TRUE(producer.ready);
+  ASSERT_TRUE((tp_socket_features(&consumer) & IDK_SOCKET_FEATURE_DMABUF) == 0);
+  ASSERT_TRUE((tp_socket_features(&producer) & IDK_SOCKET_FEATURE_DMABUF) == 0);
   idk_diag_reset();
   idk_request_msg_t request = {.type = IDK_REQUEST_SHUTDOWN};
   ASSERT_EQ(idk_tp_send_request(&producer, &request), 0);
@@ -173,6 +176,7 @@ TEST(peer_credentials_same_uid) {
   idk_tp_destroy(&consumer);
   unlink(path);
   unsetenv("IDK_TP_SOCKET");
+  unsetenv("IDK_NO_DMABUF");
 }
 
 int main(void) {

@@ -27,7 +27,7 @@ static int begin_producer_handshake(idk_transport_t *tp, int fd) {
       .session_generation = session_generation,
       .message_id = 1,
   };
-  if (socket_v2_send_hello(fd, IDK_SOCKET_FEATURES_DEFAULT, &identity) < 0)
+  if (socket_v2_send_hello(fd, socket_local_features(), &identity) < 0)
     return -1;
   TP_S_STATE(tp->_rsv) = TP_STATE_HANDSHAKE;
   tp->ready = false;
