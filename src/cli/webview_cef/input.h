@@ -21,8 +21,7 @@ public:
   void Start();
   void Stop();
   void QueueCursor(const idk_cursor_update_t &cursor, std::vector<uint8_t> pixels);
-  void WakeReconnect();
-
+  void NotifyTransportAvailable();
 private:
   void Run();
   bool Connect();
