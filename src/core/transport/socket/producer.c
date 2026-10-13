@@ -143,7 +143,6 @@ int tp_socket_poll(idk_transport_t *tp) {
         return 0;
       }
       close(fd);
-      usleep(100000);
       return 0;
     }
     return -1;
