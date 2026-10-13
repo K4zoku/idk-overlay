@@ -81,9 +81,14 @@ typedef struct {
     uint64_t            ring_generation;
     uint32_t            ring_slot_count;
     uint32_t            ring_slot_capacity;
-
-    int                game_w, game_h;
-    bool               size_pending;
+    bool                ring_frame_active;
+    uint64_t            ring_frame_id;
+    uint32_t            ring_frame_slot;
+    uint32_t            ring_frame_offset;
+    uint32_t            ring_frame_bytes;
+    bool                ring_request_deferred;
+    int                 game_w, game_h;
+    bool                size_pending;
     struct timespec    last_resize_ts;
     struct timespec    last_frame_ts;
     bool               was_hidden;
@@ -97,6 +102,7 @@ void idk_compositor_send_ack(uint8_t code);
 void idk_compositor_send_request(void);
 void idk_compositor_notify_resize(int w, int h);
 int  idk_compositor_has_frame(void);
+int  idk_compositor_release_ring_slot(uint32_t status);
 void idk_compositor_shutdown(void);
 
 #ifdef __cplusplus

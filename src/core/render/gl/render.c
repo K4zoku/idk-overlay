@@ -16,16 +16,32 @@ extern _Atomic int g_webview_dead;
 int idk_compositor_egl_render(void) {
   if (g_webview_dead)
     return -1;
-
   int rc = idk_compositor_recv_frame(g_overlay_visible);
   if (rc <= 0)
     return -1;
-
   idk_frame_header_t *hdr = &g_comp.hdr;
   int fd = g_comp.dmabuf_fd[0];
   uint8_t ack = 0;
-
-  if (!idk_frame_is_dmabuf(hdr)) {
+  bool ack_sent = false;
+  if (g_comp.ring_frame_active) {
+    const uint8_t *data = (const uint8_t *)g_comp.ring_map + g_comp.ring_frame_offset;
+    GLuint tex = (hdr->flags & IDK_FRAME_FLAG_SHM_RECT)
+                     ? shm_ring_rect_to_texture(data, g_comp.ring_frame_bytes, hdr->width, hdr->height)
+                     : shm_ring_to_texture(data, hdr->width, hdr->height, g_comp.ring_frame_bytes, 1);
+    if (tex == 0) {
+      ack = 1;
+      idk_compositor_send_ack(1);
+      ack_sent = true;
+      (void)idk_compositor_release_ring_slot(1);
+    } else {
+      glFinish();
+      idk_compositor_send_ack(0);
+      ack_sent = true;
+      ack = idk_compositor_release_ring_slot(0) < 0;
+      if (!ack)
+        g_dmabuf_cache_id = 0;
+    }
+  } else if (!idk_frame_is_dmabuf(hdr)) {
     uint32_t pixel_size = hdr->width * hdr->height * 4;
     GLuint tex = (hdr->flags & IDK_FRAME_FLAG_SHM_RECT) ? shm_rect_to_texture(fd, hdr->width, hdr->height)
                                                         : shm_to_texture(fd, hdr->width, hdr->height, pixel_size, 0, 1);
@@ -47,13 +63,8 @@ int idk_compositor_egl_render(void) {
     ack = gl_import_frame(hdr, fd);
     g_comp.dmabuf_fd[0] = -1;
   }
-
-  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
-  if (ack)
-    goto done;
-
-done:
-  idk_compositor_send_ack(ack);
+  if (!ack_sent)
+    idk_compositor_send_ack(ack);
   return ack ? -1 : 0;
 }
 

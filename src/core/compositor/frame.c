@@ -33,6 +33,12 @@ static void disconnect_client(void) {
     g_comp.ring_slot_count = 0;
     g_comp.ring_slot_capacity = 0;
   }
+  g_comp.ring_frame_active = false;
+  g_comp.ring_request_deferred = false;
+  g_comp.ring_frame_id = 0;
+  g_comp.ring_frame_slot = 0;
+  g_comp.ring_frame_offset = 0;
+  g_comp.ring_frame_bytes = 0;
   idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
   g_comp.has_frame = false;
   g_comp.dmabuf_cache_id = 0;
@@ -165,40 +171,71 @@ static int receive_ring_frame(bool keep) {
                        (full ? record.payload_bytes == expected_full
                              : idk_shm_delta_validate((const idk_shm_delta_t *)source, record.width, record.height,
                                                       record.payload_bytes));
-  int frame_fd = -1;
-  if (valid_payload && keep)
-    frame_fd = idk_memfd_copy(source, record.payload_bytes, "idk-ring-frame");
+  if (!valid_payload) {
+    idk_shm_ring_slot_release_t release = {
+        .session_generation = record.session_generation,
+        .frame_id = record.frame_id,
+        .slot_index = record.slot_index,
+        .status = 1,
+    };
+    (void)idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0);
+    return -1;
+  }
   idk_shm_ring_slot_release_t release = {
       .session_generation = record.session_generation,
       .frame_id = record.frame_id,
       .slot_index = record.slot_index,
-      .status = valid_payload && (!keep || frame_fd >= 0) ? 0u : 1u,
+      .status = 0,
   };
-  if (idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0) < 0) {
-    if (frame_fd >= 0)
-      close(frame_fd);
-    return -1;
+  if (!keep) {
+    if (idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0) < 0)
+      return -1;
+    return 0;
   }
-  if (!valid_payload)
-    return -1;
-  if (!keep)
+  if (g_comp.ring_frame_active) {
+    release.status = 1;
+    if (idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0) < 0)
+      return -1;
     return 0;
-  if (frame_fd < 0)
-    return 0;
-  idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
+  }
   g_comp.hdr = (idk_frame_header_t){
       .width = record.width,
       .height = record.height,
       .flags = IDK_FRAME_FLAG_VISIBLE | (full ? 0 : IDK_FRAME_FLAG_SHM_RECT),
-      .nfd = 1,
+      .nfd = 0,
   };
-  g_comp.dmabuf_fd[0] = frame_fd;
-  g_comp.nfd = 1;
+  g_comp.ring_frame_active = true;
+  g_comp.ring_frame_id = record.frame_id;
+  g_comp.ring_frame_slot = record.slot_index;
+  g_comp.ring_frame_offset = record.offset;
+  g_comp.ring_frame_bytes = record.payload_bytes;
   g_comp.frame_w = record.width;
   g_comp.frame_h = record.height;
   g_comp.has_frame = true;
   clock_gettime(CLOCK_MONOTONIC, &g_comp.last_frame_ts);
   return 1;
+}
+
+int idk_compositor_release_ring_slot(uint32_t status) {
+  if (!g_comp.ring_frame_active)
+    return 0;
+  idk_shm_ring_slot_release_t release = {
+      .session_generation = g_comp.ring_generation,
+      .frame_id = g_comp.ring_frame_id,
+      .slot_index = g_comp.ring_frame_slot,
+      .status = status,
+  };
+  int rc = idk_tp_send_control(&g_comp.tp, IDK_SOCKET_V2_SLOT_RELEASE, &release, sizeof(release), NULL, 0);
+  g_comp.ring_frame_active = false;
+  g_comp.ring_frame_id = 0;
+  g_comp.ring_frame_slot = 0;
+  g_comp.ring_frame_offset = 0;
+  g_comp.ring_frame_bytes = 0;
+  if (g_comp.ring_request_deferred) {
+    g_comp.ring_request_deferred = false;
+    idk_compositor_send_request();
+  }
+  return rc < 0 ? -1 : 0;
 }
 
 /* Recv loop: keep the first frame of the batch and close all surplus FDs. */
@@ -220,8 +257,10 @@ static int keep_last_frame(void) {
         disconnect_client();
         break;
       }
-      if (ring_rc > 0)
+      if (ring_rc > 0) {
         processed = 1;
+        g_comp.ring_request_deferred = true;
+      }
       continue;
     }
     if (peek == 1 && type != IDK_SOCKET_V2_FRAME) {
@@ -278,9 +317,11 @@ int idk_compositor_recv_frame(bool visible) {
 
   int processed = keep_last_frame();
 
-  idk_request_msg_t req = {0};
-  req.type = IDK_REQUEST_NEXT_FRAME;
-  idk_tp_send_request(&g_comp.tp, &req);
+  if (!g_comp.ring_request_deferred) {
+    idk_request_msg_t req = {0};
+    req.type = IDK_REQUEST_NEXT_FRAME;
+    idk_tp_send_request(&g_comp.tp, &req);
+  }
 
   return processed ? 1 : 0;
 }

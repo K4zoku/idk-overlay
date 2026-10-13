@@ -223,3 +223,70 @@ GLuint shm_rect_to_texture(int fd, uint32_t w, uint32_t h) {
   g_comp.frame_premultiplied = true;
   return g_tex[slot];
 }
+
+GLuint shm_ring_to_texture(const void *data, uint32_t w, uint32_t h, uint32_t pixel_size, int premultiplied) {
+  if (!data || w == 0 || h == 0 || (uint64_t)w * h * 4 > pixel_size)
+    return 0;
+  const uint8_t *buf = (const uint8_t *)data;
+  shm_unpack_state_t unpack;
+  GLint old_texture = 0;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_texture);
+  shm_unpack_begin(&unpack);
+  int back = 1 - g_tex_idx;
+  bool size_changed = (GLsizei)w != g_tex_w[back] || (GLsizei)h != g_tex_h[back];
+  bool was_dmabuf = (g_tex_img[back] != 0) || (g_tex_dmabuf_fd[back] >= 0);
+  if ((size_changed || was_dmabuf) && g_tex[back] != 0) {
+    glDeleteTextures(1, &g_tex[back]);
+    g_tex[back] = 0;
+  }
+  if (was_dmabuf)
+    release_dmabuf_backing(back);
+  if (g_tex[back] == 0) {
+    glGenTextures(1, &g_tex[back]);
+    glBindTexture(GL_TEXTURE_2D, g_tex[back]);
+    idk_fn_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    g_tex_w[back] = (GLsizei)w;
+    g_tex_h[back] = (GLsizei)h;
+  } else {
+    glBindTexture(GL_TEXTURE_2D, g_tex[back]);
+    idk_fn_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+  }
+  shm_unpack_end(&unpack);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)old_texture);
+  g_tex_idx = back;
+  g_comp.has_frame = true;
+  g_comp.frame_premultiplied = premultiplied != 0;
+  g_draw_err_count = 0;
+  return g_tex[g_tex_idx];
+}
+
+GLuint shm_ring_rect_to_texture(const void *data, size_t bytes, uint32_t w, uint32_t h) {
+  if (!data || bytes < sizeof(idk_shm_delta_t))
+    return 0;
+  const idk_shm_delta_t *rect = (const idk_shm_delta_t *)data;
+  if (!idk_shm_delta_validate(rect, w, h, bytes))
+    return 0;
+  int slot = g_tex_idx;
+  if (!g_tex[slot] || g_tex_img[slot] || g_tex_dmabuf_fd[slot] >= 0 || g_tex_w[slot] != (int)w ||
+      g_tex_h[slot] != (int)h || !idk_fn_glTexSubImage2D)
+    return 0;
+  shm_unpack_state_t unpack;
+  GLint old_texture = 0;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_texture);
+  shm_unpack_begin(&unpack);
+  glBindTexture(GL_TEXTURE_2D, g_tex[slot]);
+  const uint8_t *pixels = (const uint8_t *)data + sizeof(*rect);
+  idk_fn_glTexSubImage2D(GL_TEXTURE_2D, 0, (GLint)rect->x, (GLint)rect->y, (GLsizei)rect->width,
+                         (GLsizei)rect->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+  shm_unpack_end(&unpack);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)old_texture);
+  if (glGetError() != GL_NO_ERROR)
+    return 0;
+  g_comp.has_frame = true;
+  g_comp.frame_premultiplied = true;
+  return g_tex[slot];
+}

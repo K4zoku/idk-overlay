@@ -33,7 +33,12 @@ int idk_vk_compositor_render(void) {
   idk_frame_header_t *hdr = &g_comp.hdr;
   int processed = 0;
 
-  if (!idk_frame_is_dmabuf(hdr)) {
+  if (g_comp.ring_frame_active) {
+    ctx->overlay.vk_overlay_w = hdr->width;
+    ctx->overlay.vk_overlay_h = hdr->height;
+    ctx->overlay.vk_has_frame = 1;
+    processed = 1;
+  } else if (!idk_frame_is_dmabuf(hdr)) {
     if (hdr->flags & IDK_FRAME_FLAG_SHM_RECT) {
       int fd = g_comp.dmabuf_fd[0];
       idk_shm_delta_t rect;
@@ -43,7 +48,6 @@ int idk_vk_compositor_render(void) {
           fd < 0 || fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(rect) ||
           pread(fd, &rect, sizeof(rect), 0) != (ssize_t)sizeof(rect) ||
           !idk_shm_delta_validate(&rect, hdr->width, hdr->height, (size_t)st.st_size)) {
-        /* Fail before acknowledging an invalid delta. Keep the old overlay. */
         idk_compositor_close_frame_fds(g_comp.dmabuf_fd, &g_comp.nfd);
         idk_compositor_send_ack(1);
         return -1;

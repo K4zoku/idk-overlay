@@ -4,6 +4,7 @@
 #define IDK_RENDER_GL_INTERNAL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "core/compositor.h"
@@ -144,6 +145,9 @@ IDK_INTERNAL void release_dmabuf_backing(int i);
 IDK_INTERNAL GLuint shm_rect_to_texture(int shm_fd, uint32_t w, uint32_t h);
 IDK_INTERNAL GLuint shm_to_texture(int shm_fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buffer_idx,
                                    int premultiplied);
+IDK_INTERNAL GLuint shm_ring_to_texture(const void *data, uint32_t w, uint32_t h, uint32_t pixel_size,
+                                        int premultiplied);
+IDK_INTERNAL GLuint shm_ring_rect_to_texture(const void *data, size_t bytes, uint32_t w, uint32_t h);
 /* Import a dmabuf frame into the back texture slot. Returns 0 on success,
  * 1 on failure (frame must be acked as failed). */
 IDK_INTERNAL uint8_t gl_import_frame(const idk_frame_header_t *hdr, int fd);

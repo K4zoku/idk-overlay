@@ -4,6 +4,9 @@
 
 #include "context.h"
 #include "core/log.h"
+#include "core/compositor.h"
+#include "public/idk_frames.h"
+#include "public/idk_shm_delta.h"
 
 /* Import cache: when the (w,h,stride,fourcc,modifier,buf_id) tuple matches
  * the currently-imported image, the producer wrote new content into the SAME
@@ -147,6 +150,18 @@ void dmabuf_destroy(void) {
  * copy), recording layout barriers into cmd. Returns 0 on success. */
 int overlay_upload(VkCommandBuffer cmd) {
   vk_context_t *ctx = vk_ctx();
+  if (g_comp.ring_frame_active) {
+    const uint8_t *data = (const uint8_t *)g_comp.ring_map + g_comp.ring_frame_offset;
+    int rc = (g_comp.hdr.flags & IDK_FRAME_FLAG_SHM_RECT)
+                 ? vk_upload_shm_ring_rect(data, g_comp.ring_frame_bytes, g_comp.hdr.width, g_comp.hdr.height, cmd)
+                 : vk_upload_shm_ring(data, g_comp.hdr.width, g_comp.hdr.height, g_comp.ring_frame_bytes, cmd);
+    if (rc != 0) {
+      ctx->staging.vk_shm_baseline_valid = 0;
+      (void)idk_compositor_release_ring_slot(1);
+      return -1;
+    }
+    return idk_compositor_release_ring_slot(0);
+  }
   if (ctx->dmabuf.vk_has_dmabuf_pending && ctx->dmabuf.vk_dmabuf_pending_fd >= 0) {
     int pending_fd = ctx->dmabuf.vk_dmabuf_pending_fd;
     ctx->dmabuf.vk_dmabuf_pending_fd = -1;

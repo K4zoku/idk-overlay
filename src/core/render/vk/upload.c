@@ -148,29 +148,18 @@ static int image_ensure(uint32_t w, uint32_t h) {
   return 0;
 }
 
-int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buf_idx, VkCommandBuffer cmd) {
+static int vk_upload_shm_data(const uint8_t *data, size_t bytes, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
   vk_context_t *ctx = vk_ctx();
   VkDevice dev = ctx->device.vk_dev;
   VK_LOAD(vkFlushMappedMemoryRanges);
-  if (!ctx->gpa.vk_fn_GetPhysMemProps) {
-    IDK_ERR("comp-vk", "upload: vk_fn_GetPhysMemProps not loaded\n");
+  if (!ctx->gpa.vk_fn_GetPhysMemProps || !data || bytes < (size_t)w * h * 4)
     return -1;
-  }
-  static idk_shm_cache_t s_vk_shm_cache;
-  if (!idk_shm_cache_map(&s_vk_shm_cache, fd))
+  if (staging_ensure(bytes) != 0)
     return -1;
-  uint8_t *data = (uint8_t *)s_vk_shm_cache.map + (buf_idx * pixel_size);
-  VkDeviceSize buf_size = (VkDeviceSize)pixel_size;
-  if (staging_ensure(buf_size) != 0)
-    return -1;
-  memcpy(ctx->staging.vk_staging_mapped, data, buf_size);
-  VkMappedMemoryRange flush = {
-      .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-      .memory = ctx->staging.vk_staging_mem,
-      .size = VK_WHOLE_SIZE,
-  };
-  vkFlushMappedMemoryRanges(dev, 1, &flush);
-  if (image_ensure(w, h) != 0)
+  memcpy(ctx->staging.vk_staging_mapped, data, bytes);
+  VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                               .memory = ctx->staging.vk_staging_mem, .size = VK_WHOLE_SIZE};
+  if (vkFlushMappedMemoryRanges(dev, 1, &flush) != VK_SUCCESS || image_ensure(w, h) != 0)
     return -1;
   copy_buf_to_img(cmd, w, h);
   ctx->overlay.vk_overlay_img = ctx->staging.vk_shm_img;
@@ -179,24 +168,24 @@ int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t 
   return 0;
 }
 
-/* Packed SHM ROI: the preceding full SHM upload left the image in
- * SHADER_READ_ONLY_OPTIMAL. Preserve all texels outside the damaged region. */
-int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
+int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buf_idx, VkCommandBuffer cmd) {
+  static idk_shm_cache_t cache;
+  if (!idk_shm_cache_map(&cache, fd))
+    return -1;
+  return vk_upload_shm_data((const uint8_t *)cache.map + (buf_idx * pixel_size), pixel_size, w, h, cmd);
+}
+
+int vk_upload_shm_ring(const void *data, uint32_t w, uint32_t h, uint32_t pixel_size, VkCommandBuffer cmd) {
+  return vk_upload_shm_data((const uint8_t *)data, pixel_size, w, h, cmd);
+}
+
+static int vk_upload_shm_rect_data(const uint8_t *pixels, size_t bytes, const idk_shm_delta_t *rect,
+                                   VkCommandBuffer cmd) {
   vk_context_t *ctx = vk_ctx();
   if (!ctx->staging.vk_shm_baseline_valid || ctx->staging.vk_shm_img == VK_NULL_HANDLE ||
-      ctx->overlay.vk_shm_img_w != w || ctx->overlay.vk_shm_img_h != h)
+      staging_ensure(bytes) != 0)
     return -1;
-  static idk_shm_cache_t cache;
-  if (!idk_shm_cache_map(&cache, fd) || cache.size < sizeof(idk_shm_delta_t))
-    return -1;
-  idk_shm_delta_t rect;
-  memcpy(&rect, cache.map, sizeof(rect));
-  if (!idk_shm_delta_validate(&rect, w, h, cache.size))
-    return -1;
-  VkDeviceSize bytes = cache.size - sizeof(rect);
-  if (staging_ensure(bytes) != 0)
-    return -1;
-  memcpy(ctx->staging.vk_staging_mapped, (const uint8_t *)cache.map + sizeof(rect), (size_t)bytes);
+  memcpy(ctx->staging.vk_staging_mapped, pixels, bytes);
   VK_LOAD(vkFlushMappedMemoryRanges);
   VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                                .memory = ctx->staging.vk_staging_mem, .size = VK_WHOLE_SIZE};
@@ -221,8 +210,8 @@ int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
       .bufferOffset = 0,
       .bufferRowLength = 0, .bufferImageHeight = 0,
       .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-      .imageOffset = {(int32_t)rect.x, (int32_t)rect.y, 0},
-      .imageExtent = {rect.width, rect.height, 1},
+      .imageOffset = {(int32_t)rect->x, (int32_t)rect->y, 0},
+      .imageExtent = {rect->width, rect->height, 1},
   };
   vkCmdCopyBufferToImage(cmd, ctx->staging.vk_staging_buf, ctx->staging.vk_shm_img,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
@@ -236,4 +225,29 @@ int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
   ctx->overlay.vk_overlay_img = ctx->staging.vk_shm_img;
   ctx->overlay.vk_overlay_view = ctx->staging.vk_shm_view;
   return 0;
+}
+
+int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
+  vk_context_t *ctx = vk_ctx();
+  static idk_shm_cache_t cache;
+  if (!ctx->staging.vk_shm_baseline_valid || ctx->staging.vk_shm_img == VK_NULL_HANDLE ||
+      ctx->overlay.vk_shm_img_w != w || ctx->overlay.vk_shm_img_h != h || !idk_shm_cache_map(&cache, fd) ||
+      cache.size < sizeof(idk_shm_delta_t))
+    return -1;
+  const idk_shm_delta_t *rect = (const idk_shm_delta_t *)cache.map;
+  if (!idk_shm_delta_validate(rect, w, h, cache.size))
+    return -1;
+  return vk_upload_shm_rect_data((const uint8_t *)cache.map + sizeof(*rect), cache.size - sizeof(*rect), rect, cmd);
+}
+
+int vk_upload_shm_ring_rect(const void *data, size_t bytes, uint32_t w, uint32_t h, VkCommandBuffer cmd) {
+  vk_context_t *ctx = vk_ctx();
+  if (!ctx->staging.vk_shm_baseline_valid || ctx->staging.vk_shm_img == VK_NULL_HANDLE ||
+      ctx->overlay.vk_shm_img_w != w || ctx->overlay.vk_shm_img_h != h || !data ||
+      bytes < sizeof(idk_shm_delta_t))
+    return -1;
+  const idk_shm_delta_t *rect = (const idk_shm_delta_t *)data;
+  if (!idk_shm_delta_validate(rect, w, h, bytes))
+    return -1;
+  return vk_upload_shm_rect_data((const uint8_t *)data + sizeof(*rect), bytes - sizeof(*rect), rect, cmd);
 }

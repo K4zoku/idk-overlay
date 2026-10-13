@@ -164,6 +164,10 @@ IDK_INTERNAL uint32_t find_mem_type(const VkPhysicalDeviceMemoryProperties *mp, 
 IDK_INTERNAL int vk_upload_shm_rect(int fd, uint32_t w, uint32_t h, VkCommandBuffer cmd);
 IDK_INTERNAL int vk_upload_shm(int fd, uint32_t w, uint32_t h, uint32_t pixel_size, uint32_t buf_idx,
                                VkCommandBuffer cmd);
+IDK_INTERNAL int vk_upload_shm_ring(const void *data, uint32_t w, uint32_t h, uint32_t pixel_size,
+                                    VkCommandBuffer cmd);
+IDK_INTERNAL int vk_upload_shm_ring_rect(const void *data, size_t bytes, uint32_t w, uint32_t h,
+                                         VkCommandBuffer cmd);
 
 /* dmabuf.c */
 IDK_INTERNAL int vk_upload_dmabuf(int fd, uint32_t w, uint32_t h, uint32_t stride, uint32_t fourcc, uint64_t modifier,
