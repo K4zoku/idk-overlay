@@ -15,6 +15,7 @@
 #include "core/compositor_vk.h"
 #include "core/log.h"
 #include "hook/overlay.h"
+#include "hook/wayland_input.h"
 #include "internal.h"
 
 /* Overlay visibility + webview liveness — same symbols the GL/EGL path
@@ -22,11 +23,27 @@
  * vs layer) carries its own copy; only one is loaded per process. */
 _Atomic int g_overlay_visible = 1;
 _Atomic int g_webview_dead = 0;
+uint32_t g_hotkey_overlay_keysym = 0;
+uint32_t g_hotkey_overlay_scancode = 0;
+uint32_t g_hotkey_overlay_mods = 0;
+static _Atomic int g_vk_layer_disabled = -1;
 
-/* Input hooks (wayland_input.c / x11_input.c) live in the preload lib.
- * Layer mode v1: no input capture — overlay render only. */
-int idk_overlay_try_install_wayland_input(void) { return 0; }
+int idk_vk_layer_is_disabled(void) {
+  int disabled = atomic_load(&g_vk_layer_disabled);
+  if (disabled >= 0)
+    return disabled;
+  const char *env = getenv("IDK_VK_DISABLE");
+  disabled = env && env[0] && env[0] != '0';
+  atomic_store(&g_vk_layer_disabled, disabled);
+  return disabled;
+}
+
+/* Wayland input is shared with the preload hook implementation. */
+int idk_overlay_try_install_wayland_input(void) { return idk_wayland_input_init(); }
 int idk_overlay_try_install_x11_input(void) { return 0; }
+
+
+void idk_x11_cursor_dispatch(void) {}
 
 /* Broker state defined in compositor.c */
 extern _Atomic int g_broker_state;
@@ -87,6 +104,8 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateInstance(const VkInstanceC
 static int g_layer_started = 0;
 
 int idk_layer_ensure_started(void) {
+  if (idk_vk_layer_is_disabled())
+    return 0;
   if (g_layer_started)
     return 0;
   g_layer_started = 1;
@@ -118,7 +137,10 @@ int idk_layer_ensure_started(void) {
     atomic_store(&g_broker_state, 2);
     pthread_cond_signal(&g_broker_cond);
   }
-  return 0;
-}
 
+  if (!g_use_broker && !atomic_load(&g_webview_dead))
+    idk_vk_layer_spawn_webview();
+  return 0;
+
+}
 #endif /* IDK_HAVE_VK_LAYER */

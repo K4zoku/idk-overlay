@@ -55,6 +55,8 @@ struct queue_data {
 extern _Atomic int g_overlay_visible;
 extern _Atomic int g_webview_dead;
 
+IDK_INTERNAL int idk_vk_layer_is_disabled(void);
+
 /* Dispatch table storage (tables.c). */
 IDK_INTERNAL extern pthread_mutex_t g_dispatch_lock;
 IDK_INTERNAL struct instance_dispatch *find_instance(VkInstance inst);
@@ -74,6 +76,8 @@ IDK_INTERNAL VkLayerInstanceCreateInfo *idk_vk_layer_get_instance_chain(const Vk
 IDK_INTERNAL VkLayerDeviceCreateInfo *idk_vk_layer_get_device_chain(const VkDeviceCreateInfo *pCreateInfo);
 IDK_INTERNAL void idk_vk_layer_chain_advance_instance(VkLayerInstanceCreateInfo *chain_info);
 IDK_INTERNAL void idk_vk_layer_chain_advance_device(VkLayerDeviceCreateInfo *chain_info);
+/* Webview launcher (webview.c). */
+IDK_INTERNAL int idk_vk_layer_spawn_webview(void);
 
 /* Hook entry points (referenced from the hook tables in tables.c). */
 IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,

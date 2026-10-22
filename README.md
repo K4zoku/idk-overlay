@@ -146,6 +146,8 @@ Vulkan doesn't support late injection the way OpenGL/EGL does, so for Vulkan gam
 VK_LAYER_PATH=/path/to/libidk-overlay/directory VK_INSTANCE_LAYERS=VK_LAYER_IDK_overlay vkcube
 ```
 
+The layer starts the configured webview automatically for native Vulkan applications. Wine/Proton applications still require `idk-broker` as described above.
+
 ### OpenGL/EGL games - two options
 
 OpenGL/EGL games are more flexible: you can either preload the library at launch, or attach to a process that's already running.

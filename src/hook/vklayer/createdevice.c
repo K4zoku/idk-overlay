@@ -28,14 +28,17 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(VkPhysicalDevice ph
     IDK_ERR("vk-layer", "CreateDevice: cannot find next vkCreateDevice\n");
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-
+  const int layer_disabled = idk_vk_layer_is_disabled();
   const char *dmabuf_exts[] = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME};
+
+
   const uint32_t dmabuf_ext_count = 2;
 
   uint32_t orig_ext_count = pCreateInfo ? pCreateInfo->enabledExtensionCount : 0;
   const char *const *orig_exts = pCreateInfo ? pCreateInfo->ppEnabledExtensionNames : NULL;
 
-  const char **new_exts = (const char **)calloc(orig_ext_count + dmabuf_ext_count, sizeof(char *));
+  const char **new_exts =
+      layer_disabled ? NULL : (const char **)calloc(orig_ext_count + dmabuf_ext_count, sizeof(char *));
   uint32_t new_ext_count = 0;
   if (new_exts) {
     for (uint32_t i = 0; i < orig_ext_count; i++) {
@@ -87,7 +90,8 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(VkPhysicalDevice ph
 
   IDK_LOG("vk-layer", "CreateDevice OK (device=%p physDevice=%p)\n", (void *)*pDevice, (void *)physicalDevice);
 
-  idk_vk_compositor_init(*pDevice, physicalDevice, 0, fpGetDeviceProcAddr, fpGetInstanceProcAddr);
+  if (!layer_disabled)
+    idk_vk_compositor_init(*pDevice, physicalDevice, 0, fpGetDeviceProcAddr, fpGetInstanceProcAddr);
 
   return result;
 }

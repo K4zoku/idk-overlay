@@ -105,12 +105,12 @@ if vk_layer_header_found
 endif
 idk_vklayer_so = library(
     'idk-vklayer',
-    idk_core_src + hook_vklayer_sources + [
+    idk_core_src + hook_vklayer_sources + wayland_sources + [
         render_vk_sources,
     ],
     c_args: vklayer_c_args,
     include_directories: inc,
-    dependencies: [vk_dep],
+    dependencies: [vk_dep, syringe_dep],
     link_args: ['-ldl', '-lpthread'],
     objects: spv_o_files,
     version: '0.1',
