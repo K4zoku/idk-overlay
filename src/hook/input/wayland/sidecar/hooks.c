@@ -10,6 +10,52 @@ void idk_wayland_input_sidecar_dispatch(void) {
   orig_wl_display_dispatch_queue_pending(g_sidecar_display, g_sidecar_queue);
 }
 
+void (*orig_wl_display_disconnect)(struct wl_display *) = NULL;
+
+static void reset_sidecar(struct wl_display *display) {
+  if (!display || !g_sidecar_initialized || display != g_sidecar_display)
+    return;
+  idk_wayland_cursor_shutdown();
+  if (real_wl_proxy_destroy) {
+    if (g_sidecar_keyboard)
+      real_wl_proxy_destroy((struct wl_proxy *)g_sidecar_keyboard);
+    if (g_sidecar_pointer)
+      real_wl_proxy_destroy((struct wl_proxy *)g_sidecar_pointer);
+    if (g_sidecar_seat)
+      real_wl_proxy_destroy((struct wl_proxy *)g_sidecar_seat);
+    if (g_sidecar_cursor_shape_manager)
+      real_wl_proxy_destroy(g_sidecar_cursor_shape_manager);
+    if (g_sidecar_compositor)
+      real_wl_proxy_destroy(g_sidecar_compositor);
+    if (g_sidecar_shm)
+      real_wl_proxy_destroy(g_sidecar_shm);
+  }
+  if (real_wl_event_queue_destroy && g_sidecar_queue)
+    real_wl_event_queue_destroy(g_sidecar_queue);
+  g_sidecar_display = NULL;
+  g_sidecar_queue = NULL;
+  g_sidecar_seat = NULL;
+  g_sidecar_keyboard = NULL;
+  g_sidecar_pointer = NULL;
+  g_sidecar_cursor_shape_manager = NULL;
+  g_sidecar_compositor = NULL;
+  g_sidecar_shm = NULL;
+  g_sidecar_initialized = 0;
+  g_sidecar_ready = 0;
+  g_cursor_shape_device = NULL;
+  g_shape_device_pointer_proxy = NULL;
+  g_game_pointer_proxy = NULL;
+  g_intercepted_count = 0;
+}
+
+void hook_wl_display_disconnect(struct wl_display *display) {
+  reset_sidecar(display);
+  if (orig_wl_display_disconnect)
+    orig_wl_display_disconnect(display);
+  else if (real_wl_display_disconnect)
+    real_wl_display_disconnect(display);
+}
+
 /* Display connect hooks */
 
 struct wl_display *(*orig_wl_display_connect)(const char *name) = NULL;

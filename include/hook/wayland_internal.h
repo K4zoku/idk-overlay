@@ -138,6 +138,8 @@ extern struct wl_display *(*orig_wl_display_connect_to_fd)(int fd);
 extern int (*orig_wl_display_dispatch_queue_pending)(struct wl_display *, struct wl_event_queue *);
 extern struct wl_proxy *(*orig_wl_proxy_marshal_array_flags)(struct wl_proxy *, uint32_t, const struct wl_interface *,
                                                              uint32_t, uint32_t, union wl_argument *);
+extern void (*orig_wl_display_disconnect)(struct wl_display *);
+void hook_wl_display_disconnect(struct wl_display *display);
 extern void (*orig_wl_proxy_destroy)(struct wl_proxy *);
 
 int hook_wl_proxy_add_listener(struct wl_proxy *proxy, void (**impl)(void), void *data);

@@ -129,7 +129,10 @@ int idk_wayland_input_init(void) {
   int n7 = syringe_hook_install("wl_proxy_destroy", (void *)hook_wl_proxy_destroy, (void **)&orig_wl_proxy_destroy);
   if (n7 <= 0)
     WLOG("wl_proxy_destroy hook not installed (n=%d)", n7);
-
+  int n8 = syringe_hook_install("wl_display_disconnect", (void *)hook_wl_display_disconnect,
+                                (void **)&orig_wl_display_disconnect);
+  if (n8 <= 0)
+    WLOG("wl_display_disconnect hook not installed (n=%d)", n8);
   g_hook_installed = 1;
   WLOG("hooks installed: add_listener=%d add_dispatcher=%d "
        "display_connect=%d display_connect_to_fd=%d dispatch_queue_pending=%d "

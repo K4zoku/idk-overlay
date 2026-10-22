@@ -11,6 +11,7 @@
   F(const char *, wl_proxy_get_class, (struct wl_proxy *))                                                             \
   F(const void *, wl_proxy_get_listener, (struct wl_proxy *))                                                          \
   F(struct wl_event_queue *, wl_display_create_queue, (struct wl_display *))                                           \
+  F(void, wl_display_disconnect, (struct wl_display *))                                                             \
   F(struct wl_proxy *, wl_proxy_create_wrapper, (struct wl_proxy *))                                                   \
   F(void, wl_proxy_wrapper_destroy, (struct wl_proxy *))                                                               \
   F(void, wl_proxy_set_queue, (struct wl_proxy *, struct wl_event_queue *))                                            \
