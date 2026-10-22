@@ -109,7 +109,9 @@ static char **build_child_env(char **owned_layers) {
   size_t out = 0;
   int has_layers = 0;
   for (size_t i = 0; i < count; i++) {
-    if (strncmp(environ[i], "LD_PRELOAD=", 11) == 0 && strstr(environ[i] + 11, "libidk-overlay.so"))
+    if ((strncmp(environ[i], "IDK_VK_LAYER=", 13) == 0 ||
+         strncmp(environ[i], "IDK_VK_DISABLE=", 15) == 0) ||
+        (strncmp(environ[i], "LD_PRELOAD=", 11) == 0 && strstr(environ[i] + 11, "libidk-overlay.so")))
       continue;
     if (strncmp(environ[i], "VK_INSTANCE_LAYERS=", 19) == 0) {
       char *filtered = filter_instance_layers(environ[i] + 19);

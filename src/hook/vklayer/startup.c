@@ -98,7 +98,6 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateInstance(const VkInstanceC
 
   idk_layer_ensure_started();
   idk_vk_compositor_notify_resize(0, 0);
-  idk_overlay_try_install_wayland_input();
 
   return result;
 }
@@ -108,6 +107,10 @@ static int g_layer_started = 0;
 int idk_layer_ensure_started(void) {
   if (idk_vk_layer_is_disabled())
     return 0;
+  if (idk_preload_present()) {
+    g_layer_started = 1;
+    return 0;
+  }
   if (g_layer_started)
     return 0;
   g_layer_started = 1;

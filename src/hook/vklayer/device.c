@@ -1,7 +1,7 @@
 /* Device-level hooks (destroy/swapchain/queue tracking) + GetDeviceProcAddr. */
 #ifdef IDK_HAVE_VK_LAYER
 
-#include <string.h>
+#include <dlfcn.h>
 
 #include "core/compositor_vk.h"
 #include "core/log.h"
@@ -38,8 +38,17 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateSwapchainKHR(VkDevice devi
 
   VkResult result = fp(device, pCreateInfo, pAllocator, pSwapchain);
   if (result != VK_SUCCESS)
-  idk_wayland_input_init();
-  idk_x11_input_init();
+    return result;
+  void *wl = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
+  if (wl) {
+    dlclose(wl);
+    idk_wayland_input_init();
+  }
+  void *x11 = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
+  if (x11) {
+    dlclose(x11);
+    idk_x11_input_init();
+  }
 
   if (pCreateInfo) {
     uint32_t w = pCreateInfo->imageExtent.width;
