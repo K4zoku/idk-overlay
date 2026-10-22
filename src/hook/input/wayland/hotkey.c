@@ -23,8 +23,15 @@ static const struct hotkey_name_to_scancode HOTKEY_TABLE[] = {
 };
 
 void configure_hotkey(void) {
-  if (g_hotkey_keysym)
+  if (g_hotkey_keysym) {
+    for (size_t i = 0; i < sizeof(HOTKEY_TABLE) / sizeof(HOTKEY_TABLE[0]); i++) {
+      if (g_hotkey_keysym == HOTKEY_TABLE[i].keysym) {
+        g_hotkey_scancode = HOTKEY_TABLE[i].scancode;
+        break;
+      }
+    }
     return;
+  }
   const char *env = getenv("IDK_HOTKEY_CAPTURE");
   if (!env || !env[0])
     env = "Shift+Tab";
