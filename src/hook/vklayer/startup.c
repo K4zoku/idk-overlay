@@ -149,4 +149,10 @@ int idk_layer_ensure_started(void) {
   return 0;
 
 }
+__attribute__((destructor)) static void idk_vk_layer_shutdown(void) {
+  idk_wayland_input_shutdown();
+  idk_x11_input_shutdown();
+  idk_vk_layer_stop_webview();
+}
+
 #endif /* IDK_HAVE_VK_LAYER */

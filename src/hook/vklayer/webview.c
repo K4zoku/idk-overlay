@@ -3,7 +3,7 @@
 #include <sys/eventfd.h>
 #include <signal.h>
 #include <stdatomic.h>
-#include <stdint.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +18,8 @@
 #include "internal.h"
 
 static pid_t g_webview_pid = -1;
+static int g_webview_crash_count = 0;
+static time_t g_webview_last_fork_time = 0;
 static int g_input_eventfd = -1;
 
 static int find_webview_bin(char *buf, size_t bufsz) {
@@ -58,14 +60,32 @@ static void disable_webview(void) {
   atomic_store(&g_webview_dead, 1);
   atomic_store(&g_overlay_visible, 0);
 }
+static int idk_vk_layer_spawn_webview_process(void);
 
 static void *monitor_webview(void *arg) {
-  const pid_t pid = (pid_t)(intptr_t)arg;
-  int status = 0;
-  if (waitpid(pid, &status, 0) <= 0 || atomic_load(&g_webview_dead))
-    return NULL;
-  IDK_LOG("overlay", "Vulkan layer webview exited: pid=%d status=0x%x\n", (int)pid, status);
-  disable_webview();
+  pid_t pid = (pid_t)(intptr_t)arg;
+  while (!atomic_load(&g_webview_dead)) {
+    int status = 0;
+    if (waitpid(pid, &status, 0) <= 0)
+      break;
+    IDK_LOG("overlay", "Vulkan layer webview exited: pid=%d status=0x%x\n", (int)pid, status);
+    if ((WIFEXITED(status) && WEXITSTATUS(status) == 0) ||
+        (WIFSIGNALED(status) && (WTERMSIG(status) == SIGTERM || WTERMSIG(status) == SIGKILL))) {
+      disable_webview();
+      break;
+    }
+    time_t now = time(NULL);
+    if (now - g_webview_last_fork_time > 30)
+      g_webview_crash_count = 0;
+    if (++g_webview_crash_count > 3) {
+      IDK_ERR("overlay", "Vulkan layer webview crashed %d times - disabling overlay\n", g_webview_crash_count);
+      disable_webview();
+      break;
+    }
+    if (idk_vk_layer_spawn_webview_process() != 0)
+      break;
+    pid = g_webview_pid;
+  }
   return NULL;
 }
 
@@ -148,7 +168,7 @@ static void free_child_env(char **envp, char *owned_layers) {
   free(envp);
 }
 
-int idk_vk_layer_spawn_webview(void) {
+static int idk_vk_layer_spawn_webview_process(void) {
   char bin[PATH_MAX];
   if (find_webview_bin(bin, sizeof(bin)) != 0) {
     IDK_LOG("overlay", "Vulkan layer webview not found (set IDK_WEBVIEW_BIN/IDK_WEBVIEW)\n");
@@ -172,7 +192,7 @@ int idk_vk_layer_spawn_webview(void) {
     IDK_ERR("overlay", "Vulkan layer webview environment allocation failed\n");
     return -1;
   }
-
+  g_webview_last_fork_time = time(NULL);
   g_webview_pid = fork();
   if (g_webview_pid < 0) {
     free_child_env(child_env, owned_layers);
@@ -202,8 +222,22 @@ int idk_vk_layer_spawn_webview(void) {
   }
   free_child_env(child_env, owned_layers);
   IDK_LOG("overlay", "Vulkan layer webview forked: pid=%d bin=%s\n", (int)g_webview_pid, bin);
+  return 0;
+}
+int idk_vk_layer_spawn_webview(void) {
+  if (idk_vk_layer_spawn_webview_process() != 0)
+    return -1;
   pthread_t monitor;
   if (pthread_create(&monitor, NULL, monitor_webview, (void *)(intptr_t)g_webview_pid) == 0)
     pthread_detach(monitor);
   return 0;
+}
+
+void idk_vk_layer_stop_webview(void) {
+  atomic_store(&g_webview_dead, 1);
+  if (g_webview_pid > 0) {
+    kill(g_webview_pid, SIGTERM);
+    waitpid(g_webview_pid, NULL, 0);
+    g_webview_pid = -1;
+  }
 }
