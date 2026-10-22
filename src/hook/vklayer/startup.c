@@ -44,6 +44,8 @@ int idk_vk_layer_is_disabled(void) {
 int idk_overlay_try_install_wayland_input(void) { return idk_wayland_input_init(); }
 int idk_overlay_try_install_x11_input(void) { return idk_x11_input_init(); }
 void *real_dlsym(void *handle, const char *name) { return dlsym(handle, name); }
+static int idk_preload_present(void) { return dlsym(RTLD_DEFAULT, "idk_overlay_init") != NULL; }
+
 
 /* Broker state defined in compositor.c */
 extern _Atomic int g_broker_state;
@@ -139,7 +141,7 @@ int idk_layer_ensure_started(void) {
     pthread_cond_signal(&g_broker_cond);
   }
 
-  if (!g_use_broker && !atomic_load(&g_webview_dead))
+  if (!g_use_broker && !atomic_load(&g_webview_dead) && !idk_preload_present())
     idk_vk_layer_spawn_webview();
   return 0;
 
