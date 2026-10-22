@@ -112,10 +112,6 @@ static void sidecar_registry_global(void *d, struct wl_registry *reg, uint32_t n
     g_sidecar_shm = my_wl_registry_bind(reg, name, g_wl_shm_interface, 1);
     WLOG("sidecar: wl_shm bound → %p", (void *)g_sidecar_shm);
   } else if (strcmp(iface, "wp_cursor_shape_manager_v1") == 0 && !g_sidecar_cursor_shape_manager) {
-    if (idk_vk_layer_is_active()) {
-      WLOG("sidecar: skipping wp_cursor_shape_manager_v1 (Vulkan layer mode)");
-      return;
-    }
     uint32_t bind_ver = ver < 2 ? ver : 2;
     g_sidecar_cursor_shape_manager =
         (struct wl_proxy *)my_wl_registry_bind(reg, name, &g_wp_cursor_shape_manager_v1_interface, bind_ver);

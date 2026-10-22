@@ -24,14 +24,6 @@ void idk_wayland_input_set_capture(int enable) {
 
   g_captured = new_state;
 
-  if (idk_vk_layer_is_active()) {
-    WLOG("set_capture(%s): skipping cursor ops (Vulkan layer mode)", new_state ? "ON" : "OFF");
-    idk_wayland_cursor_capture_changed(new_state);
-    send_capture_state((uint32_t)new_state);
-    if (new_state)
-      send_repeat_info();
-    return;
-  }
 
   if (g_game_pointer_proxy) {
     sidecar_ensure_cursor_shape_device((struct wl_pointer *)g_game_pointer_proxy);

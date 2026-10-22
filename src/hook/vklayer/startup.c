@@ -6,6 +6,7 @@
  * a Vulkan instance). */
 #ifdef IDK_HAVE_VK_LAYER
 
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -16,6 +17,7 @@
 #include "core/log.h"
 #include "hook/overlay.h"
 #include "hook/wayland_input.h"
+#include "hook/x11_input.h"
 #include "internal.h"
 
 /* Overlay visibility + webview liveness — same symbols the GL/EGL path
@@ -40,10 +42,8 @@ int idk_vk_layer_is_disabled(void) {
 
 /* Wayland input is shared with the preload hook implementation. */
 int idk_overlay_try_install_wayland_input(void) { return idk_wayland_input_init(); }
-int idk_overlay_try_install_x11_input(void) { return 0; }
-
-
-void idk_x11_cursor_dispatch(void) {}
+int idk_overlay_try_install_x11_input(void) { return idk_x11_input_init(); }
+void *real_dlsym(void *handle, const char *name) { return dlsym(handle, name); }
 
 /* Broker state defined in compositor.c */
 extern _Atomic int g_broker_state;
@@ -109,6 +109,7 @@ int idk_layer_ensure_started(void) {
   if (g_layer_started)
     return 0;
   g_layer_started = 1;
+  load_hotkey_config();
 
   detect_wine();
   bool want_broker = (g_wine_detected == 1);

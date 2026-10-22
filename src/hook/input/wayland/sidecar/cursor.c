@@ -244,7 +244,7 @@ void sidecar_ensure_cursor_shape_device(struct wl_pointer *p) {
 
 void idk_wayland_cursor_dispatch(void) {
   cleanup_retired_cursors();
-  if (idk_vk_layer_is_active() || !g_captured || !g_game_pointer_proxy)
+  if (!g_captured || !g_game_pointer_proxy)
     return;
   static uint8_t pixels[IDK_CURSOR_MAX_BYTES];
   idk_cursor_update_t cursor;

@@ -5,6 +5,8 @@
 
 #include "core/compositor_vk.h"
 #include "core/log.h"
+#include "hook/wayland_input.h"
+#include "hook/x11_input.h"
 #include "internal.h"
 
 IDK_INTERNAL VKAPI_ATTR void VKAPI_CALL idk_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator) {
@@ -36,7 +38,8 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateSwapchainKHR(VkDevice devi
 
   VkResult result = fp(device, pCreateInfo, pAllocator, pSwapchain);
   if (result != VK_SUCCESS)
-    return result;
+  idk_wayland_input_init();
+  idk_x11_input_init();
 
   if (pCreateInfo) {
     uint32_t w = pCreateInfo->imageExtent.width;

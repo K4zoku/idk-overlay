@@ -30,8 +30,6 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateDevice(VkPhysicalDevice ph
   }
   const int layer_disabled = idk_vk_layer_is_disabled();
   const char *dmabuf_exts[] = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME};
-
-
   const uint32_t dmabuf_ext_count = 2;
 
   uint32_t orig_ext_count = pCreateInfo ? pCreateInfo->enabledExtensionCount : 0;

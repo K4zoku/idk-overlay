@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <limits.h>
+#include <sys/eventfd.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -18,6 +19,7 @@
 #include "internal.h"
 
 static pid_t g_webview_pid = -1;
+static int g_input_eventfd = -1;
 
 static int find_webview_bin(char *buf, size_t bufsz) {
   const char *env = getenv("IDK_WEBVIEW_BIN");
@@ -153,6 +155,14 @@ int idk_vk_layer_spawn_webview(void) {
     return -1;
   }
 
+  if (g_input_eventfd < 0) {
+    g_input_eventfd = eventfd(0, EFD_SEMAPHORE | EFD_NONBLOCK);
+    if (g_input_eventfd >= 0) {
+      char efd[16];
+      snprintf(efd, sizeof(efd), "%d", g_input_eventfd);
+      setenv("IDK_INPUT_EVENTFD", efd, 1);
+    }
+  }
   char socket_path[PATH_MAX];
   idk_comp_get_path(socket_path, sizeof(socket_path));
   const char *comm = idk_process_name();
@@ -171,8 +181,11 @@ int idk_vk_layer_spawn_webview(void) {
   }
   if (g_webview_pid == 0) {
     prctl(PR_SET_PDEATHSIG, SIGTERM);
-    for (int fd = 3; fd < 1024; fd++)
+    for (int fd = 3; fd < 1024; fd++) {
+      if (fd == g_input_eventfd)
+        continue;
       close(fd);
+    }
 
     char *argv[6];
     int argc = 0;
