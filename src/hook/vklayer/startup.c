@@ -45,6 +45,23 @@ int idk_overlay_try_install_wayland_input(void) { return idk_wayland_input_init(
 int idk_overlay_try_install_x11_input(void) { return idk_x11_input_init(); }
 void *real_dlsym(void *handle, const char *name) { return dlsym(handle, name); }
 static int idk_preload_present(void) { return dlsym(RTLD_DEFAULT, "idk_overlay_init") != NULL; }
+void idk_vk_layer_probe_input(void) {
+  if (idk_vk_layer_is_disabled() || idk_preload_present())
+    return;
+  if (!idk_is_wine()) {
+    void *wl = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
+    if (wl) {
+      dlclose(wl);
+      idk_wayland_input_init();
+    }
+  }
+  void *x11 = dlopen("libX11.so.6", RTLD_NOW | RTLD_NOLOAD);
+  if (x11) {
+    dlclose(x11);
+    idk_x11_input_init();
+  }
+}
+
 
 
 /* Broker state defined in compositor.c */
@@ -97,6 +114,7 @@ IDK_INTERNAL VKAPI_ATTR VkResult VKAPI_CALL idk_CreateInstance(const VkInstanceC
   g_vk_instance_gpa = fpGetInstanceProcAddr;
 
   idk_layer_ensure_started();
+  idk_vk_layer_probe_input();
   idk_vk_compositor_notify_resize(0, 0);
 
   return result;

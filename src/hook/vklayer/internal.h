@@ -79,6 +79,7 @@ IDK_INTERNAL void idk_vk_layer_chain_advance_instance(VkLayerInstanceCreateInfo 
 IDK_INTERNAL void idk_vk_layer_chain_advance_device(VkLayerDeviceCreateInfo *chain_info);
 /* Webview launcher (webview.c). */
 IDK_INTERNAL void idk_vk_layer_stop_webview(void);
+IDK_INTERNAL void idk_vk_layer_probe_input(void);
 IDK_INTERNAL int idk_vk_layer_spawn_webview(void);
 
 /* Hook entry points (referenced from the hook tables in tables.c). */
