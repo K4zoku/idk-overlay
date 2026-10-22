@@ -1,7 +1,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/eventfd.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -65,7 +64,6 @@ static void *monitor_webview(void *arg) {
   int status = 0;
   if (waitpid(pid, &status, 0) <= 0 || atomic_load(&g_webview_dead))
     return NULL;
-
   IDK_LOG("overlay", "Vulkan layer webview exited: pid=%d status=0x%x\n", (int)pid, status);
   disable_webview();
   return NULL;
